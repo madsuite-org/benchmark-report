@@ -206,6 +206,32 @@ function from_archive(rev; depth = 200)
     return ResultSet(label, rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
 end
 
+# The newest archived results of each machine in the result folder `root`, for a run with no
+# archived ancestor, leaving out the run's own `commit`. Timings are only comparable on the same
+# machine. `nothing` if there are none.
+function latest_archived(root, commit = "")
+    archive = archive_revision()
+    archive === nothing && return nothing
+    paths = split(git("ls-tree", "-r", "--name-only", archive), '\n'; keepempty = false)
+    show(path) = read(git_command("show", "$archive:$path"), String)
+    # a commit the clone does not have counts as the oldest
+    time(sha) = something(tryparse(Int, try git("log", "-1", "--format=%ct", sha) catch; "0" end), 0)
+    rs, used = ResultSet(""), String[]
+    for machine in filter(d -> isdir(joinpath(root, d)), readdir(root))
+        files = [m for m in (match(r"^([^/]+)/([0-9a-f]{40})/([a-z]+)_(.+)\.csv$", p) for p in paths) if m !== nothing && m[1] == machine && m[2] != commit]
+        isempty(files) && continue
+        newest = argmax(time, unique!([String(m[2]) for m in files]))
+        for m in files
+            m[2] == newest || continue
+            path = String(m.match)
+            add!(rs, m[3], m[4], TOML.parse(show(path * ".meta.toml")), read_results(IOBuffer(show(path))))
+        end
+        push!(used, "`$(newest[1:8])` on " * replace(machine, "_" => " "))
+    end
+    isempty(used) && return nothing
+    return ResultSet(join(used, "; "), rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
+end
+
 # The Ipopt reference of a version of this benchmark, `ipopt/<version>/` on the archive branch:
 # one run for all the machines and commits that are compared under that version. `nothing` if
 # it has not been archived.

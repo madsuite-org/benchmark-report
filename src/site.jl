@@ -40,16 +40,16 @@ struct Side
     base::Bool
 end
 
-# Per device the columns are Ipopt, master and the current results.
-function report_sides(cand, base)
+# Per device the columns are Ipopt, the base and the current results.
+function report_sides(cand, base, base_name = "master")
     suffix(key) = key[2] == "default" ? "" : " " * key[2]
     label(key, name) = key[2] == "ipopt" ? "Ipopt" : name * suffix(key)
     keys_of(rs) = rs === nothing ? [] : sort!(unique!([(k[1], k[3]) for k in keys(rs.rows)]); by = k -> (k[1] != "cpu", k))
-    sides = [(label(k, "master"), k, true) for k in keys_of(base) if k[2] != "ipopt"]
+    sides = [(label(k, base_name), k, true) for k in keys_of(base) if k[2] != "ipopt"]
     append!(sides, [(label(k, "current"), k, false) for k in keys_of(cand)])
     sort!(sides; by = s -> s[2][2] != "ipopt")
-    others = sort!(unique!([l for (l, _, _) in sides if l ∉ ("Ipopt", "current", "master")]))
-    color(l, device) = l == "Ipopt" ? REFERENCE_COLOR : l == "current" ? device_color(device) : l == "master" ? COLORS[2] : COLORS[mod1(3 + findfirst(==(l), others), length(COLORS))]
+    others = sort!(unique!([l for (l, _, _) in sides if l ∉ ("Ipopt", "current", base_name)]))
+    color(l, device) = l == "Ipopt" ? REFERENCE_COLOR : l == "current" ? device_color(device) : l == base_name ? COLORS[2] : COLORS[mod1(3 + findfirst(==(l), others), length(COLORS))]
     return [Side(l, color(l, k[1]), k, b) for (l, k, b) in sides]
 end
 
@@ -204,9 +204,10 @@ function progress(io, devices, sets, sides, cand, base)
 end
 
 function summary_table(io, blocks, sides, cand, base, wall)
-    # a group of columns per solver: Ipopt, master, current
+    # a group of columns per solver: Ipopt, the base, current
     labels = unique!([s.label for (set, device) in blocks for s in on_device(sides, device) if !isempty(side_rows(s, cand, base, set))])
-    sort!(labels; by = l -> something(findfirst(==(l), ["Ipopt", "master", "current"]), 4))
+    rank(l) = l == "Ipopt" ? 1 : l == "current" ? 3 : any(s -> s.base && s.label == l, sides) ? 2 : 4
+    sort!(labels; by = rank)
     println(io, "<div class=\"wide\"><table class=\"table table-sm summary\"><thead><tr><th rowspan=\"2\">set</th><th rowspan=\"2\" class=\"l\">device</th><th rowspan=\"2\" title=\"compared out of the whole set\">problems</th>")
     foreach(l -> print(io, "<th colspan=\"3\" class=\"g\">", escape_html(l), "</th>"), labels)
     print(io, "</tr><tr>")
@@ -441,7 +442,7 @@ function write_listings(site, assets)
 end
 escape_url(s) = replace(s, r"[^A-Za-z0-9_.~+-]" => c -> join(["%" * uppercase(string(b; base = 16, pad = 2)) for b in codeunits(c)]))
 
-function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished)
+function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished, base_name = "master")
     mkpath(site)
     chmod(site, 0o755)
     assets == "." && write_assets(site)
@@ -459,7 +460,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
         merge!(cand.revs, reference.revs)
         merge!(cand.harness, reference.harness)
     end
-    sides = report_sides(cand, base)
+    sides = report_sides(cand, base, base_name)
     sets = sort!(unique!([k[2] for k in keys(cand.rows)]))
     stamp = Dates.format(now(UTC), "yyyy-mm-dd HH:MM:SS")
     # the bar pinned to the top of every page

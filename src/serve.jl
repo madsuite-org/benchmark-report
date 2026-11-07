@@ -37,9 +37,12 @@ function build_run(live, site, name)
     repository, pr, base = json_field(text, "repository"), json_field(text, "pr"), json_field(text, "base")
     (occursin(r"^[\w.-]+/[\w.-]+$", repository) && occursin(r"^\d+$", pr)) || error("$name: bad run.json")
     state = json_field(text, "state")
+    # master if it has archived results, else the latest results of the same machines
+    compared, base_name = occursin(r"^[0-9a-f]{40}$", base) ? locate(base, "master") : nothing, "master"
+    compared === nothing && ((compared, base_name) = (latest_archived(joinpath(live, name), json_field(text, "commit")), "latest archived"))
     write_report(
         joinpath(site, name), joinpath(live, name);
-        base = occursin(r"^[0-9a-f]{40}$", base) ? locate(base, "master") : nothing,
+        base = compared, base_name,
         reference = ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
         title = "Pull request #$pr", link = "https://github.com/$repository/pull/$pr",
         finished = state != "running", assets = "..", live = true,
