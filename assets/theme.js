@@ -5,3 +5,5 @@ setTheme(localStorage.getItem('theme')||(matchMedia('(prefers-color-scheme: dark
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',e=>{if(!localStorage.getItem('theme'))setTheme(e.matches?'dark':'light')});
 document.addEventListener('click',e=>{if(!e.target.closest('#theme'))return;
 const t=document.documentElement.dataset.bsTheme=='dark'?'light':'dark';localStorage.setItem('theme',t);setTheme(t)});
+// a click elsewhere closes the banner's menu
+document.addEventListener('click',e=>{document.querySelectorAll('details.menu[open]').forEach(d=>{if(!d.contains(e.target))d.open=false})});

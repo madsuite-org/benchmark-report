@@ -155,7 +155,7 @@ end
 
 # The banner of every page: the site, where this page is in it, and a line about what is shown.
 function banner(home, trail, line = "", menus = "")
-    return "<header class=\"site\"><div class=\"container\"><a class=\"brand\" href=\"/\">MadSuite benchmarks</a><span class=\"trail\"><a href=\"$home\">MadNLP</a></span>$trail<nav class=\"app\"><a class=\"btn btn-sm btn-light\" href=\"/queue/\">Sign in</a></nav><button id=\"theme\" type=\"button\" aria-label=\"Switch between light and dark\">Theme</button></div></header>" *
+    return "<header class=\"site\"><div class=\"container\"><a class=\"brand\" href=\"/\">MadSuite benchmarks</a><span class=\"trail\"><a href=\"$home\">MadNLP</a></span>$trail<nav class=\"app\"><details class=\"menu\"><summary aria-label=\"Menu\">☰</summary><div><a href=\"/queue/\">Sign in</a><button id=\"theme\" type=\"button\">Light or dark</button></div></details></nav></div></header>" *
         "<div class=\"bar\"><div class=\"container\"><div class=\"line\">$line</div>$menus</div></div>"
 end
 state_badge(state) = "<span class=\"state $(state == "running" ? "on" : "off")\">$(escape_html(state))</span>"

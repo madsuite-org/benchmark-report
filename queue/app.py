@@ -375,19 +375,25 @@ def stall_note(cfg, login, name, age):
             f'no new data has arrived for {int(age // 60)} min. {action}</div>')
 
 
-NAV = '<nav class="app"><a class="btn btn-sm btn-light" href="/queue/">Sign in</a></nav>'
+# The banner's menu as the site writes it, which the app replaces with the signed-in user's
+NAV = ('<nav class="app"><details class="menu"><summary aria-label="Menu">☰</summary><div><a href="/queue/">Sign in</a>'
+       '<button id="theme" type="button">Light or dark</button></div></details></nav>')
 
 
 def app_nav(cfg, login):
-    """The links of the banner for who is signed in: the same on every page of the app."""
+    """The banner's menu for who is signed in: the same on every page. Collapsed behind one button,
+    so the banner stays one line on a phone."""
     e = html.escape
+    theme = '<button id="theme" type="button">Light or dark</button>'
     if not login:
-        return f'<nav class="app"><a class="btn btn-sm btn-light" href="{e(cfg.base)}/login">Sign in</a></nav>'
+        return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">☰</summary><div>'
+                f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a>{theme}</div></details></nav>')
     csrf = sign(cfg, "csrf|" + login)
-    return (f'<nav class="app"><a href="{e(cfg.base)}/">Jobs</a><a href="{e(cfg.reports)}/">Reports</a>'
-            f'<a class="btn btn-sm btn-light" href="{e(cfg.base)}/new">New job</a><span class="who">{e(login)}</span>'
-            f'<form method="post" action="{e(cfg.base)}/logout"><input type="hidden" name="csrf" value="{csrf}">'
-            '<button class="btn btn-sm btn-outline-light">Sign out</button></form></nav>')
+    return (f'<nav class="app"><a class="btn btn-sm btn-light" href="{e(cfg.base)}/new">New job</a>'
+            f'<details class="menu"><summary aria-label="Menu">{e(login)} ☰</summary><div>'
+            f'<a href="{e(cfg.base)}/">Jobs</a><a href="{e(cfg.reports)}/">Reports</a>{theme}'
+            f'<form method="post" action="{e(cfg.base)}/logout"><input type="hidden" name="csrf" value="{csrf}"><button>Sign out</button></form>'
+            '</div></details></nav>')
 
 
 def site_file(cfg, path):
@@ -438,7 +444,7 @@ def shell(cfg, login, title, body, message=""):
             f'<title>{e(title)}: MadSuite benchmarks</title><script src="{r}/theme.js"></script>'
             f'<link rel="stylesheet" href="{r}/bootstrap.min.css"><link rel="stylesheet" href="{r}/style.css"><body>'
             f'<header class="site"><div class="container"><a class="brand" href="{e(cfg.base)}/">MadSuite benchmarks</a>'
-            f'{app_nav(cfg, login)}<button id="theme" type="button" aria-label="Switch between light and dark">Theme</button></div></header>'
+            f'{app_nav(cfg, login)}</div></header>'
             f'<main class="container py-3">{note}{body}</main></body></html>')
 
 
