@@ -16,8 +16,9 @@ julia --project test/runtests.jl
 request, or `run-<name>` per manual run, whose `run.json` also gives a `title`, kept up to date by the benchmark job, which replaces `run.json` in it after every copy.
 `SITE/version.json` names the commit of this code once it has built everything.
 `CLONE` is a clone of the benchmarked repository with `origin/benchmark-results`, the archive of
-results; `bin/serve.jl` never fetches it. The result format and the benchmark itself are defined
-in [MadNLP.jl](https://github.com/madsuite-org/MadNLP.jl), under `benchmark/`.
+results, or with `--archive=CLONE2 --archive-url=URL` that archive is in another repository, as
+MadNLP's is in [MadNLPBenchmark.jl](https://github.com/madsuite-org/MadNLPBenchmark.jl); `bin/serve.jl` never fetches it. The result format and the benchmark itself are defined
+in [MadNLPBenchmark.jl](https://github.com/madsuite-org/MadNLPBenchmark.jl).
 
 A pull request from this repository gets a preview on GitHub Pages, linked in a comment. It is
 built by `bin/preview.jl` from the results in `sample/`, which are a copy of real results.
