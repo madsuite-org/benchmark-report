@@ -99,6 +99,10 @@ end
         @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cpu-smoke.html"), String))
         # the result files are left as they were
         @test occursin(",900,", read(joinpath(site, "data", "machine", "smoke_default.csv"), String))
+        # a limit stated by the run wins
+        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 1000.0\n")
+        write_report(site, results; wall = 7200.0, finished = true)
+        @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
     end
 end
 
