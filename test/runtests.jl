@@ -63,8 +63,8 @@ end
         write(joinpath(other, "smoke_default.csv.meta.toml"), replace(meta, "device = \"cuda\"" => "device = \"cpu\""))
         write_report(site, results; wall = 60.0, finished = true)
         index = read(joinpath(site, "index.html"), String)
-        @test occursin("1/2 problems", index)
-        @test occursin("2/2 problems", index)
+        @test occursin("<td>1/2</td>", index)
+        @test occursin("<td>2/2</td>", index)
     end
 end
 
@@ -81,7 +81,7 @@ end
         path = joinpath(other, "second_default.csv")
         BenchmarkReport.add!(reference, "second", "ipopt", BenchmarkReport.read_meta(path), BenchmarkReport.read_results(path))
         write_report(site, results; wall = 60.0, finished = true, reference)
-        @test occursin("0/1 problems", read(joinpath(site, "index.html"), String))
+        @test occursin("<td>0/1</td>", read(joinpath(site, "index.html"), String))
     end
 end
 
