@@ -19,3 +19,4 @@ jobs:
           version: "1.13"
       - run: julia --project -e 'using Pkg; Pkg.instantiate()'
       - run: julia --project test/runtests.jl
+      - run: python3 -m unittest discover -s queue
