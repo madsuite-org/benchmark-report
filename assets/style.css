@@ -1,22 +1,48 @@
+:root{--ink:#0b0b0b;--ink2:#52514e;--line:#e4e3df;--line2:#d6d5cf;--paper:#fcfcfb;--band:#1f2a37;--link:#1c5fb0;--bad:#b3261e}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
-body{font-size:14px;color:#0b0b0b;background:#fcfcfb}
-h1,h2,h3{font-weight:600;line-height:1.25}h1{font-size:24px;margin:1em 0 .4em}h2{font-size:19px;margin:1.6em 0 .4em}h3{font-size:16px;margin:1.2em 0 .4em;color:#52514e}
+body{font-size:15px;color:var(--ink);background:var(--paper)}
+main{padding-bottom:3em}
+h1,h2,h3{font-weight:600;line-height:1.25}h1{font-size:24px;margin:1em 0 .5em}h2{font-size:19px;margin:1.7em 0 .5em}
 p{margin:.4em 0}ul{margin:.4em 0;padding-left:1.4em}
-a{color:#1c5fb0;text-decoration:none}a:hover{text-decoration:underline}
+a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
+.m{color:var(--ink2)}
+.site{background:var(--band);color:#fff;padding:.55em 0}
+.site .container{display:flex;gap:.7em;align-items:baseline;flex-wrap:wrap}
+.site a{color:#fff}.brand{font-size:18px;font-weight:600}
+.trail{color:#c7ced6}.trail:before{content:"/";margin-right:.7em;color:#8b95a1}
+.bar{position:sticky;top:0;z-index:3;background:var(--paper);border-bottom:1px solid var(--line2);padding:.45em 0}
+.bar .line{margin-bottom:.15em}
+.bar nav{display:flex;gap:1.1em;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:.15em 0}
+.bar nav a{padding:.1em 0}.bar nav a.active{color:var(--ink);font-weight:600;border-bottom:2px solid var(--ink)}
+.tag{min-width:3.4em;text-align:center;border-radius:3px;padding:0 6px;font-weight:600;background:#ecebe6;color:var(--ink);flex:none}
+.state{display:inline-block;border-radius:3px;padding:0 7px;font-size:13px;font-weight:600}
+.state.on{background:#ddeafa;color:#14488a}.state.off{background:#ecebe6;color:var(--ink2)}
+.state.on:before{content:"● ";font-size:10px;vertical-align:1px}
 .wide{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:1em}
 table{border-collapse:collapse;font-variant-numeric:tabular-nums}
-td,th{padding:3px 8px;border-bottom:1px solid #e4e3df;text-align:right;white-space:nowrap}td:first-child,th:first-child,td.l,th.l{text-align:left}
-th{color:#52514e;font-weight:600}th.s{cursor:pointer}tbody tr:hover td{background:#f3f2ee}
-.m{color:#52514e}.fail{font-weight:600}svg text{font-size:14px;fill:#52514e}
-svg{display:block;width:100%;max-width:620px;height:auto}
-.key{display:inline-block;margin-right:1.2em}.key i{display:inline-block;width:14px;height:3px;border-radius:2px;margin:0 6px 3px 0}
-.prof{position:relative;display:inline-block;vertical-align:top;width:100%;max-width:620px;margin:0 1.5em 1em 0}
-.tip{position:absolute;display:none;pointer-events:none;background:#fff;border:1px solid #d6d5cf;border-radius:4px;padding:4px 8px;white-space:nowrap}
-.bar{position:sticky;top:0;z-index:2;background:#fcfcfb;border-bottom:1px solid #d6d5cf;padding:.45em 0}
-.bar .title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bar .title b{font-size:20px}.bar .title b a[href="index.html"]{color:#0b0b0b}
-.bar nav{display:flex;gap:1.1em;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}.bar nav.tools{margin-bottom:.5em}
-input{font:inherit;width:100%;max-width:20em;padding:3px 8px;margin-bottom:8px;border:1px solid #d6d5cf;border-radius:4px}
-table.cases td.l,table.cases th.l{border-left:2px solid #b8b7b1}
-table.summary{min-width:26em}table.summary tr.set td{font-weight:600}.tag{min-width:3.4em;text-align:center;border-radius:3px;padding:0 6px;font-weight:600;flex:none}
-table.summary tr.cpu td{background:#e3eefb}table.summary tr.cuda td{background:#dff3e8}.cpu a,a.cpu{color:#1c5fb0}.cuda a,a.cuda{color:#0f7b4f}.tag.cpu{background:#e3eefb;color:#1c5fb0}.tag.cuda{background:#dff3e8;color:#0f7b4f}
-table.summary tr.set .m{font-weight:400;margin-left:.6em}
+.table{--bs-table-bg:transparent;margin-bottom:0}
+td,th{padding:4px 9px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+td:first-child,th:first-child,td.l,th.l{text-align:left}
+th{color:var(--ink2);font-weight:600;vertical-align:bottom}th.s{cursor:pointer;user-select:none}
+tbody tr:hover td{background:#f3f2ee}
+td.g,th.g{border-left:2px solid var(--line2)}th.g:first-child{text-align:right}thead tr:first-child th.g{text-align:center}th.g .key{margin:0}
+.fail,.fail a{color:var(--bad);font-weight:600}
+.key{display:inline-block;margin-right:1.2em;white-space:nowrap}
+.key i,.tip i{display:inline-block;width:14px;height:4px;border-radius:2px;margin:0 6px 3px 0}
+.files{list-style:none;padding:0}.files li{padding:2px 0}
+.tiles{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:1.2em}
+.tile{flex:1 1 200px;max-width:320px;border:1px solid var(--line2);border-radius:6px;padding:.6em .8em;background:#fff}
+.big{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}.big small{font-size:16px;font-weight:400;color:var(--ink2)}
+.meter{height:6px;border-radius:3px;background:#ecebe6;margin:.3em 0;overflow:hidden}.meter i{display:block;height:100%;background:#2a78d6;border-radius:3px}
+.profiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:1.5em}
+.prof{position:relative;min-width:0}
+svg{display:block;width:100%;height:auto;touch-action:pan-y}svg text{font-size:14px;fill:var(--ink2)}
+.tip{position:absolute;z-index:2;display:none;pointer-events:none;background:#fff;border:1px solid var(--line2);border-radius:4px;padding:4px 8px;white-space:nowrap;font-size:14px}
+input{font:inherit;width:100%;max-width:20em;padding:4px 8px;margin-bottom:8px;border:1px solid var(--line2);border-radius:4px}
+.only{display:inline-block;margin:0 0 8px 1em;white-space:nowrap}.only input{width:auto;margin:0 .35em 0 0}
+.scroll{max-height:80vh;overflow:auto;border:1px solid var(--line);border-radius:4px}
+table.cases thead th{position:sticky;top:0;background:var(--paper);z-index:1}table.cases thead tr+tr th{top:29px}
+table.cases td:first-child,table.cases th:first-child{position:sticky;left:0;background:var(--paper);max-width:40vw;overflow:hidden;text-overflow:ellipsis}
+table.cases thead th:first-child{z-index:2}
+table.cases td.l,table.cases th.l{border-left:2px solid var(--line2)}
+@media(max-width:576px){body{font-size:14px}h1{font-size:21px}.bar{position:static}td,th{padding:4px 6px}.tile{max-width:none}}

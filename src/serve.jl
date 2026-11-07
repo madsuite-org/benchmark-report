@@ -41,8 +41,8 @@ function build_run(live, site, name)
         joinpath(site, name), joinpath(live, name);
         base = occursin(r"^[0-9a-f]{40}$", base) ? locate(base, "master") : nothing,
         reference = ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
-        title = "MadNLP benchmark report (pr #$pr)", link = "https://github.com/$repository/pull/$pr",
-        finished = state != "running", assets = "..",
+        title = "Pull request #$pr", link = "https://github.com/$repository/pull/$pr",
+        finished = state != "running", assets = "..", live = true,
     )
     updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
     RUNS[name] = (; name, pr, commit = json_field(text, "commit"), state, updated, mtime = changed)
@@ -91,7 +91,7 @@ function build_archive(site)
             for m in mine
                 write(joinpath(mkpath(joinpath(root, m[2])), m[4]), read(git_command("show", "origin/$ARCHIVE_BRANCH:$(m[2])/$commit/$(m[4])")))
             end
-            write_report(target, root; reference = ipopt_reference(benchmark_version(root)), title = "MadNLP benchmark report (" * first(commit, 8) * ")", finished = true, assets = "../..")
+            write_report(target, root; reference = ipopt_reference(benchmark_version(root)), title = "Commit " * first(commit, 8), link = "https://github.com/$DEFAULT_REPOSITORY/commit/$commit", finished = true, assets = "../..")
         end
         write_atomic(record, built)
     end
