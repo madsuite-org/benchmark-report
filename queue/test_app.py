@@ -121,6 +121,15 @@ class TestQueue(Base):
         self.assertEqual((nxt["pr"], nxt["sha"], nxt["keep"]), (7, "f" * 40, True))
         self.assertIn("not open", self.q.update(9, "alice", keep=True))
 
+    def test_recent_shows_a_pull_request_once(self):
+        self.q.add_pr(7, "alice")
+        first = self.q.take(); self.q.report(first["id"], "failed")
+        self.q.add_pr(7, "alice")
+        second = self.q.take(); self.q.report(second["id"], "finished")
+        self.assertEqual([j["id"] for j in app.recent(self.q)], [second["id"]])
+        self.q.add_pr(7, "alice")           # queued again: not in recent at all
+        self.assertEqual(app.recent(self.q), [])
+
     def test_state_survives_a_restart(self):
         self.q.add_pr(7, "alice")
         again = app.Queue(self.cfg, self.gh)
@@ -465,6 +474,20 @@ class TestSite(Base):
         open(run, "w").write('{"state":"finished"}')
         os.utime(run, (old, old))
         self.assertNotIn("stalled", self.get("/madnlp/pr-1/")[2])
+
+    def test_workers_are_read_live(self):
+        live = os.path.join(self.dir, "live")
+        os.makedirs(os.path.join(live, "pr-1", "Some_GPU"))
+        summary = os.path.join(live, "pr-1", "Some_GPU", "summary.md")
+        open(summary, "w").write("```\nstatus after 3 min: 5 of 9 instances done\n  worker 2: solving cutest/<b>X for 12 s, 1.5 GB\n```\n")
+        self.cfg.live_local = live
+        code, _, page = self.get("/madnlp/pr-1/workers.html")
+        self.assertEqual(code, 200)
+        self.assertIn("5 of 9 instances done", page)
+        self.assertIn("cutest/&lt;b&gt;X", page)
+        open(summary, "w").write("```\nstatus after 4 min: 6 of 9 instances done\n```\n")
+        self.assertIn("6 of 9", self.get("/madnlp/pr-1/workers.html")[2])
+        self.assertEqual(self.get("/madnlp/pr-9/workers.html")[0], 404)
 
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")

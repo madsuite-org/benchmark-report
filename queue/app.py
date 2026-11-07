@@ -484,6 +484,52 @@ def actions(cfg, q, login, j):
     return out
 
 
+def recent(q, n=30):
+    """Finished jobs, newest first, with only the latest of each pull request, and none of one that
+    is queued or running again."""
+    active = {(j["kind"], j.get("pr")) for j in q.jobs("waiting", "running") if j["kind"] == "pr"}
+    seen, out = set(), []
+    for j in reversed(q.jobs("finished", "failed", "cancelled", "skipped")):
+        key = (j["kind"], j.get("pr")) if j["kind"] == "pr" else ("master", j.get("sha"))
+        if key in seen or key in active:
+            continue
+        seen.add(key)
+        out.append(j)
+    return out[:n]
+
+
+WORKER = re.compile(r"worker (\d+): (\S+) (\S*) for (\d+) s, ([\d.]+) GB")
+
+
+def workers_page(cfg, login, name):
+    """What every worker of a run is on, read from its live folder when asked."""
+    e = html.escape
+    root = os.path.join(cfg.live_local, name)
+    body = f'<h1>Workers</h1><p class="m">Read live from the run, every few seconds. <a href="./">Back to the report</a></p>'
+    for machine in sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))):
+        try:
+            text = open(os.path.join(root, machine, "summary.md")).read()
+        except OSError:
+            continue
+        m = re.match(r"^```\n(.*?)\n```", text, re.S)
+        if not m:
+            continue
+        age = int(time.time() - os.stat(os.path.join(root, machine, "summary.md")).st_mtime)
+        rows, notes = [], []
+        for line in m[1].split("\n"):
+            w = WORKER.search(line)
+            if w:
+                rows.append("<tr>" + "".join(f'<td{" class=l" if i in (1, 2) else ""}>{e(x)}</td>' for i, x in enumerate(w.groups())) + "</tr>")
+            elif line.strip():
+                notes.append(f'<p class="m">{e(line.strip())}</p>')
+        body += (f'<h2>{e(machine.replace("_", " "))}</h2><p class="m">updated {age} s ago</p>' + "".join(notes)
+                 + ('<div class="wide"><table class="table table-sm"><thead><tr><th>worker</th><th class="l">state</th><th class="l">instance</th>'
+                    '<th>for (s)</th><th>memory (GB)</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>" if rows else ""))
+    page = shell(cfg, login, f"Workers of {name}", body)
+    # the page takes itself again, as the reports do
+    return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace("</main></body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)
+
+
 def jobs_page(cfg, q, login, message=""):
     e = html.escape
     def row(j):
@@ -496,7 +542,7 @@ def jobs_page(cfg, q, login, message=""):
                 '<th class="l">by</th><th>time (UTC)</th><th class="l"></th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
-    done = list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))[:30]
+    done = recent(q)
     bot = e(cfg.bots[0]) if cfg.bots else ""
     body = (f'<div class="d-flex align-items-center gap-3"><h1 class="me-auto">Jobs</h1>'
             f'<a class="btn btn-primary" href="{e(cfg.base)}/new">New job</a></div>'
@@ -645,6 +691,9 @@ def handler(cfg, q):
             """A page or file of the reports. A report's own banner gets the links of the signed-in user."""
             if path == "/":
                 return self.redirect(cfg.reports + "/")
+            m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/(pr-\d+|master-[0-9a-f]{8}|run-[a-z0-9-]+)/workers\.html", path)
+            if m and cfg.live_local and os.path.isdir(os.path.join(cfg.live_local, m[1])):
+                return self.send(200, workers_page(cfg, login, m[1]))
             target = site_file(cfg, path)
             if target is None:
                 return self.send(404, "Not found", kind="text/plain")
