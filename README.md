@@ -13,7 +13,7 @@ julia --project test/runtests.jl
 ```
 
 `RESULTS` holds one directory of result files per machine. `LIVE` holds a folder `pr-<N>` per pull
-request, kept up to date by the benchmark job, which replaces `run.json` in it after every copy.
+request, or `run-<name>` per manual run, whose `run.json` also gives a `title`, kept up to date by the benchmark job, which replaces `run.json` in it after every copy.
 `SITE/version.json` names the commit of this code once it has built everything.
 `CLONE` is a clone of the benchmarked repository with `origin/benchmark-results`, the archive of
 results; `bin/serve.jl` never fetches it. The result format and the benchmark itself are defined

@@ -199,21 +199,52 @@ end
         live, site = mkpath(joinpath(root, "live")), mkpath(joinpath(root, "site"))
         live_run(live, "pr-1", "running")
         # #7 has not been benchmarked yet: its results are unknown, and #6 stands in
-        @test !occursin("#7", BenchmarkReport.latest_merged(live, "1").label)
+        @test !occursin("#7", BenchmarkReport.latest_merged(live, "pr-1").label)
         live_run(live, "pr-7", "finished")
         run_json = joinpath(live, "pr-7", "run.json")
         write(run_json, replace(read(run_json, String), "b"^40 => head))
-        rs = BenchmarkReport.latest_merged(live, "1")
+        rs = BenchmarkReport.latest_merged(live, "pr-1")
         @test rs !== nothing && occursin("`dddddddd`, from #7, on machine (smoke)", rs.label)
         @test occursin("`$(first(older, 8))`, from #6, on machine (other)", rs.label)
         @test !occursin("elsewhere", rs.label)
         # a pull request is not its own master
-        @test !occursin("#7", BenchmarkReport.latest_merged(live, "7").label)
+        @test !occursin("#7", BenchmarkReport.latest_merged(live, "pr-7").label)
         reset_runs()
         BenchmarkReport.build_all(live, site)
         report = read(joinpath(site, "pr-1", "index.html"), String)
         @test occursin(">master<", report)
         @test occursin("from #7", report)
+    end
+end
+
+@testset "a manual run" begin
+    mktempdir() do root
+        _, clone, _ = archive_clone(root)
+        BenchmarkReport.REPOSITORY[] = clone
+        BenchmarkReport.FETCH[] = false
+        live, site = mkpath(joinpath(root, "live")), mkpath(joinpath(root, "site"))
+        dir = mkpath(joinpath(live, "run-try-this"))
+        hostile_results(dir)
+        write(joinpath(dir, "run.json"), """{"repository":"o/r","title":"<b>x try","commit":"$("b"^40)","state":"finished"}""")
+        write(joinpath(mkpath(joinpath(live, "other")), "run.json"), "{}")
+        reset_runs()
+        BenchmarkReport.build_all(live, site)
+        index = read(joinpath(site, "index.html"), String)
+        @test occursin("Manual runs", index) && occursin("href=\"run-try-this/\"", index)
+        @test !occursin("<b>x", index)
+        @test !occursin("Finished", index)
+        report = read(joinpath(site, "run-try-this", "index.html"), String)
+        @test occursin("Manual run: &lt;b&gt;x try", report)
+        @test occursin("o/r/commit/" * "b"^40, report)
+        @test !isdir(joinpath(site, "other"))
+        # a run of master from the queue, under its commit
+        dir = mkpath(joinpath(live, "master-bbbbbbbb"))
+        hostile_results(dir)
+        write(joinpath(dir, "run.json"), """{"repository":"o/r","pr":"","title":"master bbbbbbbb","commit":"$("b"^40)","state":"running"}""")
+        reset_runs()
+        BenchmarkReport.build_all(live, site)
+        @test occursin("Manual run: master bbbbbbbb", read(joinpath(site, "master-bbbbbbbb", "index.html"), String))
+        @test occursin("run-try-this", read(joinpath(site, "status.json"), String))
     end
 end
 
