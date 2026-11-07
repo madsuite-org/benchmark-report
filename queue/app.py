@@ -123,7 +123,7 @@ class Queue:
             return None, "Only pull requests from branches of the repository can be benchmarked."
         return p, None
 
-    def add_pr(self, pr, by):
+    def add_pr(self, pr, by, keep=True):
         p, problem = self.pull(pr)
         if problem:
             return problem
@@ -131,7 +131,7 @@ class Queue:
             if any(j.get("pr") == pr for j in self.jobs("waiting", "running")):
                 return "That pull request is already in the queue."
             self.data["jobs"].append({"id": self.data["next"], "kind": "pr", "pr": pr, "title": p.get("title", ""), "by": by,
-                                      "state": "waiting", "queued": int(time.time())})
+                                      "state": "waiting", "queued": int(time.time()), "keep": keep})
             self.data["next"] += 1
             self.save()
         return None
@@ -146,6 +146,26 @@ class Queue:
                                           "by": "push", "state": "waiting", "queued": int(time.time())})
                 self.data["next"] += 1
             self.save()
+
+    def update(self, pr, login, keep):
+        """Run pull request `pr` again at its head: in place of its waiting or running job, keeping
+        the results so far or starting over. A running job is stopped, and the new one goes first."""
+        p, problem = self.pull(pr)
+        if problem:
+            return problem
+        with self.changed:
+            for j in self.jobs("waiting", "running"):
+                if j.get("pr") == pr:
+                    if j["state"] == "waiting":
+                        j["keep"] = keep
+                        self.save()
+                        return None
+                    j["cancel"] = True
+            self.data["jobs"].append({"id": self.data["next"], "kind": "pr", "pr": pr, "title": p.get("title", ""), "by": login,
+                                      "state": "waiting", "queued": int(time.time()), "keep": keep, "first": True})
+            self.data["next"] += 1
+            self.save()
+        return None
 
     def cancel(self, job_id, login):
         with self.changed:
@@ -175,7 +195,7 @@ class Queue:
             if running:
                 return running[0]
             while True:
-                waiting = sorted(self.jobs("waiting"), key=lambda j: (j["kind"] != "master", j["id"]))
+                waiting = sorted(self.jobs("waiting"), key=order)
                 if not waiting:
                     return None
                 job = waiting[0]
@@ -206,6 +226,11 @@ class Queue:
     def wait(self, predicate, hold):
         with self.changed:
             self.changed.wait_for(predicate, timeout=hold)
+
+
+def order(job):
+    """Updated pull requests first, then master, then in the order queued."""
+    return (not job.get("first"), job["kind"] != "master", job["id"])
 
 
 def folder(job):
@@ -252,11 +277,16 @@ def page(cfg, q, login, message=""):
         report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
         state = {"running": '<span class="state on">running</span>'}.get(j["state"], e(j["state"]))
         when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(j.get("ended") or j.get("started") or j["queued"]))
+        update = ""
+        if j["kind"] == "pr" and allowed and not j.get("cancel"):
+            update = (f'<form method="post" action="update" class="update">{hidden}<input type="hidden" name="pr" value="{j["pr"]}">'
+                      '<span class="m">Update to the latest commit:</span> <button name="keep" value="1">keep the results so far</button> '
+                      '<button name="keep" value="0">start over</button></form>')
         cancel = ""
         if j["state"] in ("waiting", "running") and allowed and (admin or j["by"].lower() == login.lower()) and not j.get("cancel"):
             cancel = f'<form method="post" action="cancel">{hidden}<input type="hidden" name="id" value="{j["id"]}"><button>Cancel</button></form>'
         return (f'<tr><td><a href="{link}">{e(name)}</a></td><td class="l">{e(j.get("title", ""))}</td><td class="l">{e(j["by"])}</td>'
-                f'<td class="l">{state}{" (cancelling)" if j.get("cancel") else ""}</td><td>{when}</td><td class="l">{report}</td><td>{cancel}</td></tr>')
+                f'<td class="l">{state}{" (cancelling)" if j.get("cancel") else ""}</td><td>{when}</td><td class="l">{report}</td><td>{cancel}{update}</td></tr>')
 
     def table(title, jobs):
         if not jobs:
@@ -265,7 +295,7 @@ def page(cfg, q, login, message=""):
                 '<th class="l">queued by</th><th class="l">state</th><th>time (UTC)</th><th class="l"></th><th></th></tr></thead><tbody>'
                 + "".join(row(j) for j in jobs) + "</tbody></table></div>")
 
-    queue = q.jobs("running") + sorted(q.jobs("waiting"), key=lambda j: (j["kind"] != "master", j["id"]))
+    queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
     done = list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))[:20]
     if allowed:
         form = (f'<p>Signed in as {e(login)}. <form method="post" action="logout" style="display:inline">{hidden}<button>Sign out</button></form></p>'
@@ -347,7 +377,7 @@ def handler(cfg, q):
                 job = q.take()
                 if job is None:
                     return self.send(204, kind="text/plain")
-                return self.send(200, json.dumps({k: job.get(k) for k in ("id", "kind", "pr", "sha")} | {"folder": folder(job)}), kind="application/json")
+                return self.send(200, json.dumps({k: job.get(k) for k in ("id", "kind", "pr", "sha")} | {"folder": folder(job), "keep": job.get("keep", True)}), kind="application/json")
             if path == "/queue/runner/cancel":
                 if not self.runner():
                     return self.send(401, "", kind="text/plain")
@@ -394,6 +424,12 @@ def handler(cfg, q):
                 if not pr.isdigit() or len(pr) > 7:
                     return self.send(400, page(cfg, q, login, "Give the number of a pull request."))
                 problem = q.add_pr(int(pr), login)
+                return self.send(400, page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
+            if self.path == "/queue/update":
+                pr = get("pr")
+                if not pr.isdigit():
+                    return self.send(400, page(cfg, q, login, "Give the number of a pull request."))
+                problem = q.update(int(pr), login, get("keep") != "0")
                 return self.send(400, page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
             if self.path == "/queue/cancel":
                 job_id = get("id")

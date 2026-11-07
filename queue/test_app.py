@@ -93,6 +93,25 @@ class TestQueue(Base):
         self.assertEqual(running["state"], "running")   # the runner stops it
         self.assertTrue(running["cancel"])
 
+    def test_update(self):
+        self.q.add_master("d" * 40)
+        self.q.add_pr(7, "alice")
+        waiting = self.q.jobs("waiting")[1]
+        self.assertIsNone(self.q.update(7, "alice", keep=False))      # waiting: only the choice changes
+        self.assertEqual((len(self.q.jobs("waiting")), waiting["keep"]), (2, False))
+        self.q.take()                                                 # master runs
+        self.q.report(self.q.jobs("running")[0]["id"], "finished")
+        running = self.q.take()
+        self.assertEqual(running["pr"], 7)
+        self.q.add_master("e" * 40)
+        self.gh.pulls[7] = ("open", REPO, "f" * 40, "Seven")
+        self.assertIsNone(self.q.update(7, "alice", keep=True))       # running: stopped, and the update goes first
+        self.assertTrue(running["cancel"])
+        self.q.report(running["id"], "cancelled")
+        nxt = self.q.take()
+        self.assertEqual((nxt["pr"], nxt["sha"], nxt["keep"]), (7, "f" * 40, True))
+        self.assertIn("not open", self.q.update(9, "alice", keep=True))
+
     def test_state_survives_a_restart(self):
         self.q.add_pr(7, "alice")
         again = app.Queue(self.cfg, self.gh)
