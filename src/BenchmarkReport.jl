@@ -206,21 +206,23 @@ function from_archive(rev; depth = 200)
     return ResultSet(label, rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
 end
 
-# The newest archived results of each machine in the result folder `root`, for a run with no
-# archived ancestor, leaving out the run's own `commit`. Timings are only comparable on the same
-# machine. `nothing` if there are none.
-function latest_archived(root, commit = "")
+# The results of the latest merged pull request: per machine in the result folder `root`, the
+# newest archived commit that has reached master, leaving out the run's own `commit`. A pull
+# request is archived at its head, off the first-parent history of master, so `from_archive` does
+# not find it. Timings are only comparable on the same machine. `nothing` if there are none.
+function latest_merged(root, commit = "")
     archive = archive_revision()
     archive === nothing && return nothing
     paths = split(git("ls-tree", "-r", "--name-only", archive), '\n'; keepempty = false)
     show(path) = read(git_command("show", "$archive:$path"), String)
-    # a commit the clone does not have counts as the oldest
-    time(sha) = something(tryparse(Int, try git("log", "-1", "--format=%ct", sha) catch; "0" end), 0)
+    merged(sha) = success(git_command("merge-base", "--is-ancestor", sha, "origin/master"))
+    time(sha) = parse(Int, git("log", "-1", "--format=%ct", sha))
     rs, used = ResultSet(""), String[]
     for machine in filter(d -> isdir(joinpath(root, d)), readdir(root))
         files = [m for m in (match(r"^([^/]+)/([0-9a-f]{40})/([a-z]+)_(.+)\.csv$", p) for p in paths) if m !== nothing && m[1] == machine && m[2] != commit]
-        isempty(files) && continue
-        newest = argmax(time, unique!([String(m[2]) for m in files]))
+        commits = filter(merged, unique!([String(m[2]) for m in files]))
+        isempty(commits) && continue
+        newest = argmax(time, commits)
         for m in files
             m[2] == newest || continue
             path = String(m.match)
