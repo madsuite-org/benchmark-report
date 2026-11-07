@@ -11,6 +11,8 @@ a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 .m{color:var(--ink2)}
 .site{background:var(--band);color:#fff;padding:.55em 0}
 .site .container{display:flex;gap:.7em;align-items:baseline;flex-wrap:wrap}
+.site nav.app{display:flex;gap:.9em;align-items:center;flex-wrap:wrap;margin-left:auto}.site nav.app form{margin:0}.site nav.app a.btn-light{color:#1f2a37}.site .who{color:#c7ced6}
+.site nav.app+#theme{margin-left:.4em}
 #theme{margin-left:auto;background:none;border:1px solid #6b7683;border-radius:4px;color:#fff;font-size:13px;padding:1px 8px;cursor:pointer}
 .site a{color:#fff}.brand{font-size:18px;font-weight:600}
 .trail{color:#c7ced6}.trail:before{content:"/";margin-right:.7em;color:#8b95a1}

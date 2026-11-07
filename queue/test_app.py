@@ -28,6 +28,10 @@ class FakeGitHub:
             return {"state": state, "head": {"repo": {"full_name": head}, "sha": sha}, "title": title}
         if "/collaborators/" in path:
             return {"permission": self.perms.get(path.split("/")[-2], "none")}
+        if path.startswith(f"/repos/{REPO}/pulls?"):
+            return getattr(self, "open", [])
+        if path == f"/repos/{REPO}/commits/master":
+            return {"sha": "9" * 40}
         if "/statuses/" in path:
             self.statuses.append((path.rsplit("/", 1)[1], body["state"], body["target_url"]))
             return {}
@@ -35,6 +39,11 @@ class FakeGitHub:
 
     def user(self, code):
         return self.users.get(code)
+
+    def login_of(self, token):
+        if token not in {"tok-alice": 1, "tok-eve": 1}:
+            raise urllib.error.HTTPError("/user", 401, "", {}, None)
+        return token[4:]
 
 
 class Base(unittest.TestCase):
@@ -226,13 +235,78 @@ class TestServer(Base):
         forged = app.new_session(self.cfg, "alice")[:-1] + "0"
         self.assertIsNone(app.session(self.cfg, forged))
 
-    def test_page_escapes_titles(self):
+    def get(self, path, login=None):
+        headers = {"Cookie": f"s={app.new_session(self.cfg, login)}"} if login else {}
+        code, _, data = self.request("GET", path, headers=headers)
+        return code, data.decode()
+
+    def test_only_members_see_the_app(self):
         self.gh.pulls[7] = ("open", REPO, "a" * 40, "<script>x</script>")
         self.q.add_pr(7, "alice")
-        page = self.request("GET", "/queue/")[2].decode()
+        for path in ("/queue/", "/queue/new", "/queue/job/1"):
+            code, page = self.get(path)
+            self.assertEqual(code, 200)
+            self.assertIn("Sign in with GitHub", page)
+            self.assertNotIn("script&gt;x", page)        # nothing of the queue before signing in
+            self.assertEqual(self.get(path, "eve")[0], 403)
+        code, page = self.get("/queue/", "alice")
         self.assertIn("&lt;script&gt;", page)
         self.assertNotIn("<script>x", page)
-        self.assertIn("Sign in with GitHub", page)
+        self.assertIn("New job", page)
+        code, page = self.get("/queue/job/1", "alice")
+        self.assertIn("Update, start over", page)
+        self.assertEqual(self.get("/queue/job/99", "alice")[0], 404)
+
+    def test_new_job(self):
+        self.gh.open = [{"number": 7, "title": "Seven", "head": {"ref": "b7", "repo": {"full_name": REPO}}},
+                        {"number": 8, "title": "Fork", "head": {"ref": "b8", "repo": {"full_name": "fork/r"}}}]
+        page = self.get("/queue/new", "alice")[1]
+        self.assertIn("#7 Seven (b7)", page)
+        self.assertNotIn("Fork", page)
+        def post(fields):
+            fields = {"csrf": app.sign(self.cfg, "csrf|alice"), **fields}
+            body = "&".join(f"{k}={v}" for k, v in fields.items()).encode()
+            return self.request("POST", "/queue/new", body, {"Cookie": f"s={app.new_session(self.cfg, 'alice')}", "Content-Length": str(len(body))})
+        self.assertEqual(post({"what": "7", "keep": "0"})[0], 303)
+        self.assertEqual(post({"what": "master"})[0], 303)
+        self.assertEqual(post({"what": "8"})[0], 400)
+        jobs = self.q.jobs("waiting")
+        self.assertEqual([(j["kind"], j.get("pr"), j["keep"] if j["kind"] == "pr" else None, j["by"]) for j in jobs],
+                         [("pr", 7, False, "alice"), ("master", None, None, "alice")])
+        self.assertEqual(jobs[1]["sha"], "9" * 40)
+
+    def call_api(self, method, path, data=None, token=None, kind="application/json"):
+        body = b"" if data is None else json.dumps(data).encode()
+        headers = {"Content-Length": str(len(body)), "Content-Type": kind}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        code, _, out = self.request(method, path, body, headers)
+        return code, json.loads(out)
+
+    def test_api(self):
+        self.assertEqual(self.call_api("GET", "/queue/api/jobs")[0], 401)
+        self.assertEqual(self.call_api("GET", "/queue/api/jobs", token="forged")[0], 401)
+        self.assertEqual(self.call_api("GET", "/queue/api/me", token="tok-eve")[1], {"login": "eve", "permission": "read", "can_run": False})
+        self.assertEqual(self.call_api("GET", "/queue/api/jobs", token="tok-eve")[0], 403)
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": 7}, token="tok-alice", kind="text/plain")[0], 415)
+        code, job = self.call_api("POST", "/queue/api/jobs", {"pr": 7, "keep": False}, token="tok-alice")
+        self.assertEqual((code, job["pr"], job["state"], job["keep"], job["by"]), (201, 7, "waiting", False, "alice"))
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": 8}, token="tok-alice")[0], 400)   # a fork
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": "7"}, token="tok-alice")[0], 400)
+        code, master = self.call_api("POST", "/queue/api/jobs", {"master": True}, token="tok-alice")
+        self.assertEqual((code, master["sha"]), (201, "9" * 40))
+        code, listed = self.call_api("GET", "/queue/api/jobs", token="tok-alice")
+        self.assertEqual([j["id"] for j in listed["jobs"]], [master["id"], job["id"]])   # master first
+        self.assertEqual(self.call_api("GET", f"/queue/api/jobs/{job['id']}", token="tok-alice")[1]["title"], "Seven")
+        self.assertEqual(self.call_api("GET", "/queue/api/jobs/99", token="tok-alice")[0], 404)
+        code, updated = self.call_api("POST", "/queue/api/pulls/7/update", {"keep": True}, token="tok-alice")
+        self.assertEqual((code, updated["jobs"][0]["keep"]), (200, True))
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{job['id']}/cancel", {}, token="tok-alice")[1]["state"], "cancelled")
+        self.assertEqual(self.call_api("GET", "/queue/api/nothing", token="tok-alice")[0], 404)
+        # the session of the app works too
+        headers = {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"}
+        code, _, out = self.request("GET", "/queue/api/me", headers=headers)
+        self.assertEqual(json.loads(out)["login"], "alice")
 
     def test_login(self):
         code, headers, _ = self.request("GET", "/queue/login")
