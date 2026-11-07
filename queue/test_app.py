@@ -3,7 +3,7 @@
     python3 -m unittest discover -s queue
 """
 
-import hashlib, hmac, http.client, json, os, sys, tempfile, threading, time, unittest, urllib.error
+import hashlib, hmac, http.client, http.server, json, os, sys, tempfile, threading, time, unittest, urllib.error
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -152,6 +152,26 @@ class TestQueue(Base):
             self.assertTrue(app.command(self.cfg, body), body)
         for body in no:
             self.assertFalse(app.command(self.cfg, body), body)
+
+
+class TestGitHubCall(unittest.TestCase):
+    def test_json_bodies_say_so(self):
+        seen = {}
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+            def do_POST(self):
+                seen["type"] = self.headers.get("Content-Type")
+                seen["body"] = self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"{}")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            gh = app.GitHub(app.Config({}))
+            gh.call("POST", "", {"code": "x"}, url=f"http://127.0.0.1:{server.server_address[1]}/")
+            self.assertEqual((seen["type"], json.loads(seen["body"])), ("application/json", {"code": "x"}))
+        finally:
+            server.shutdown()
 
 
 class TestDispatcher(Base):
