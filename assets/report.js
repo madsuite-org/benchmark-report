@@ -18,8 +18,11 @@ const key=r=>{const v=r.cells[i].textContent,n=parseFloat(v);return isNaN(n)?v:n
 }
 bind();
 // while a run is going, take the page again every two seconds and swap its content in place
+// the browser asks the server whether the page has changed, and downloads it only if so
+let seen;
 if(document.querySelector('meta[name=live]'))setInterval(async()=>{
-const r=await fetch(location.href,{cache:'no-store'});if(!r.ok)return;
+const r=await fetch(location.href,{cache:'no-cache'});if(!r.ok)return;
+const v=r.headers.get('etag')||r.headers.get('last-modified');if(v&&v===seen)return;seen=v;
 const d=new DOMParser().parseFromString(await r.text(),'text/html'),q=document.querySelector('#filter')?.value;
 document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();
 if(q){const f=document.querySelector('#filter');f.value=q;f.dispatchEvent(new Event('input'))}
