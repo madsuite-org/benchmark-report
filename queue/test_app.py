@@ -519,6 +519,18 @@ class TestSite(Base):
         open(os.path.join(live, "pr-1", "run.json"), "w").write('{"state":"failed"}')
         self.assertIn("not running: it failed", self.get("/madnlp/pr-1/workers.html")[2])
 
+    def test_one_dashboard(self):
+        os.makedirs(os.path.join(self.cfg.site, "madnlp"), exist_ok=True)
+        open(os.path.join(self.cfg.site, "madnlp", "index.html"), "w").write('<html><header class="site">' + app.NAV + '</header><main class="container"><h2>Reports</h2></main></html>')
+        self.q.add_pr(7, "alice")
+        public = self.get("/madnlp/")[2]
+        self.assertNotIn("Recent jobs", public)                 # jobs are for members only
+        mine = self.get("/madnlp/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
+        self.assertLess(mine.index("Recent jobs"), mine.index("<h2>Reports</h2>"))
+        self.assertIn("Seven", mine)
+        code, headers, _ = self.get("/queue/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})
+        self.assertEqual((code, headers["Location"]), (303, "/madnlp/"))
+
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")
         self.cfg.builder = ["sh", "-c", f"echo x >> {mark}; sleep 30"]

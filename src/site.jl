@@ -534,10 +534,10 @@ function write_index(site, runs; repository)
     write_assets(site)
     code = "https://github.com/" * repository
     io = IOBuffer()
-    function run_table(title, selected)
+    function run_table(title, selected; sorted = true)
         isempty(selected) && return
         println(io, "<h2>", title, "</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
-        for r in sort(selected; by = r -> r.updated, rev = true)
+        for r in (sorted ? sort(selected; by = r -> r.updated, rev = true) : selected)
             commit = occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">$(first(r.commit, 8))</a>" : escape_html(first(r.commit, 8))
             println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(r.state), "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
         end
@@ -545,8 +545,8 @@ function write_index(site, runs; repository)
     end
     prs = [r for r in runs if !isempty(r.pr)]
     running, finished = [r for r in prs if r.state == "running"], [r for r in prs if r.state != "running"]
-    run_table("Running", running)
-    run_table("Finished", finished)
+    # one list of every report, running ones first; the jobs that make them are on the same page
+    run_table("Reports", vcat(sort(running; by = r -> r.updated, rev = true), sort(finished; by = r -> r.updated, rev = true)); sorted = false)
     run_table("Manual runs", [r for r in runs if isempty(r.pr)])
     paths = split(archive_git("ls-tree", "-r", "--name-only", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
     archived = [match(r"^([^/]+)/([0-9a-f]{40})/summary\.md$", p) for p in paths]

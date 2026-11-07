@@ -431,9 +431,8 @@ def app_nav(cfg, login):
         return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">☰</summary><div>'
                 f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a>{theme}</div></details></nav>')
     csrf = sign(cfg, "csrf|" + login)
-    return (f'<nav class="app"><a class="btn btn-sm btn-light" href="{e(cfg.base)}/new">New job</a>'
-            f'<details class="menu"><summary aria-label="Menu">{e(login)} ☰</summary><div>'
-            f'<a href="{e(cfg.base)}/">Jobs</a><a href="{e(cfg.reports)}/">Reports</a>{theme}'
+    return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">{e(login)} ☰</summary><div>'
+            f'<a href="{e(cfg.reports)}/">Dashboard</a><a href="{e(cfg.base)}/new">New job</a>{theme}'
             f'<form method="post" action="{e(cfg.base)}/logout"><input type="hidden" name="csrf" value="{csrf}"><button>Sign out</button></form>'
             '</div></details></nav>')
 
@@ -589,7 +588,8 @@ def workers_page(cfg, login, name):
     return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace("</main></body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)
 
 
-def jobs_page(cfg, q, login, message=""):
+def jobs_section(cfg, q):
+    """The jobs: what runs and waits, and what ran lately. On the dashboard, above the reports."""
     e = html.escape
     def row(j):
         report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
@@ -601,13 +601,17 @@ def jobs_page(cfg, q, login, message=""):
                 '<th class="l">by</th><th>time (UTC)</th><th class="l"></th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
-    done = recent(q)
     bot = e(cfg.bots[0]) if cfg.bots else ""
-    body = (f'<div class="d-flex align-items-center gap-3"><h1 class="me-auto">Jobs</h1>'
+    return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2>'
             f'<a class="btn btn-primary" href="{e(cfg.base)}/new">New job</a></div>'
             '<p class="m">One job runs at a time: updates first, then master, then in the order queued. '
             f'A comment <code>@{bot} benchmark</code> on a pull request also queues it.</p>'
-            + table("Queue", queue, "Nothing is running or waiting.") + table("Recent", done, "No jobs yet."))
+            + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
+            + table("Recent jobs", recent(q), "No jobs yet.").replace("<h2>", "<h3>").replace("</h2>", "</h3>"))
+
+
+def jobs_page(cfg, q, login, message=""):
+    body = jobs_section(cfg, q) + f'<p class="mt-3"><a href="{html.escape(cfg.reports)}/">All reports</a></p>'
     return shell(cfg, login, "Jobs", body, message)
 
 
@@ -754,6 +758,7 @@ def handler(cfg, q):
             return reply(404, {"error": "No such endpoint."})
 
         def report_page(self, path, login):
+            member_of = lambda who: bool(who) and q.permission(who) in WRITE
             """A page or file of the reports. A report's own banner gets the links of the signed-in user."""
             if path == "/":
                 return self.redirect(cfg.reports + "/")
@@ -780,6 +785,9 @@ def handler(cfg, q):
             data = open(target, "rb").read()
             if target.endswith(".html"):
                 data = data.replace(NAV.encode(), app_nav(cfg, login).encode(), 1)
+                if member_of(login) and os.path.realpath(target) == os.path.realpath(os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"), "index.html")):
+                    # one dashboard: the jobs above the reports
+                    data = data.replace(b'<main class="container">', b'<main class="container">' + jobs_section(cfg, q).encode(), 1)
                 parts = path.strip("/").split("/")
                 age = stalled(cfg, parts[1]) if len(parts) > 1 else None
                 if age is not None:
@@ -813,7 +821,7 @@ def handler(cfg, q):
                     job_id = path[len("/queue/job/"):]
                     j = next((j for j in q.data["jobs"] if job_id.isdigit() and j["id"] == int(job_id)), None)
                     return self.send(200, job_page(cfg, q, login, j)) if j else self.send(404, jobs_page(cfg, q, login, "There is no such job."))
-                return self.send(200, jobs_page(cfg, q, login))
+                return self.redirect(cfg.reports + "/") if cfg.site else self.send(200, jobs_page(cfg, q, login))
             if path == "/queue/login":
                 state = secrets.token_urlsafe(16)
                 url = "https://github.com/login/oauth/authorize?" + urllib.parse.urlencode(
