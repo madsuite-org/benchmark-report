@@ -55,6 +55,14 @@ end
 
 side_rows(side, cand, base, set) = get((side.base ? base : cand).rows, (side.key[1], set, side.key[2]), Dict{String, Any}())
 
+# GPU runs have a shorter limit on a solve. Every solver on a device's pages is held to that
+# device's limit, also in runs from before it: a longer solve counts as stopped at the limit. The
+# result files are left as they were.
+const GPU_WALL = 600.0
+device_wall(device, wall) = device in ("cuda", "amdgpu") ? min(wall, GPU_WALL) : wall
+capped(rows, wall) = Dict{String, Any}(c => r.t_total > wall ? merge(r, (; status = MAXIMUM_WALLTIME_EXCEEDED, t_total = wall)) : r for (c, r) in rows)
+page_rows(side, cand, base, set, device, wall) = capped(side_rows(side, cand, base, set), device_wall(device, wall))
+
 # What a performance profile compares, each on its own.
 const PROFILE_METRICS = ["Wall time" => (r -> max(r.t_total, 1.0e-3)), "Iterations" => (r -> max(r.iters, 1))]
 
@@ -113,7 +121,7 @@ on_device(sides, device) = [s for s in sides if s.key[1] == device || s.key[2] =
 key(s) = "<span class=\"key\"><i style=\"background:$(s.color)\"></i>$(escape_html(s.label))</span>"
 
 function device_profile(io, set, device, sides, cand, base, wall)
-    rows = [side_rows(s, cand, base, set) for s in sides]
+    rows = [page_rows(s, cand, base, set, device, wall) for s in sides]
     kept = [i for i in eachindex(sides) if !isempty(rows[i])]
     isempty(kept) && return
     if length(kept) < 2
@@ -182,14 +190,14 @@ function solver_table(io, sides, cand, base, code)
 end
 
 # One bar per device: how much of its sets has been run.
-function progress(io, devices, sets, sides, cand, base)
+function progress(io, devices, sets, sides, cand, base, wall)
     println(io, "<div class=\"tiles\">")
     for device in devices
         candidates = [s for s in sides if s.key[1] == device && s.key[2] != "ipopt"]
         mine = something(findfirst(s -> !s.base, candidates), 1) |> i -> candidates[i]
         done = solved_count = total = 0
         for set in sets
-            rows = side_rows(mine, cand, base, set)
+            rows = page_rows(mine, cand, base, set, device, wall)
             isempty(rows) && continue
             done += length(rows)
             solved_count += count(solved, values(rows))
@@ -214,12 +222,12 @@ function summary_table(io, blocks, sides, cand, base, wall)
     foreach(_ -> print(io, "<th class=\"g\">solved</th><th>SGM (s)</th><th>SSGM</th>"), labels)
     println(io, "</tr></thead><tbody>")
     for (set, device) in blocks
-        here = Dict(s.label => side_rows(s, cand, base, set) for s in on_device(sides, device))
+        here = Dict(s.label => page_rows(s, cand, base, set, device, wall) for s in on_device(sides, device))
         have = [l for l in labels if !isempty(get(here, l, Dict()))]
         isempty(have) && continue
         cases = collect(reduce(intersect, [Set(keys(here[l])) for l in have]))
         isempty(cases) && continue
-        means = Dict(l => sgm([score_time(here[l][c], wall) for c in cases]) + 10 for l in have)
+        means = Dict(l => sgm([score_time(here[l][c], device_wall(device, wall)) for c in cases]) + 10 for l in have)
         # Ipopt is the reference where it has run, else the best solver
         scale = haskey(means, "Ipopt") ? means["Ipopt"] : minimum(values(means))
         print(io, "<tr><td><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a></td><td class=\"l\">$(device_tag(device))</td><td>$(all(==("Ipopt"), have) ? 0 : length(cases))/$(set_size(cand, base, set))</td>")
@@ -350,7 +358,7 @@ end
 
 function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh, assets)
     sides = on_device(sides, device)
-    rows = [side_rows(s, cand, base, set) for s in sides]
+    rows = [page_rows(s, cand, base, set, device, wall) for s in sides]
     keep = [i for i in eachindex(sides) if !isempty(rows[i])]
     sides, rows = sides[keep], rows[keep]
     io = IOBuffer()
@@ -478,7 +486,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     finished || workers_page(site, root, bar, assets)
     io = IOBuffer()
     println(io, "<h1>Summary</h1>")
-    progress(io, devices, sets, sides, cand, base)
+    progress(io, devices, sets, sides, cand, base, wall)
     summary_table(io, [(set, device) for device in devices for set in sets], sides, cand, base, wall)
     println(io, "<h2>Solvers</h2>")
     solver_table(io, sides, cand, base, repository === nothing ? nothing : repository[1])
@@ -489,7 +497,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     versions = filter(!=("–"), unique!(collect(values(cand.harness))))
     println(io, "<p class=\"m\">Benchmark ", escape_html(join(versions, ", ")), ": the version fixes the instances, the options, Ipopt and HSL.</p>")
     base === nothing || println(io, "<p class=\"m\">Base: ", escape_html(base.label), "</p>")
-    println(io, "<p class=\"m\">SGM: shifted geometric mean of the solve time, with a shift of 10 s and a failure counting as ", round(Int, wall), " s, over the problems that all solvers shown have run. SSGM: the SGM scaled so that Ipopt, or the best solver where Ipopt has not run, is 1.</p>")
+    println(io, "<p class=\"m\">SGM: shifted geometric mean of the solve time, with a shift of 10 s and a failure counting as the time limit of a solve (CPU ", round(Int, wall), " s, GPU ", round(Int, device_wall("cuda", wall)), " s, for every solver on those pages), over the problems that all solvers shown have run. SSGM: the SGM scaled so that Ipopt, or the best solver where Ipopt has not run, is 1.</p>")
     page(joinpath(site, "index.html"), title, String(take!(io)), bar; refresh = live, assets)
     # for a check outside this machine that the report is alive
     write_atomic(joinpath(site, "status.json"), "{\"state\":\"$(finished ? "finished" : "running")\",\"updated\":\"$stamp\"}\n")

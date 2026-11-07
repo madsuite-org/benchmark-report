@@ -81,6 +81,27 @@ end
     end
 end
 
+@testset "a solve past the limit of a GPU counts as stopped there" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
+        hostile_results(results)
+        machine = joinpath(results, "machine")
+        lines = readlines(joinpath(machine, "smoke_default.csv"))
+        row = split(lines[2], ",")
+        row[findfirst(==("t_total"), split(lines[1], ","))] = "900"
+        write(joinpath(machine, "smoke_default.csv"), lines[1] * "\n" * join(row, ",") * "\n")
+        other = mkpath(joinpath(results, "other"))
+        cp(joinpath(machine, "smoke_default.csv"), joinpath(other, "smoke_default.csv"))
+        meta = read(joinpath(machine, "smoke_default.csv.meta.toml"), String)
+        write(joinpath(other, "smoke_default.csv.meta.toml"), replace(meta, "device = \"cuda\"" => "device = \"cpu\""))
+        write_report(site, results; wall = 7200.0, finished = true)
+        @test occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+        @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cpu-smoke.html"), String))
+        # the result files are left as they were
+        @test occursin(",900,", read(joinpath(site, "data", "machine", "smoke_default.csv"), String))
+    end
+end
+
 @testset "a device that has not run a set counts none of it" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
