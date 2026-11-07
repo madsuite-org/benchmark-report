@@ -3,7 +3,7 @@
     python3 -m unittest discover -s queue
 """
 
-import hashlib, hmac, http.client, http.server, json, os, sys, tempfile, threading, time, unittest, urllib.error
+import hashlib, hmac, http.client, http.server, json, os, sys, tempfile, threading, time, unittest, urllib.error, urllib.parse
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -18,6 +18,8 @@ class FakeGitHub:
         self.perms = {"alice": "write", "boss": "admin", "eve": "read"}
         self.statuses = []
         self.users = {"code-alice": "alice", "code-eve": "eve"}
+        self.branches = {"feature/x": "b" * 40}
+        self.commits = {"c0ffee1": ("c0ffee1" + "0" * 33, "behind"), "f0f0f0f": ("f0f0f0f" + "0" * 33, "diverged")}
 
     def api(self, method, path, body=None):
         if path.startswith(f"/repos/{REPO}/pulls/"):
@@ -26,6 +28,17 @@ class FakeGitHub:
                 raise urllib.error.HTTPError(path, 404, "", {}, None)
             state, head, sha, title = self.pulls[n]
             return {"state": state, "head": {"repo": {"full_name": head}, "sha": sha}, "title": title}
+        if path.startswith(f"/repos/{REPO}/branches/"):
+            name = urllib.parse.unquote(path.rsplit("/", 1)[1])
+            if name not in self.branches:
+                raise urllib.error.HTTPError(path, 404, "", {}, None)
+            return {"commit": {"sha": self.branches[name]}}
+        if path.startswith(f"/repos/{REPO}/compare/"):
+            ref = path.split("/compare/")[1].split("...")[0]
+            if ref not in self.commits:
+                raise urllib.error.HTTPError(path, 404, "", {}, None)
+            sha, status = self.commits[ref]
+            return {"status": status, "base_commit": {"sha": sha}}
         if "/collaborators/" in path:
             return {"permission": self.perms.get(path.split("/")[-2], "none")}
         if path.startswith(f"/repos/{REPO}/pulls?"):
@@ -129,6 +142,20 @@ class TestQueue(Base):
         self.assertEqual([j["id"] for j in app.recent(self.q)], [second["id"]])
         self.q.add_pr(7, "alice")           # queued again: not in recent at all
         self.assertEqual(app.recent(self.q), [])
+
+    def test_branches_and_commits(self):
+        job, problem = self.q.add_ref("feature/x", "alice")
+        self.assertIsNone(problem)
+        self.assertEqual((job["kind"], job["sha"], app.folder(job)), ("branch", None, "run-feature-x"))
+        self.assertIsNotNone(self.q.add_ref("feature/x", "alice")[1])        # already queued
+        job2, problem = self.q.add_ref("c0ffee1", "alice")
+        self.assertEqual((job2["kind"], job2["sha"][:7], app.folder(job2)), ("commit", "c0ffee1", "run-c0ffee10"))
+        self.assertIn("master's history", self.q.add_ref("f0f0f0f", "alice")[1])   # e.g. from a fork
+        for bad in ("no-such-branch", "../x", "a b", ""):
+            self.assertIsNotNone(self.q.add_ref(bad, "alice")[1], bad)
+        self.gh.branches["feature/x"] = "e" * 40                                # pushed while waiting
+        started = self.q.take()
+        self.assertEqual((started["kind"], started["sha"]), ("branch", "e" * 40))
 
     def test_state_survives_a_restart(self):
         self.q.add_pr(7, "alice")

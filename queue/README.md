@@ -47,11 +47,13 @@ with `Content-Type: application/json`.
 | `GET /queue/api/jobs/<id>` | one job |
 | `POST /queue/api/jobs` `{"pr": 705, "keep": true}` | queue a pull request; `keep: false` throws its earlier results away |
 | `POST /queue/api/jobs` `{"master": true}` | queue master at its latest commit |
+| `POST /queue/api/jobs` `{"branch": "name"}` | queue a branch of the repository, at its head when it starts |
+| `POST /queue/api/jobs` `{"commit": "sha"}` | queue a commit in master's history |
 | `POST /queue/api/jobs/<id>/cancel` | cancel a job you queued, or any as an admin |
 | `GET /queue/api/pulls` | the open pull requests that can be benchmarked |
 | `POST /queue/api/pulls/<n>/update` `{"keep": true}` | run a pull request again at its latest commit, first |
 
-A job has `id, kind, pr, sha, title, by, state, queued, started, ended, keep, cancelling, url,
+A job has `id, kind, pr, ref, sha, title, by, state, queued, started, ended, keep, cancelling, url,
 report`; `state` is `waiting`, `running`, `finished`, `failed`, `cancelled` or `skipped`.
 
 ```sh

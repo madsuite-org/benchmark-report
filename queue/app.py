@@ -174,6 +174,35 @@ class Queue:
         self._pulls = (mine, time.time() + 60)
         return mine
 
+    def add_ref(self, ref, by, keep=True):
+        """A run of a branch of the repository, at its head when the run starts, or of a commit on
+        master. Never anything from a fork: a commit must be in master's history."""
+        ref = ref.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", ref) or ".." in ref:
+            return None, "Give the name of a branch, or a commit."
+        try:
+            self.gh.api("GET", f"/repos/{self.cfg.repo}/branches/{urllib.parse.quote(ref, safe='')}")
+            kind, sha, title = "branch", None, ref
+        except urllib.error.HTTPError:
+            if not re.fullmatch(r"[0-9a-f]{7,40}", ref):
+                return None, f"There is no branch {ref} in the repository."
+            try:
+                found = self.gh.api("GET", f"/repos/{self.cfg.repo}/compare/{ref}...master")
+            except urllib.error.HTTPError:
+                return None, f"There is no commit {ref} in the repository."
+            if found.get("status") not in ("behind", "identical"):
+                return None, "Only commits in master's history can be benchmarked; for others, give their branch."
+            kind, sha, title = "commit", found["base_commit"]["sha"], ref[:12]
+        with self.changed:
+            if any(j["kind"] == kind and j.get("ref") == ref for j in self.jobs("waiting", "running")):
+                return None, "That is already in the queue."
+            job = {"id": self.data["next"], "kind": kind, "pr": None, "ref": ref, "sha": sha, "title": title, "by": by,
+                   "state": "waiting", "queued": int(time.time()), "keep": keep}
+            self.data["jobs"].append(job)
+            self.data["next"] += 1
+            self.save()
+        return job, None
+
     def add_master_now(self, by):
         """A run of master at its latest commit, asked for by someone."""
         sha = self.gh.api("GET", f"/repos/{self.cfg.repo}/commits/master")["sha"]
@@ -251,6 +280,13 @@ class Queue:
                         self.save()
                         continue
                     job["sha"] = p["head"]["sha"]
+                elif job["kind"] == "branch":
+                    try:
+                        job["sha"] = self.gh.api("GET", f"/repos/{self.cfg.repo}/branches/{urllib.parse.quote(job['ref'], safe='')}")["commit"]["sha"]
+                    except urllib.error.HTTPError:
+                        job["state"], job["note"], job["ended"] = "skipped", "The branch is gone.", int(time.time())
+                        self.save()
+                        continue
                 job["state"], job["started"] = "running", int(time.time())
                 self.save()
                 break
@@ -279,14 +315,20 @@ def order(job):
 
 def public(cfg, j):
     """A job as the API gives it."""
-    out = {k: j.get(k) for k in ("id", "kind", "pr", "sha", "title", "by", "state", "queued", "started", "ended", "note")}
+    out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note")}
     out |= {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
             "report": f"{cfg.reports}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
     return out
 
 
 def folder(job):
-    return f"pr-{job['pr']}" if job["kind"] == "pr" else f"master-{job['sha'][:8]}"
+    if job["kind"] == "pr":
+        return f"pr-{job['pr']}"
+    if job["kind"] == "branch":
+        return "run-" + (re.sub(r"[^a-z0-9]+", "-", job["ref"].lower()).strip("-")[:40] or "branch")
+    if job["kind"] == "commit":
+        return f"run-{job['sha'][:8]}"
+    return f"master-{job['sha'][:8]}"
 
 
 class Dispatcher:
@@ -467,7 +509,7 @@ def badge(j, cfg=None):
 
 
 def name(cfg, j):
-    return f'#{j["pr"]}' if j["kind"] == "pr" else "master"
+    return {"pr": f'#{j["pr"]}', "branch": j.get("ref", ""), "commit": (j.get("sha") or j.get("ref", ""))[:8]}.get(j["kind"], "master")
 
 
 def when(t):
@@ -493,10 +535,10 @@ def actions(cfg, q, login, j):
 def recent(q, n=30):
     """Finished jobs, newest first, with only the latest of each pull request, and none of one that
     is queued or running again."""
-    active = {(j["kind"], j.get("pr")) for j in q.jobs("waiting", "running") if j["kind"] == "pr"}
+    active = {(j["kind"], j.get("pr") or j.get("ref")) for j in q.jobs("waiting", "running") if j["kind"] != "master"}
     seen, out = set(), []
     for j in reversed(q.jobs("finished", "failed", "cancelled", "skipped")):
-        key = (j["kind"], j.get("pr")) if j["kind"] == "pr" else ("master", j.get("sha"))
+        key = (j["kind"], j.get("pr") or j.get("ref") or j.get("sha"))
         if key in seen or key in active:
             continue
         seen.add(key)
@@ -571,7 +613,9 @@ def jobs_page(cfg, q, login, message=""):
 
 def job_page(cfg, q, login, j):
     e = html.escape
-    link = (f'https://github.com/{cfg.repo}/pull/{j["pr"]}' if j["kind"] == "pr" else f'https://github.com/{cfg.repo}/commits/master')
+    link = (f'https://github.com/{cfg.repo}/tree/{urllib.parse.quote(j.get("ref", ""))}' if j["kind"] == "branch" else
+            f'https://github.com/{cfg.repo}/commit/{j.get("sha") or ""}' if j["kind"] == "commit" else
+            f'https://github.com/{cfg.repo}/pull/{j["pr"]}' if j["kind"] == "pr" else f'https://github.com/{cfg.repo}/commits/master')
     rows = [("Run", f'<a href="{link}">{e(name(cfg, j))}</a> {e(j.get("title", ""))}'), ("State", badge(j, cfg) + (f' {e(j["note"])}' if j.get("note") else "")),
             ("Commit", f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}"><code>{j["sha"][:8]}</code></a>' if j.get("sha") else "resolved when it starts"),
             ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
@@ -587,19 +631,21 @@ def job_page(cfg, q, login, j):
 def new_page(cfg, q, login, message=""):
     e = html.escape
     csrf = sign(cfg, "csrf|" + login)
-    options = '<option value="master">master, at its latest commit</option>'
+    options = '<option value="master">master, at its latest commit</option><option value="ref">A branch or a commit…</option>'
     for p in q.open_pulls():
         options += f'<option value="{p["number"]}">#{p["number"]} {e(p["title"])} ({e(p["branch"])})</option>'
     body = (f'<h1>New job</h1><form method="post" action="{e(cfg.base)}/new" class="card"><div class="card-body">'
             f'<input type="hidden" name="csrf" value="{csrf}">'
-            f'<label class="form-label" for="what">What to benchmark</label><select class="form-select mb-3" id="what" name="what">{options}</select>'
+            f'<label class="form-label" for="what">What to benchmark</label><select class="form-select mb-2" id="what" name="what">{options}</select>'
+            '<input class="form-control mb-3" name="ref" placeholder="Branch name, or a commit in master\'s history" '
+            'aria-label="Branch or commit, if chosen above">'
             '<fieldset class="mb-3"><legend class="form-label fs-6">If a report of this pull request exists</legend>'
             '<div class="form-check"><input class="form-check-input" type="radio" name="keep" id="keep1" value="1" checked>'
             '<label class="form-check-label" for="keep1">Keep its results, and solve only what is missing</label></div>'
             '<div class="form-check"><input class="form-check-input" type="radio" name="keep" id="keep0" value="0">'
             '<label class="form-check-label" for="keep0">Throw them away and start over</label></div></fieldset>'
-            '<p class="m">It runs the latest commit when the job starts, with the sets, configurations and limits of the benchmark. '
-            'Only pull requests from branches of the repository are listed.</p>'
+            '<p class="m">A pull request or branch runs its latest commit when the job starts, with the sets, configurations and limits '
+            'of the benchmark. Only pull requests and branches of the repository can run, never a fork.</p>'
             '<button class="btn btn-primary">Queue the job</button></div></form>')
     return shell(cfg, login, "New job", body, message)
 
@@ -682,9 +728,12 @@ def handler(cfg, q):
                 keep = bool(data.get("keep", True))
                 if data.get("master"):
                     return reply(201, public(cfg, q.add_master_now(login)))
+                if isinstance(data.get("branch") or data.get("commit"), str):
+                    job, problem = q.add_ref(data.get("branch") or data.get("commit"), login, keep)
+                    return reply(400, {"error": problem}) if problem else reply(201, public(cfg, job))
                 pr = data.get("pr")
                 if not isinstance(pr, int) or pr <= 0:
-                    return reply(400, {"error": 'Give {"pr": <number>} or {"master": true}.'})
+                    return reply(400, {"error": 'Give {"pr": <number>}, {"branch": "<name>"}, {"commit": "<sha>"} or {"master": true}.'})
                 problem = q.add_pr(pr, login, keep)
                 if problem:
                     return reply(400, {"error": problem})
@@ -843,6 +892,9 @@ def handler(cfg, q):
                 if what == "master":
                     q.add_master_now(login)
                     return self.redirect(cfg.base + "/")
+                if what == "ref":
+                    _, problem = q.add_ref(get("ref"), login, keep)
+                    return self.send(400, new_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
                 if not what.isdigit():
                     return self.send(400, new_page(cfg, q, login, "Choose what to benchmark."))
                 problem = q.add_pr(int(what), login, keep)
