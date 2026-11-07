@@ -511,7 +511,18 @@ def workers_page(cfg, login, name):
     """What every worker of a run is on, read from its live folder when asked."""
     e = html.escape
     root = os.path.join(cfg.live_local, name)
-    body = f'<h1>Workers</h1><p class="m">Read live from the run, every few seconds. <a href="./">Back to the report</a></p>'
+    try:
+        state = json.load(open(os.path.join(root, "run.json"))).get("state", "")
+    except (OSError, ValueError, AttributeError):
+        state = ""
+    age = stalled(cfg, name)
+    if state != "running":
+        note = f'<div class="alert alert-secondary">This run is not running: it {e(state or "has no state")}. The workers below are as it left them.</div>'
+    elif age is not None:
+        note = f'<div class="alert alert-warning">This run is stalled: no new data for {int(age // 60)} min. The workers below are as it left them.</div>'
+    else:
+        note = ""
+    body = f'<h1>Workers</h1><p class="m">Read live from the run, every few seconds. <a href="./">Back to the report</a></p>{note}'
     for machine in sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))):
         try:
             text = open(os.path.join(root, machine, "summary.md")).read()
@@ -769,7 +780,7 @@ def handler(cfg, q):
                     login = None
                 if not login:
                     return self.send(400, signin(cfg, "GitHub did not confirm the sign-in. Please try again."))
-                return self.redirect(cfg.base + "/", [("Set-Cookie", f"s={new_session(cfg, login)}; Path=/queue; HttpOnly; Secure; SameSite=Lax; Max-Age={14 * 86400}")])
+                return self.redirect(cfg.base + "/", [("Set-Cookie", f"s={new_session(cfg, login)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={14 * 86400}")])
             if path == "/queue/runner/next":
                 if not self.runner():
                     return self.send(401, "", kind="text/plain")
@@ -818,7 +829,7 @@ def handler(cfg, q):
             if not login or not hmac.compare_digest(get("csrf"), sign(cfg, "csrf|" + login)):
                 return self.send(403, signin(cfg, "Please sign in again."))
             if self.path == "/queue/logout":
-                return self.redirect(cfg.base + "/", [("Set-Cookie", "s=; Path=/queue; HttpOnly; Secure; SameSite=Lax; Max-Age=0")])
+                return self.redirect(cfg.base + "/", [("Set-Cookie", "s=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0")])
             if q.permission(login) not in WRITE:
                 return self.send(403, shell(cfg, login, "No access", "<p>Only people with write access to the repository can do that.</p>"))
             if self.path == "/queue/add":

@@ -393,6 +393,7 @@ class TestServer(Base):
         self.assertEqual(self.request("GET", "/queue/callback?code=code-alice&state=other", headers={"Cookie": f"o={state}"})[0], 400)
         code, headers, _ = self.request("GET", f"/queue/callback?code=code-alice&state={state}", headers={"Cookie": f"o={state}"})
         self.assertEqual(code, 303)
+        self.assertIn("Path=/;", headers["Set-Cookie"])     # the reports see who is signed in too
         cookie = headers["Set-Cookie"].split(";")[0].split("=", 1)[1]
         self.assertEqual(app.session(self.cfg, cookie), "alice")
 
@@ -488,6 +489,8 @@ class TestSite(Base):
         open(summary, "w").write("```\nstatus after 4 min: 6 of 9 instances done\n```\n")
         self.assertIn("6 of 9", self.get("/madnlp/pr-1/workers.html")[2])
         self.assertEqual(self.get("/madnlp/pr-9/workers.html")[0], 404)
+        open(os.path.join(live, "pr-1", "run.json"), "w").write('{"state":"failed"}')
+        self.assertIn("not running: it failed", self.get("/madnlp/pr-1/workers.html")[2])
 
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")
