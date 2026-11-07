@@ -9,7 +9,7 @@ machine and nothing here polls. Standard library only; the GitHub App's tokens a
     python3 queue/app.py            # configured by the environment, see `Config`
 """
 
-import base64, hashlib, hmac, html, http.server, json, os, re, secrets, subprocess, threading, time
+import base64, hashlib, hmac, html, http.server, json, os, re, secrets, shlex, subprocess, threading, time
 import urllib.error, urllib.parse, urllib.request
 
 WRITE = ("admin", "maintain", "write")
@@ -36,6 +36,13 @@ class Config:
         self.bots = [b.strip() for b in env.get("QUEUE_BOTS", "madsuite-benchmark,MadSuiteBenchmarkBot").split(",") if b.strip()]
         self.port = int(env.get("QUEUE_PORT", "8091"))
         self.hold = float(env.get("QUEUE_HOLD", "50"))   # seconds a runner request is held open
+        # Where jobs run. Unset: a runner on the machine asks this app for them (`/queue/runner/`).
+        # Set: this app starts them itself, over SSH on that host (`local` for this machine), with
+        # the commands below, so it can run anywhere with any machine as its remote.
+        self.remote = env.get("QUEUE_REMOTE", "")
+        self.remote_start = shlex.split(env.get("QUEUE_REMOTE_START", "sudo -n /usr/local/sbin/benchjob-run"))
+        self.remote_stop = shlex.split(env.get("QUEUE_REMOTE_STOP", "sudo -n /usr/local/sbin/benchjob-stop"))
+        self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")   # the live folder on the remote
 
 
 class GitHub:
@@ -268,6 +275,44 @@ def folder(job):
     return f"pr-{job['pr']}" if job["kind"] == "pr" else f"master-{job['sha'][:8]}"
 
 
+class Dispatcher:
+    """Runs the queue's jobs on `cfg.remote`, one at a time, as the runner of the machine would."""
+
+    def __init__(self, cfg, q):
+        self.cfg, self.q = cfg, q
+
+    def command(self, words):
+        if self.cfg.remote == "local":
+            return words
+        # ssh joins its arguments into one line for the remote shell, so each is quoted
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60", self.cfg.remote, shlex.join(words)]
+
+    def run(self, job):
+        unit = f"benchjob-{job['id']}"
+        live = os.path.join(self.cfg.live, folder(job))
+        # the machine's own start command takes care of everything around the job there, its
+        # preemption of other work included
+        proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], job["kind"], str(job.get("pr") or ""),
+                                              "keep" if job.get("keep", True) else "fresh"]))
+        stopped = False
+        while proc.poll() is None:
+            self.q.wait(lambda: any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")), 5)
+            if not stopped and any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")):
+                subprocess.run(self.command([*self.cfg.remote_stop, unit]))
+                stopped = True
+        rc = proc.wait()
+        state = "cancelled" if stopped else "finished" if rc == 0 else "failed"
+        self.q.report(job["id"], state)
+        return state
+
+    def serve(self):
+        while True:
+            self.q.wait(lambda: self.q.jobs("running") or self.q.jobs("waiting"), 3600)
+            job = self.q.take()
+            if job:
+                self.run(job)
+
+
 def sign(cfg, value):
     return hmac.new(cfg.session_key, value.encode(), hashlib.sha256).hexdigest()
 
@@ -443,6 +488,8 @@ def handler(cfg, q):
             self.send(303, "", [("Location", to), *headers])
 
         def runner(self):
+            if cfg.remote:
+                return False   # this app runs the jobs itself, so no runner may take one
             got = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
             return bool(cfg.runner_hash) and hmac.compare_digest(hashlib.sha256(got.encode()).hexdigest(), cfg.runner_hash)
 
@@ -632,6 +679,8 @@ def handler(cfg, q):
 if __name__ == "__main__":
     cfg = Config()
     q = Queue(cfg, GitHub(cfg))
+    if cfg.remote:
+        threading.Thread(target=Dispatcher(cfg, q).serve, daemon=True).start()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port), handler(cfg, q))
     server.daemon_threads = True
     server.serve_forever()
