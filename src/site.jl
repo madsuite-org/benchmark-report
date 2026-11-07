@@ -528,7 +528,7 @@ end
     write_index(site, runs; repository)
 
 Write the list of benchmarks to `site/index.html`: the running pull requests, the finished ones
-and the archived results. `runs` holds `(; name, pr, commit, state, updated)` per pull request.
+and the archived results. `runs` holds `(; name, pr, title, commit, state, updated)` per run; `pr` is empty for a manual run.
 """
 function write_index(site, runs; repository)
     write_assets(site)
@@ -536,16 +536,18 @@ function write_index(site, runs; repository)
     io = IOBuffer()
     function run_table(title, selected)
         isempty(selected) && return
-        println(io, "<h2>", title, "</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>pull request</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
+        println(io, "<h2>", title, "</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
         for r in sort(selected; by = r -> r.updated, rev = true)
             commit = occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">$(first(r.commit, 8))</a>" : escape_html(first(r.commit, 8))
-            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">#", escape_html(r.pr), "</a></td><td class=\"l\"><a href=\"", code, "/pull/", escape_html(r.pr), "\">pull request</a></td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(r.state), "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
+            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(r.state), "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
         end
         return println(io, "</tbody></table></div>")
     end
-    running, finished = [r for r in runs if r.state == "running"], [r for r in runs if r.state != "running"]
+    prs = [r for r in runs if !isempty(r.pr)]
+    running, finished = [r for r in prs if r.state == "running"], [r for r in prs if r.state != "running"]
     run_table("Running", running)
     run_table("Finished", finished)
+    run_table("Manual runs", [r for r in runs if isempty(r.pr)])
     paths = split(git("ls-tree", "-r", "--name-only", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
     archived = [match(r"^([^/]+)/([0-9a-f]{40})/summary\.md$", p) for p in paths]
     filter!(!isnothing, archived)

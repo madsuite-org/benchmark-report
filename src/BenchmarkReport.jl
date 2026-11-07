@@ -206,24 +206,24 @@ function from_archive(rev; depth = 200)
     return ResultSet(label, rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
 end
 
-# The results that stand for master for the run in folder `pr-<pr>` of `live`: for each machine and
+# The results that stand for master for the run in folder `name` of `live`: for each machine and
 # set, the newest ones walking back along master, of a commit itself or of the pull request it
 # merged. A merge commit names its pull request, `(#N)` at the end of its subject, and
 # `pr-N/run.json` names the commit that was benchmarked, which may be an earlier head of that pull
 # request. Timings are only comparable on the same machine. `nothing` if there are none.
-function latest_merged(live, pr; depth = 200)
+function latest_merged(live, name; depth = 200)
     archive = archive_revision()
     (archive === nothing || !success(git_command("rev-parse", "--verify", "--quiet", "origin/master"))) && return nothing
     paths = split(git("ls-tree", "-r", "--name-only", archive), '\n'; keepempty = false)
     show(path) = read(git_command("show", "$archive:$path"), String)
     files = [m for m in (match(r"^([^/]+)/([0-9a-f]{40})/([a-z]+)_(.+)\.csv$", p) for p in paths) if m !== nothing]
-    root = joinpath(live, "pr-$pr")
+    root = joinpath(live, name)
     machines = filter(d -> isdir(joinpath(root, d)), readdir(root))
     rs, used, done = ResultSet(""), String[], Set{Tuple{String, String}}()
     for line in split(git("log", "--first-parent", "-n", string(depth), "--format=%H %s", "origin/master"), '\n'; keepempty = false)
         sha, subject = split(line, ' '; limit = 2)
         merged = match(r"\(#(\d+)\)$", subject)
-        merged !== nothing && merged[1] == pr && continue
+        merged !== nothing && "pr-$(merged[1])" == name && continue
         commits = [String(sha)]
         if merged !== nothing && isfile(joinpath(live, "pr-$(merged[1])", "run.json"))
             head = match(r"\"commit\"\s*:\s*\"([0-9a-f]{40})\"", read(joinpath(live, "pr-$(merged[1])", "run.json"), String))

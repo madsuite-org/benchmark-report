@@ -1,5 +1,5 @@
 # The service behind the website. It keeps the pages of `live` up to date in `site`: a folder
-# `pr-<N>` per pull request, whose `run.json` is replaced after every copy of results. All of
+# `pr-<N>` per pull request or `run-<name>` per manual run, whose `run.json` is replaced after every copy of results. All of
 # `live` is untrusted. The archive is read from `REPOSITORY[]` and never fetched here.
 
 const DEFAULT_REPOSITORY = "madsuite-org/MadNLP.jl"
@@ -28,24 +28,29 @@ function code_commit()
     end
 end
 
-is_run(live, name) = occursin(r"^pr-\d+$", name) && isfile(joinpath(live, name, "run.json"))
+is_folder(name) = occursin(r"^(pr-\d+|run-[a-z0-9-]+)$", name)
+is_run(live, name) = is_folder(name) && isfile(joinpath(live, name, "run.json"))
 stale(live, name) = !haskey(RUNS, name) || RUNS[name].mtime != mtime(joinpath(live, name, "run.json"))
 
 function build_run(live, site, name)
     path = joinpath(live, name, "run.json")
     changed, text = mtime(path), read(path, String)
     repository, pr = json_field(text, "repository"), json_field(text, "pr")
-    (occursin(r"^[\w.-]+/[\w.-]+$", repository) && occursin(r"^\d+$", pr)) || error("$name: bad run.json")
-    state = json_field(text, "state")
+    manual = startswith(name, "run-")
+    (occursin(r"^[\w.-]+/[\w.-]+$", repository) && (manual || occursin(r"^\d+$", pr))) || error("$name: bad run.json")
+    state, commit = json_field(text, "state"), json_field(text, "commit")
+    named = json_field(text, "title")
+    title = manual ? "Manual run: " * (isempty(named) ? name[5:end] : named) : "Pull request #$pr"
+    link = manual ? (occursin(r"^[0-9a-f]{40}$", commit) ? "https://github.com/$repository/commit/$commit" : nothing) : "https://github.com/$repository/pull/$pr"
     write_report(
         joinpath(site, name), joinpath(live, name);
-        base = latest_merged(live, pr),
+        base = latest_merged(live, name),
         reference = ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
-        title = "Pull request #$pr", link = "https://github.com/$repository/pull/$pr",
+        title, link,
         finished = state != "running", assets = "..", live = true,
     )
     updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
-    RUNS[name] = (; name, pr, commit = json_field(text, "commit"), state, updated, mtime = changed)
+    RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed)
     return
 end
 
@@ -133,7 +138,7 @@ function serve(live, site; repository = DEFAULT_REPOSITORY)
     watching = Set{String}()
     function watch_new()
         for name in readdir(live)
-            if occursin(r"^pr-\d+$", name) && isdir(joinpath(live, name)) && name ∉ watching
+            if is_folder(name) && isdir(joinpath(live, name)) && name ∉ watching
                 push!(watching, name)
                 errormonitor(@async watch_run(live, site, name; repository))
             end
