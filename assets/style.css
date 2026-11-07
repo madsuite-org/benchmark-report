@@ -29,6 +29,7 @@ td.g,th.g{border-left:2px solid var(--line2)}th.g:first-child{text-align:right}t
 .fail,.fail a{color:var(--bad);font-weight:600}
 .key{display:inline-block;margin-right:1.2em;white-space:nowrap}
 .key i,.tip i{display:inline-block;width:14px;height:4px;border-radius:2px;margin:0 6px 3px 0}
+.files{list-style:none;padding:0}.files li{padding:2px 0}
 .tiles{display:flex;flex-wrap:wrap;gap:12px;margin-bottom:1.2em}
 .tile{flex:1 1 200px;max-width:320px;border:1px solid var(--line2);border-radius:6px;padding:.6em .8em;background:#fff}
 .big{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}.big small{font-size:16px;font-weight:400;color:var(--ink2)}

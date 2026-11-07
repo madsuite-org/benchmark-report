@@ -337,7 +337,7 @@ function result_links(site, set)
     links = String[]
     data = joinpath(site, "data")
     isdir(data) || return links
-    for machine in readdir(data), file in readdir(joinpath(data, machine))
+    for machine in filter(d -> isdir(joinpath(data, d)), readdir(data)), file in readdir(joinpath(data, machine))
         (startswith(file, set * "_") && endswith(file, ".csv")) || continue
         path = escape_html("data/$machine/$file")
         push!(links, "<a href=\"$path\">$(escape_html(replace(machine, "_" => " ")))</a>")
@@ -413,11 +413,38 @@ While `finished = false` the pages update themselves in place and the front page
 every worker is on. `assets` is where the stylesheet and script are, relative to `site`; with
 the default they are written there.
 """
+# The web server lists no directories, so `data/` gets a page per directory.
+function write_listings(site, assets)
+    data = joinpath(site, "data")
+    isdir(data) || return
+    for (dir, folders, files) in walkdir(data)
+        where = relpath(dir, data)
+        depth = where == "." ? 1 : 1 + length(splitpath(where))
+        up = "../"^depth
+        io = IOBuffer()
+        println(io, "<h1>", where == "." ? "Raw data" : escape_html(where), "</h1><ul class=\"files\">")
+        where == "." || println(io, "<li><a href=\"../\">..</a></li>")
+        foreach(f -> println(io, "<li><a href=\"", escape_html(escape_url(f)), "/\">", escape_html(f), "/</a></li>"), sort(folders))
+        for file in sort(files)
+            file == "index.html" && continue
+            println(io, "<li><a href=\"", escape_html(escape_url(file)), "\">", escape_html(file), "</a> <span class=\"m\">", Base.format_bytes(filesize(joinpath(dir, file))), "</span></li>")
+        end
+        println(io, "</ul>")
+        rel = assets == "." ? rstrip(up, '/') : up * assets
+        home = assets == "." ? up * "index.html" : rel * "/index.html"
+        trail = "<span class=\"trail\"><a href=\"$(up)index.html\">Report</a></span><span class=\"trail\">Raw data</span>"
+        page(joinpath(dir, "index.html"), "Raw data: MadNLP benchmarks", String(take!(io)), banner(home, trail); assets = rel)
+    end
+    return
+end
+escape_url(s) = replace(s, r"[^A-Za-z0-9_.~+-]" => c -> join(["%" * uppercase(string(b; base = 16, pad = 2)) for b in codeunits(c)]))
+
 function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished)
     mkpath(site)
     chmod(site, 0o755)
     assets == "." && write_assets(site)
     logs = sync_data(site, root)
+    write_listings(site, assets)
     repository = link === nothing ? nothing : match(r"^(https://github\.com/[^/]+/[^/]+)/", link)
     if reference !== nothing && repository !== nothing
         for (key, path) in reference.logs

@@ -50,6 +50,14 @@ mktempdir() do root
     @test !ispath(joinpath(published, "evil.html"))
     @test !ispath(joinpath(published, "secret.txt"))
     @test isfile(joinpath(site, "status.json"))
+    # the server lists no directories: every link to raw data needs a page
+    listing = read(joinpath(site, "data", "index.html"), String)
+    @test occursin("href=\"machine/\"", listing)
+    machine = read(joinpath(published, "index.html"), String)
+    @test occursin("href=\"smoke_default.csv\"", machine)
+    @test !occursin("href=\"index.html\">index.html", machine)
+    @test !markup(joinpath(published, "index.html"))
+    @test occursin("href=\"../../bootstrap.min.css\"", machine)
 end
 
 @testset "a set shows its problems out of the whole set" begin
