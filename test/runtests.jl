@@ -148,12 +148,13 @@ end
 @testset "a run with no archived ancestor is compared with the latest merged pull request" begin
     mktempdir() do root
         origin, clone, _ = archive_clone(root)
-        # a merged run on the same machine, and one on another machine
         git(args...) = run(`git -C $origin -c user.name=x -c user.email=x@x $args`)
-        git("commit", "-q", "--allow-empty", "--date=2100-01-01T00:00:00", "-m", "newer")
-        newer = readchomp(`git -C $origin rev-parse HEAD`)
-        git("branch", "master", newer)
-        for (machine, commit) in (("machine", newer), ("elsewhere", "c"^40))
+        # #7 is merged, and was benchmarked at an earlier head that master does not contain
+        head = "d"^40
+        git("commit", "-q", "--allow-empty", "-m", "Older change (#6)")
+        git("commit", "-q", "--allow-empty", "-m", "A change (#7)")
+        git("branch", "master")
+        for (machine, commit) in (("machine", head), ("elsewhere", "c"^40))
             to = mkpath(joinpath(origin, machine, commit))
             for file in ("smoke_default.csv", "smoke_default.csv.meta.toml")
                 cp(joinpath(root, "machine", file), joinpath(to, file))
@@ -164,18 +165,22 @@ end
         run(`git -C $clone fetch -q origin`)
         BenchmarkReport.REPOSITORY[] = clone
         BenchmarkReport.FETCH[] = false
-        @test BenchmarkReport.latest_merged(mkpath(joinpath(root, "nothing-here"))) === nothing
         live, site = mkpath(joinpath(root, "live")), mkpath(joinpath(root, "site"))
         live_run(live, "pr-1", "running")
-        rs = BenchmarkReport.latest_merged(joinpath(live, "pr-1"))
-        @test rs !== nothing && occursin(first(newer, 8) * "` on machine", rs.label)
+        @test BenchmarkReport.latest_merged(live, "1") === nothing
+        live_run(live, "pr-7", "finished")
+        run_json = joinpath(live, "pr-7", "run.json")
+        write(run_json, replace(read(run_json, String), "b"^40 => head))
+        rs = BenchmarkReport.latest_merged(live, "1")
+        @test rs !== nothing && occursin("`dddddddd`, from #7, on machine", rs.label)
         @test !occursin("elsewhere", rs.label)
-        # its own results are no comparison, and the older run never reached master
-        @test BenchmarkReport.latest_merged(joinpath(live, "pr-1"), newer) === nothing
-        @test !occursin("c"^8, rs.label)
+        # a pull request is not its own master
+        @test BenchmarkReport.latest_merged(live, "7") === nothing
         reset_runs()
         BenchmarkReport.build_all(live, site)
-        @test occursin("latest merged", read(joinpath(site, "pr-1", "index.html"), String))
+        report = read(joinpath(site, "pr-1", "index.html"), String)
+        @test occursin(">master<", report)
+        @test occursin("from #7", report)
     end
 end
 
