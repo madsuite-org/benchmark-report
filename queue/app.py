@@ -9,7 +9,7 @@ machine and nothing here polls. Standard library only; the GitHub App's tokens a
     python3 queue/app.py            # configured by the environment, see `Config`
 """
 
-import base64, hashlib, hmac, html, http.server, json, os, re, secrets, shlex, subprocess, threading, time
+import base64, email.utils, hashlib, hmac, html, http.server, json, mimetypes, os, re, secrets, shlex, subprocess, threading, time
 import urllib.error, urllib.parse, urllib.request
 
 WRITE = ("admin", "maintain", "write")
@@ -43,6 +43,10 @@ class Config:
         self.remote_start = shlex.split(env.get("QUEUE_REMOTE_START", "sudo -n /usr/local/sbin/benchjob-run"))
         self.remote_stop = shlex.split(env.get("QUEUE_REMOTE_STOP", "sudo -n /usr/local/sbin/benchjob-stop"))
         self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")   # the live folder on the remote
+        # The reports: the site the builder writes, served by this app with the rest, and the
+        # command that runs the builder (bin/serve.jl), which this app starts and restarts.
+        self.site = env.get("QUEUE_SITE", "")
+        self.builder = shlex.split(env.get("QUEUE_BUILDER", ""))
 
 
 class GitHub:
@@ -292,8 +296,10 @@ class Dispatcher:
         live = os.path.join(self.cfg.live, folder(job))
         # the machine's own start command takes care of everything around the job there, its
         # preemption of other work included
+        # stdin stays open for the whole job: the machine stops the job when it closes, so a lost
+        # connection ends the job rather than leaving it running unseen
         proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], job["kind"], str(job.get("pr") or ""),
-                                              "keep" if job.get("keep", True) else "fresh"]))
+                                              "keep" if job.get("keep", True) else "fresh"]), stdin=subprocess.PIPE)
         stopped = False
         while proc.poll() is None:
             self.q.wait(lambda: any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")), 5)
@@ -301,6 +307,7 @@ class Dispatcher:
                 subprocess.run(self.command([*self.cfg.remote_stop, unit]))
                 stopped = True
         rc = proc.wait()
+        proc.stdin.close()
         state = "cancelled" if stopped else "finished" if rc == 0 else "failed"
         self.q.report(job["id"], state)
         return state
@@ -311,6 +318,50 @@ class Dispatcher:
             job = self.q.take()
             if job:
                 self.run(job)
+
+
+class Builder:
+    """Keeps the report builder running: started with the app, started again if it stops."""
+
+    def __init__(self, cfg):
+        self.cfg, self.proc = cfg, None
+
+    def serve(self):
+        while True:
+            started = time.time()
+            self.proc = subprocess.Popen(self.cfg.builder)
+            rc = self.proc.wait()
+            print(f"the report builder stopped ({rc}); starting it again", flush=True)
+            # one that keeps failing at once is not started in a tight loop
+            time.sleep(30 if time.time() - started < 60 else 1)
+
+
+NAV = '<nav class="app"><a class="btn btn-sm btn-light" href="/queue/">Sign in</a></nav>'
+
+
+def app_nav(cfg, login):
+    """The links of the banner for who is signed in: the same on every page of the app."""
+    e = html.escape
+    if not login:
+        return f'<nav class="app"><a class="btn btn-sm btn-light" href="{e(cfg.base)}/login">Sign in</a></nav>'
+    csrf = sign(cfg, "csrf|" + login)
+    return (f'<nav class="app"><a href="{e(cfg.base)}/">Jobs</a><a href="{e(cfg.reports)}/">Reports</a>'
+            f'<a class="btn btn-sm btn-light" href="{e(cfg.base)}/new">New job</a><span class="who">{e(login)}</span>'
+            f'<form method="post" action="{e(cfg.base)}/logout"><input type="hidden" name="csrf" value="{csrf}">'
+            '<button class="btn btn-sm btn-outline-light">Sign out</button></form></nav>')
+
+
+def site_file(cfg, path):
+    """The file of the site for a URL path, or None: nothing outside the site, and no links out of it."""
+    if not cfg.site or "\0" in path:
+        return None
+    root = os.path.realpath(cfg.site)
+    target = os.path.realpath(os.path.join(root, urllib.parse.unquote(path).lstrip("/")))
+    if target != root and not target.startswith(root + os.sep):
+        return None
+    if os.path.isdir(target):
+        target = os.path.join(target, "index.html")
+    return target if os.path.isfile(target) else None
 
 
 def sign(cfg, value):
@@ -343,21 +394,12 @@ def command(cfg, body):
 def shell(cfg, login, title, body, message=""):
     """Every page of the app: the banner of the reports, with the app's links and the signed-in user."""
     e, r = html.escape, html.escape(cfg.reports)
-    links = ""
-    if login:
-        csrf = sign(cfg, "csrf|" + login)
-        links = (f'<a href="{e(cfg.base)}/">Jobs</a><a href="{r}/">Reports</a>'
-                 f'<a class="btn btn-sm btn-light" href="{e(cfg.base)}/new">New job</a>'
-                 f'<span class="who">{e(login)}</span><form method="post" action="{e(cfg.base)}/logout">'
-                 f'<input type="hidden" name="csrf" value="{csrf}"><button class="btn btn-sm btn-outline-light">Sign out</button></form>')
-    else:
-        links = f'<a href="{r}/">Reports</a><a class="btn btn-sm btn-light" href="{e(cfg.base)}/login">Sign in with GitHub</a>'
     note = f'<div class="alert alert-warning">{e(message)}</div>' if message else ""
     return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{e(title)}: MadSuite benchmarks</title><script src="{r}/theme.js"></script>'
             f'<link rel="stylesheet" href="{r}/bootstrap.min.css"><link rel="stylesheet" href="{r}/style.css"><body>'
             f'<header class="site"><div class="container"><a class="brand" href="{e(cfg.base)}/">MadSuite benchmarks</a>'
-            f'<nav class="app">{links}</nav><button id="theme" type="button" aria-label="Switch between light and dark">Theme</button></div></header>'
+            f'{app_nav(cfg, login)}<button id="theme" type="button" aria-label="Switch between light and dark">Theme</button></div></header>'
             f'<main class="container py-3">{note}{body}</main></body></html>')
 
 
@@ -558,6 +600,39 @@ def handler(cfg, q):
                 return reply(400, {"error": problem}) if problem else reply(200, {"jobs": [public(cfg, j) for j in q.jobs("waiting", "running") if j.get("pr") == int(parts[1])]})
             return reply(404, {"error": "No such endpoint."})
 
+        def report_page(self, path, login):
+            """A page or file of the reports. A report's own banner gets the links of the signed-in user."""
+            if path == "/":
+                return self.redirect(cfg.reports + "/")
+            target = site_file(cfg, path)
+            if target is None:
+                return self.send(404, "Not found", kind="text/plain")
+            if os.path.isdir(os.path.realpath(os.path.join(cfg.site, urllib.parse.unquote(path).lstrip("/")))) and not path.endswith("/"):
+                return self.redirect(path + "/")
+            st = os.stat(target)
+            kind = mimetypes.guess_type(target)[0] or "application/octet-stream"
+            if kind.startswith("text/") or kind in ("application/javascript", "application/json"):
+                kind += "; charset=utf-8"
+            # a page differs by who is signed in, so its tag does too
+            tag = '"%x-%x-%s"' % (st.st_mtime_ns, st.st_size, hashlib.sha256((login or "").encode()).hexdigest()[:8] if target.endswith(".html") else "")
+            if self.headers.get("If-None-Match") == tag:
+                self.send_response(304)
+                self.send_header("ETag", tag)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            data = open(target, "rb").read()
+            if target.endswith(".html"):
+                data = data.replace(NAV.encode(), app_nav(cfg, login).encode(), 1)
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("ETag", tag)
+            self.send_header("Last-Modified", email.utils.formatdate(st.st_mtime, usegmt=True))
+            self.send_header("Cache-Control", "private, no-cache" if target.endswith(".html") else "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_GET(self):
             path, _, query = self.path.partition("?")
             args = urllib.parse.parse_qs(query)
@@ -609,7 +684,7 @@ def handler(cfg, q):
                 asked = lambda: any(j["id"] == job_id and j.get("cancel") for j in q.jobs("running")) or not any(j["id"] == job_id for j in q.jobs("running"))
                 q.wait(asked, cfg.hold)
                 return self.send(200, json.dumps({"cancel": asked()}), kind="application/json")
-            return self.send(404, "Not found", kind="text/plain")
+            return self.report_page(path, login)
 
         def do_POST(self):
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))
@@ -681,6 +756,8 @@ if __name__ == "__main__":
     q = Queue(cfg, GitHub(cfg))
     if cfg.remote:
         threading.Thread(target=Dispatcher(cfg, q).serve, daemon=True).start()
+    if cfg.builder:
+        threading.Thread(target=Builder(cfg).serve, daemon=True).start()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port), handler(cfg, q))
     server.daemon_threads = True
     server.serve_forever()

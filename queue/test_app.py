@@ -165,7 +165,7 @@ class TestDispatcher(Base):
             os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
             return path
         self.cfg.remote, self.cfg.live = "local", "/live"
-        self.cfg.remote_start = [script("start", f'echo "start $@" >> {self.log}; sleep "${{SLEEP:-0}}"; exit "${{RC:-0}}"\n')]
+        self.cfg.remote_start = [script("start", f'echo "start $@" >> {self.log}; read -t 1 x; [ $? -gt 128 ] && echo stdin-open >> {self.log}; sleep "${{SLEEP:-0}}"; exit "${{RC:-0}}"\n')]
         self.cfg.remote_stop = [script("stop", f'echo "stop $@" >> {self.log}; pkill -f "{self.dir}/start" || true\n')]
         self.d = app.Dispatcher(self.cfg, self.q)
 
@@ -173,7 +173,7 @@ class TestDispatcher(Base):
         self.q.add_pr(7, "alice", keep=False)
         self.assertEqual(self.d.run(self.q.take()), "finished")
         lines = open(self.log).read().splitlines()
-        self.assertEqual(lines, [f"start benchjob-1 /live/pr-7 {'a' * 40} pr 7 fresh"])
+        self.assertEqual(lines, [f"start benchjob-1 /live/pr-7 {'a' * 40} pr 7 fresh", "stdin-open"])
         self.assertEqual(self.q.jobs("finished")[0]["pr"], 7)
 
     def test_failure_and_cancel(self):
@@ -370,3 +370,71 @@ class TestServer(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSite(Base):
+    """The app serves the reports too, with the banner of who is signed in."""
+
+    def setUp(self):
+        super().setUp()
+        site = os.path.join(self.dir, "site")
+        os.makedirs(os.path.join(site, "madnlp", "pr-1"))
+        page = '<html><header class="site">' + app.NAV + '</header><main>report</main></html>'
+        for path in ("madnlp/index.html", "madnlp/pr-1/index.html"):
+            open(os.path.join(site, path), "w").write(page)
+        open(os.path.join(site, "madnlp", "style.css"), "w").write("body{}")
+        open(os.path.join(self.dir, "secret"), "w").write("secret")
+        os.symlink(os.path.join(self.dir, "secret"), os.path.join(site, "madnlp", "link.css"))
+        self.cfg.site, self.cfg.reports = site, "/madnlp"
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), app.handler(self.cfg, self.q))
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.port = self.server.server_address[1]
+
+    def tearDown(self):
+        self.server.shutdown()
+
+    def get(self, path, headers=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        c.request("GET", path, headers=headers or {})
+        r = c.getresponse()
+        data = r.read().decode(errors="replace")
+        c.close()
+        return r.status, dict(r.getheaders()), data
+
+    def test_pages_and_banner(self):
+        code, headers, page = self.get("/madnlp/")
+        self.assertEqual(code, 200)
+        self.assertIn("report", page)
+        self.assertIn("/queue/login", page)
+        self.assertNotIn(app.NAV, page)
+        code, _, page = self.get("/madnlp/pr-1/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})
+        self.assertIn("New job", page)
+        self.assertIn("alice", page)
+        self.assertEqual(self.get("/madnlp/pr-1")[0], 303)
+        self.assertEqual(self.get("/")[1]["Location"], "/madnlp/")
+        self.assertEqual(self.get("/madnlp/style.css")[2], "body{}")
+
+    def test_nothing_outside_the_site(self):
+        for path in ("/madnlp/../secret", "/madnlp/%2e%2e/%2e%2e/secret", "/madnlp/link.css", "/madnlp/nothing.html", "/..%2fsecret"):
+            code, _, body = self.get(path)
+            self.assertEqual(code, 404, path)
+            self.assertNotIn("secret", body)
+
+    def test_not_modified_and_by_login(self):
+        _, headers, _ = self.get("/madnlp/")
+        tag = headers["ETag"]
+        self.assertEqual(self.get("/madnlp/", {"If-None-Match": tag})[0], 304)
+        signed = {"Cookie": f"s={app.new_session(self.cfg, 'alice')}", "If-None-Match": tag}
+        self.assertEqual(self.get("/madnlp/", signed)[0], 200)      # another banner, so another page
+
+    def test_builder_is_started(self):
+        mark = os.path.join(self.dir, "built")
+        self.cfg.builder = ["sh", "-c", f"echo x >> {mark}; sleep 30"]
+        b = app.Builder(self.cfg)
+        threading.Thread(target=b.serve, daemon=True).start()
+        deadline = time.time() + 10
+        while time.time() < deadline and not os.path.exists(mark):
+            time.sleep(0.1)
+        self.assertTrue(os.path.exists(mark))
+        b.proc.kill()

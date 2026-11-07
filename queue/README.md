@@ -14,6 +14,14 @@ It needs Python 3 and `openssl`, nothing else. The environment sets `QUEUE_REPO`
 
     python3 -m unittest discover -s queue
 
+## One app
+
+The app serves all of the site: the reports from the directory the builder writes (`QUEUE_SITE`),
+and the jobs and the API. Every page has the same banner, and a report's banner shows who is signed
+in. With `QUEUE_BUILDER` set to the builder's command (`julia --project bin/serve.jl LIVE SITE ...`)
+the app also starts the builder and starts it again if it stops; on the server the builder runs as
+its own sandboxed process instead, and the app only reads its directory.
+
 ## Where jobs run
 
 With `QUEUE_REMOTE` set, the app runs the jobs itself: one at a time, it starts each on that host
