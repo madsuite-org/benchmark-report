@@ -154,6 +154,56 @@ class TestQueue(Base):
             self.assertFalse(app.command(self.cfg, body), body)
 
 
+class TestDispatcher(Base):
+    def setUp(self):
+        super().setUp()
+        import stat
+        self.log = os.path.join(self.dir, "log")
+        def script(name, body):
+            path = os.path.join(self.dir, name)
+            open(path, "w").write("#!/bin/bash\n" + body)
+            os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC)
+            return path
+        self.cfg.remote, self.cfg.live = "local", "/live"
+        self.cfg.remote_start = [script("start", f'echo "start $@" >> {self.log}; sleep "${{SLEEP:-0}}"; exit "${{RC:-0}}"\n')]
+        self.cfg.remote_stop = [script("stop", f'echo "stop $@" >> {self.log}; pkill -f "{self.dir}/start" || true\n')]
+        self.cfg.remote_preempt = [script("preempt", f'echo "preempt $@" >> {self.log}\n')]
+        self.d = app.Dispatcher(self.cfg, self.q)
+
+    def test_runs_a_job(self):
+        self.q.add_pr(7, "alice", keep=False)
+        self.assertEqual(self.d.run(self.q.take()), "finished")
+        lines = open(self.log).read().splitlines()
+        self.assertEqual(lines, ["preempt start", f"start benchjob-1 /live/pr-7 {'a' * 40} pr 7 fresh", "preempt end"])
+        self.assertEqual(self.q.jobs("finished")[0]["pr"], 7)
+
+    def test_failure_and_cancel(self):
+        os.environ["RC"] = "3"
+        try:
+            self.q.add_master("d" * 40)
+            self.assertEqual(self.d.run(self.q.take()), "failed")
+        finally:
+            del os.environ["RC"]
+        os.environ["SLEEP"] = "30"
+        try:
+            self.q.add_master("e" * 40)
+            job = self.q.take()
+            threading.Timer(0.5, lambda: self.q.cancel(job["id"], "boss")).start()
+            t = time.time()
+            self.assertEqual(self.d.run(job), "cancelled")
+            self.assertLess(time.time() - t, 15)
+        finally:
+            del os.environ["SLEEP"]
+        self.assertIn("stop benchjob-2", open(self.log).read())
+
+    def test_ssh_quotes_each_word(self):
+        self.cfg.remote = "node"
+        cmd = self.d.command(["sudo", "-n", "x", "a b", "$(rm -rf /)"])
+        self.assertEqual(cmd[:-1], ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60", "node"])
+        import shlex
+        self.assertEqual(shlex.split(cmd[-1]), ["sudo", "-n", "x", "a b", "$(rm -rf /)"])
+
+
 class TestServer(Base):
     def setUp(self):
         super().setUp()
