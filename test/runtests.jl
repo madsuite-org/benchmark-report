@@ -145,6 +145,40 @@ reset_runs() = empty!(BenchmarkReport.RUNS)
     end
 end
 
+@testset "a run with no archived ancestor is compared with the latest merged pull request" begin
+    mktempdir() do root
+        origin, clone, _ = archive_clone(root)
+        # a merged run on the same machine, and one on another machine
+        git(args...) = run(`git -C $origin -c user.name=x -c user.email=x@x $args`)
+        git("commit", "-q", "--allow-empty", "--date=2100-01-01T00:00:00", "-m", "newer")
+        newer = readchomp(`git -C $origin rev-parse HEAD`)
+        git("branch", "master", newer)
+        for (machine, commit) in (("machine", newer), ("elsewhere", "c"^40))
+            to = mkpath(joinpath(origin, machine, commit))
+            for file in ("smoke_default.csv", "smoke_default.csv.meta.toml")
+                cp(joinpath(root, "machine", file), joinpath(to, file))
+            end
+        end
+        git("add", "-A")
+        git("commit", "-q", "-m", "results")
+        run(`git -C $clone fetch -q origin`)
+        BenchmarkReport.REPOSITORY[] = clone
+        BenchmarkReport.FETCH[] = false
+        @test BenchmarkReport.latest_merged(mkpath(joinpath(root, "nothing-here"))) === nothing
+        live, site = mkpath(joinpath(root, "live")), mkpath(joinpath(root, "site"))
+        live_run(live, "pr-1", "running")
+        rs = BenchmarkReport.latest_merged(joinpath(live, "pr-1"))
+        @test rs !== nothing && occursin(first(newer, 8) * "` on machine", rs.label)
+        @test !occursin("elsewhere", rs.label)
+        # its own results are no comparison, and the older run never reached master
+        @test BenchmarkReport.latest_merged(joinpath(live, "pr-1"), newer) === nothing
+        @test !occursin("c"^8, rs.label)
+        reset_runs()
+        BenchmarkReport.build_all(live, site)
+        @test occursin("latest merged", read(joinpath(site, "pr-1", "index.html"), String))
+    end
+end
+
 @testset "no pull requests" begin
     mktempdir() do root
         _, clone, _ = archive_clone(root)
