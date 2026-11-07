@@ -58,6 +58,11 @@ mktempdir() do root
     @test !occursin("href=\"index.html\">index.html", machine)
     @test !markup(joinpath(published, "index.html"))
     @test occursin("href=\"../../bootstrap.min.css\"", machine)
+    # both themes come from the stylesheet: a colour written into a page would ignore them
+    summary = read(joinpath(site, "index.html"), String)
+    @test occursin("src=\"./theme.js\"", summary)
+    @test isfile(joinpath(site, "theme.js"))
+    @test !occursin(r"(stroke|fill|background)[=:]\\?\"?#", summary)
 end
 
 @testset "a set shows its problems out of the whole set" begin

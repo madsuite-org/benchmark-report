@@ -2,11 +2,13 @@
 # Dolan-Moré performance profiles, a page per set with every instance, and the result files
 # and solver logs under `data/`.
 
-# A solver has one colour on every page: this run blue, its base orange, Ipopt, the reference, dark
-# gray, and further configurations the next hues in order. Devices and sets are told apart by
-# their names. Red marks failures only.
-const COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6"]
-const REFERENCE_COLOR = "#3f3e3b"
+# A device has one colour on every page, and this run takes the colour of the device it ran on:
+# CPU blue, CUDA green. Its base is orange, Ipopt, the reference, gray, and further configurations
+# the next hues in order. Red marks failures only.
+# The values, for the light and the dark theme, are in `assets/style.css`.
+const COLORS = ["var(--s$i)" for i in 1:7]
+const REFERENCE_COLOR = "var(--ref)"
+device_color(device) = device == "cuda" ? COLORS[3] : device == "amdgpu" ? COLORS[5] : COLORS[1]
 
 const SET_TITLES = Dict("acopf" => "ACOPF", "cops" => "COPS", "cutest" => "CUTEst", "mittelmann" => "Mittelmann")
 
@@ -47,8 +49,8 @@ function report_sides(cand, base)
     append!(sides, [(label(k, "current"), k, false) for k in keys_of(cand)])
     sort!(sides; by = s -> s[2][2] != "ipopt")
     others = sort!(unique!([l for (l, _, _) in sides if l ∉ ("Ipopt", "current", "master")]))
-    color(l) = l == "Ipopt" ? REFERENCE_COLOR : l == "current" ? COLORS[1] : l == "master" ? COLORS[2] : COLORS[mod1(2 + findfirst(==(l), others), length(COLORS))]
-    return [Side(l, color(l), k, b) for (l, k, b) in sides]
+    color(l, device) = l == "Ipopt" ? REFERENCE_COLOR : l == "current" ? device_color(device) : l == "master" ? COLORS[2] : COLORS[mod1(3 + findfirst(==(l), others), length(COLORS))]
+    return [Side(l, color(l, k[1]), k, b) for (l, k, b) in sides]
 end
 
 side_rows(side, cand, base, set) = get((side.base ? base : cand).rows, (side.key[1], set, side.key[2]), Dict{String, Any}())
@@ -82,7 +84,7 @@ function profile_svg(io, title, sides, n, ratios)
     print(io, "<div class=\"tip\"></div><svg viewBox=\"0 0 $w $h\" role=\"img\" aria-label=\"$(escape_html(title))\" ")
     print(io, "data-c='{\"w\":$w,\"l\":$left,\"r\":$(w - right),\"x\":$xmax,\"n\":$n,\"s\":[$json]}'>")
     for f in 0:0.25:1
-        print(io, "<line x1=\"$left\" x2=\"$(w - right)\" y1=\"$(Y(f))\" y2=\"$(Y(f))\" stroke=\"#e4e3df\"/>")
+        print(io, "<line x1=\"$left\" x2=\"$(w - right)\" y1=\"$(Y(f))\" y2=\"$(Y(f))\" class=\"grid\"/>")
         print(io, "<text x=\"$(left - 6)\" y=\"$(Y(f) + 5)\" text-anchor=\"end\">$(round(Int, 100f))%</text>")
     end
     step = ceil(Int, xmax / 5)
@@ -90,7 +92,7 @@ function profile_svg(io, title, sides, n, ratios)
         print(io, "<text x=\"$(X(2.0^k))\" y=\"$(h - bottom + 18)\" text-anchor=\"middle\">$(2^k)×</text>")
     end
     print(io, "<text x=\"$((left + w - right) / 2)\" y=\"$(h - 5)\" text-anchor=\"middle\">within this factor of the best</text>")
-    print(io, "<line class=\"x\" y1=\"$top\" y2=\"$(h - bottom)\" stroke=\"#8a8983\" style=\"display:none\"/>")
+    print(io, "<line class=\"x\" y1=\"$top\" y2=\"$(h - bottom)\" style=\"display:none\"/>")
     for (s, r) in zip(sides, ratios)
         d = IOBuffer()
         print(d, "M$(X(1.0)) $(Y(0.0))")
@@ -98,7 +100,7 @@ function profile_svg(io, title, sides, n, ratios)
             print(d, "L$(X(t)) $(Y((i - 1) / n))L$(X(t)) $(Y(i / n))")
         end
         print(d, "L$(w - right) $(Y(length(r) / n))")
-        print(io, "<path d=\"$(String(take!(d)))\" fill=\"none\" stroke=\"$(s.color)\" stroke-width=\"2\" stroke-linejoin=\"round\" stroke-linecap=\"round\"", s.label == "Ipopt" ? " stroke-dasharray=\"6 4\"" : "", "/>")
+        print(io, "<path d=\"$(String(take!(d)))\" fill=\"none\" style=\"stroke:$(s.color)\" stroke-width=\"2\" stroke-linejoin=\"round\" stroke-linecap=\"round\"", s.label == "Ipopt" ? " stroke-dasharray=\"6 4\"" : "", "/>")
     end
     println(io, "</svg>")
     return
@@ -135,7 +137,7 @@ end
 
 # The banner of every page: the site, where this page is in it, and a line about what is shown.
 function banner(home, trail, line = "", menus = "")
-    return "<header class=\"site\"><div class=\"container\"><a class=\"brand\" href=\"$home\">MadNLP benchmarks</a>$trail</div></header>" *
+    return "<header class=\"site\"><div class=\"container\"><a class=\"brand\" href=\"$home\">MadNLP benchmarks</a>$trail<button id=\"theme\" type=\"button\" aria-label=\"Switch between light and dark\">Theme</button></div></header>" *
         "<div class=\"bar\"><div class=\"container\"><div class=\"line\">$line</div>$menus</div></div>"
 end
 state_badge(state) = "<span class=\"state $(state == "running" ? "on" : "off")\">$(escape_html(state))</span>"
@@ -147,7 +149,7 @@ function page(path, title, content, bar; refresh = false, assets = ".")
         tmp, "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">",
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
         refresh ? "<meta name=\"live\" content=\"1\">" : "",
-        "<title>", escape_html(title), "</title><link rel=\"stylesheet\" href=\"", assets, "/bootstrap.min.css\"><link rel=\"stylesheet\" href=\"", assets, "/style.css\"><body><div id=\"live\">",
+        "<title>", escape_html(title), "</title><script src=\"", assets, "/theme.js\"></script><link rel=\"stylesheet\" href=\"", assets, "/bootstrap.min.css\"><link rel=\"stylesheet\" href=\"", assets, "/style.css\"><body><div id=\"live\">",
         bar, "<main class=\"container\">", content, "</main></div><script src=\"", assets, "/report.js\"></script></body></html>\n",
     )
     chmod(tmp, 0o644)
@@ -173,7 +175,7 @@ function solver_table(io, sides, cand, base, code)
     revision(s) = code === nothing ? escape_html(info(s, :revs)) : replace(escape_html(info(s, :revs)), r"\b[0-9a-f]{8,40}\b" => c -> "<a href=\"$code/commit/$c\">$c</a>")
     println(io, "<div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>solver</th><th class=\"l\">device</th><th class=\"l\">revision</th><th class=\"l\">benchmark</th></tr></thead><tbody>")
     for s in sides
-        println(io, "<tr><td>", key(s), "</td><td class=\"l\">", s.key[2] == "ipopt" ? "CPU" : uppercase(s.key[1]), "</td><td class=\"l\">", revision(s), "</td><td class=\"l\">", escape_html(info(s, :harness)), "</td></tr>")
+        println(io, "<tr><td>", key(s), "</td><td class=\"l\">", device_tag(s.key[2] == "ipopt" ? "cpu" : s.key[1]), "</td><td class=\"l\">", revision(s), "</td><td class=\"l\">", escape_html(info(s, :harness)), "</td></tr>")
     end
     println(io, "</tbody></table></div>")
     return
@@ -183,7 +185,8 @@ end
 function progress(io, devices, sets, sides, cand, base)
     println(io, "<div class=\"tiles\">")
     for device in devices
-        mine = first(s for s in sides if s.key[1] == device && s.key[2] != "ipopt")
+        candidates = [s for s in sides if s.key[1] == device && s.key[2] != "ipopt"]
+        mine = something(findfirst(s -> !s.base, candidates), 1) |> i -> candidates[i]
         done = solved_count = total = 0
         for set in sets
             rows = side_rows(mine, cand, base, set)
@@ -193,8 +196,8 @@ function progress(io, devices, sets, sides, cand, base)
             total += set_size(cand, base, set)
         end
         share = total == 0 ? 0 : round(Int, 100 * done / total)
-        println(io, "<div class=\"tile\"><div class=\"m\">", uppercase(device), ", ", escape_html(mine.label), "</div><div class=\"big\">", done, "<small>/", total, "</small></div>")
-        println(io, "<div class=\"meter\"><i style=\"width:", share, "%\"></i></div><div class=\"m\">", solved_count, " solved</div></div>")
+        println(io, "<div class=\"tile\"><div class=\"m\">", device_tag(device), " ", escape_html(mine.label), "</div><div class=\"big\">", done, "<small>/", total, "</small></div>")
+        println(io, "<div class=\"meter\"><i style=\"width:", share, "%;background:", device_color(device), "\"></i></div><div class=\"m\">", solved_count, " solved</div></div>")
     end
     println(io, "</div>")
     return
@@ -204,9 +207,8 @@ function summary_table(io, blocks, sides, cand, base, wall)
     # a group of columns per solver: Ipopt, master, current
     labels = unique!([s.label for (set, device) in blocks for s in on_device(sides, device) if !isempty(side_rows(s, cand, base, set))])
     sort!(labels; by = l -> something(findfirst(==(l), ["Ipopt", "master", "current"]), 4))
-    first_side(label) = first(s for s in sides if s.label == label)
     println(io, "<div class=\"wide\"><table class=\"table table-sm summary\"><thead><tr><th rowspan=\"2\">set</th><th rowspan=\"2\" class=\"l\">device</th><th rowspan=\"2\" title=\"compared out of the whole set\">problems</th>")
-    foreach(l -> print(io, "<th colspan=\"3\" class=\"g\">", key(first_side(l)), "</th>"), labels)
+    foreach(l -> print(io, "<th colspan=\"3\" class=\"g\">", escape_html(l), "</th>"), labels)
     print(io, "</tr><tr>")
     foreach(_ -> print(io, "<th class=\"g\">solved</th><th>SGM (s)</th><th>SSGM</th>"), labels)
     println(io, "</tr></thead><tbody>")
@@ -219,7 +221,7 @@ function summary_table(io, blocks, sides, cand, base, wall)
         means = Dict(l => sgm([score_time(here[l][c], wall) for c in cases]) + 10 for l in have)
         # Ipopt is the reference where it has run, else the best solver
         scale = haskey(means, "Ipopt") ? means["Ipopt"] : minimum(values(means))
-        print(io, "<tr><td><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a></td><td class=\"l\">$(uppercase(device))</td><td>$(all(==("Ipopt"), have) ? 0 : length(cases))/$(set_size(cand, base, set))</td>")
+        print(io, "<tr><td><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a></td><td class=\"l\">$(device_tag(device))</td><td>$(all(==("Ipopt"), have) ? 0 : length(cases))/$(set_size(cand, base, set))</td>")
         for l in labels
             if l in have
                 @printf(io, "<td class=\"g\">%d</td><td>%.2f</td><td>%.3g</td>", count(c -> solved(here[l][c]), cases), means[l] - 10, means[l] / scale)
@@ -329,7 +331,7 @@ function workers_page(site, root, bar, assets)
 end
 
 page_name(device, set) = "$device-$set.html"
-device_tag(device) = "<span class=\"tag\">$(uppercase(device))</span>"
+device_tag(device) = "<span class=\"tag $device\">$(uppercase(device))</span>"
 
 # The page of a set on a device.
 # Links to the published result files of a set, from the pages next to `data/`.
@@ -351,7 +353,7 @@ function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh
     keep = [i for i in eachindex(sides) if !isempty(rows[i])]
     sides, rows = sides[keep], rows[keep]
     io = IOBuffer()
-    println(io, "<h1>", get(SET_TITLES, set, set), " on ", uppercase(device), "</h1>")
+    println(io, "<h1>", get(SET_TITLES, set, set), " ", device_tag(device), "</h1>")
     summary_table(io, [(set, device)], sides, cand, base, wall)
     println(io, "<h2>Outcomes</h2>")
     outcome_table(io, sides, rows, set_size(cand, base, set))
