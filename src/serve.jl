@@ -83,7 +83,7 @@ end
 # The archived results of every commit, as pages of the same site. A page is rebuilt when the
 # code or the archived files have changed since it was built, as recorded in its `.built`.
 function build_archive(site)
-    tree = split(git("ls-tree", "-r", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
+    tree = split(archive_git("ls-tree", "-r", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
     entries = [m for m in (match(r"^\S+ blob (\S+)\t([^/]+)/([0-9a-f]{40})/([^/]+\.(?:csv|toml))$", line) for line in tree) if m !== nothing]
     code = code_commit()
     for commit in unique!([String(m[3]) for m in entries])
@@ -94,7 +94,7 @@ function build_archive(site)
         isfile(record) && read(record, String) == built && continue
         mktempdir() do root
             for m in mine
-                write(joinpath(mkpath(joinpath(root, m[2])), m[4]), read(git_command("show", "origin/$ARCHIVE_BRANCH:$(m[2])/$commit/$(m[4])")))
+                write(joinpath(mkpath(joinpath(root, m[2])), m[4]), read(archive_command("show", "origin/$ARCHIVE_BRANCH:$(m[2])/$commit/$(m[4])")))
             end
             write_report(target, root; reference = ipopt_reference(benchmark_version(root)), title = "Commit " * first(commit, 8), link = "https://github.com/$DEFAULT_REPOSITORY/commit/$commit", finished = true, assets = "../..")
         end

@@ -118,12 +118,18 @@ const REPOSITORY = Ref(".")
 const FETCH = Ref(true)
 git_command(args...) = (root = REPOSITORY[]; `git -c safe.directory=$root -C $root $args`)
 git(args...) = readchomp(git_command(args...))
+# The archive of results may be another repository than the benchmarked one: its clone, and its
+# address for links. Empty: the benchmarked repository.
+const ARCHIVE = Ref("")
+const ARCHIVE_URL = Ref("")
+archive_command(args...) = (root = isempty(ARCHIVE[]) ? REPOSITORY[] : ARCHIVE[]; `git -c safe.directory=$root -C $root $args`)
+archive_git(args...) = readchomp(archive_command(args...))
 
 # The revision of the archive branch, up to date if the clone may fetch; `nothing` without one.
 function archive_revision()
     FETCH[] || return "origin/$ARCHIVE_BRANCH"
     remote = get(ENV, "MADNLP_BENCHMARK_REMOTE", "origin")
-    return success(git_command("fetch", "--quiet", remote, ARCHIVE_BRANCH)) ? "FETCH_HEAD" : nothing
+    return success(archive_command("fetch", "--quiet", remote, ARCHIVE_BRANCH)) ? "FETCH_HEAD" : nothing
 end
 # a full commit hash as it is shown; any other revision as it is
 short(rev) = occursin(r"^[0-9a-f]{40}$", rev) ? rev[1:8] : rev
@@ -177,8 +183,8 @@ end
 function from_archive(rev; depth = 200)
     archive = archive_revision()
     archive === nothing && return nothing
-    paths = split(git("ls-tree", "-r", "--name-only", archive), '\n'; keepempty = false)
-    show(path) = read(git_command("show", "$archive:$path"), String)
+    paths = split(archive_git("ls-tree", "-r", "--name-only", archive), '\n'; keepempty = false)
+    show(path) = read(archive_command("show", "$archive:$path"), String)
     by_commit = Dict{String, Vector{Tuple{String, String, String}}}()   # commit => (path, set, config)
     for path in paths
         m = match(r"^[^/]+/([0-9a-f]{40})/([a-z]+)_(.+)\.csv$", path)
@@ -214,8 +220,8 @@ end
 function latest_merged(live, name; depth = 200)
     archive = archive_revision()
     (archive === nothing || !success(git_command("rev-parse", "--verify", "--quiet", "origin/master"))) && return nothing
-    paths = split(git("ls-tree", "-r", "--name-only", archive), '\n'; keepempty = false)
-    show(path) = read(git_command("show", "$archive:$path"), String)
+    paths = split(archive_git("ls-tree", "-r", "--name-only", archive), '\n'; keepempty = false)
+    show(path) = read(archive_command("show", "$archive:$path"), String)
     files = [m for m in (match(r"^([^/]+)/([0-9a-f]{40})/([a-z]+)_(.+)\.csv$", p) for p in paths) if m !== nothing]
     root = joinpath(live, name)
     machines = filter(d -> isdir(joinpath(root, d)), readdir(root))
@@ -251,9 +257,9 @@ end
 function ipopt_reference(version)
     archive = archive_revision()
     archive === nothing && return nothing
-    show(path) = read(git_command("show", "$archive:$path"), String)
+    show(path) = read(archive_command("show", "$archive:$path"), String)
     rs = ResultSet("Ipopt reference")
-    for path in split(git("ls-tree", "-r", "--name-only", archive, "ipopt/$version/"), '\n'; keepempty = false)
+    for path in split(archive_git("ls-tree", "-r", "--name-only", archive, "ipopt/$version/"), '\n'; keepempty = false)
         m = match(r"/([a-z]+)_ipopt\.csv$", path)
         m === nothing || add!(rs, m[1], "ipopt", TOML.parse(show(path * ".meta.toml")), read_results(IOBuffer(show(path))))
         log = match(r"/logs/([a-z]+)/(.*)__ipopt\.txt$", path)

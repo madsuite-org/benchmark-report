@@ -469,7 +469,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     repository = link === nothing ? nothing : match(r"^(https://github\.com/[^/]+/[^/]+)/", link)
     if reference !== nothing && repository !== nothing
         for (key, path) in reference.logs
-            logs[key] = repository[1] * "/blob/$ARCHIVE_BRANCH/" * path
+            logs[key] = (isempty(ARCHIVE_URL[]) ? repository[1] : ARCHIVE_URL[]) * "/blob/$ARCHIVE_BRANCH/" * path
         end
     end
     cand = from_directory(root, "this run")
@@ -548,7 +548,7 @@ function write_index(site, runs; repository)
     run_table("Running", running)
     run_table("Finished", finished)
     run_table("Manual runs", [r for r in runs if isempty(r.pr)])
-    paths = split(git("ls-tree", "-r", "--name-only", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
+    paths = split(archive_git("ls-tree", "-r", "--name-only", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
     archived = [match(r"^([^/]+)/([0-9a-f]{40})/summary\.md$", p) for p in paths]
     filter!(!isnothing, archived)
     commits = unique!([String(m[2]) for m in archived])
@@ -563,7 +563,7 @@ function write_index(site, runs; repository)
     versions = unique!([m[1] for m in filter(!isnothing, [match(r"^ipopt/([^/]+)/", p) for p in paths])])
     if !isempty(versions)
         println(io, "<h2>Ipopt references</h2><ul>")
-        foreach(v -> println(io, "<li><a href=\"", code, "/tree/", ARCHIVE_BRANCH, "/ipopt/", escape_html(v), "\">benchmark ", escape_html(v), "</a></li>"), versions)
+        foreach(v -> println(io, "<li><a href=\"", isempty(ARCHIVE_URL[]) ? code : escape_html(ARCHIVE_URL[]), "/tree/", ARCHIVE_BRANCH, "/ipopt/", escape_html(v), "\">benchmark ", escape_html(v), "</a></li>"), versions)
         println(io, "</ul>")
     end
     line = "<span class=\"m\">$(length(running)) running, $(length(finished)) finished, $(length(commits)) archived</span>"

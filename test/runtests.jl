@@ -248,6 +248,30 @@ end
     end
 end
 
+@testset "results archived in another repository" begin
+    mktempdir() do root
+        _, archive, commit = archive_clone(root)
+        code = joinpath(root, "code")
+        run(`git init -q -b master $code`)
+        run(`git -C $code -c user.name=x -c user.email=x@x commit -q --allow-empty -m code`)
+        BenchmarkReport.REPOSITORY[] = code
+        BenchmarkReport.ARCHIVE[] = archive
+        BenchmarkReport.ARCHIVE_URL[] = "https://example.org/results"
+        BenchmarkReport.FETCH[] = false
+        try
+            site = mkpath(joinpath(root, "site"))
+            BenchmarkReport.build_archive(site)
+            @test isfile(joinpath(site, "archive", commit, "index.html"))
+            reset_runs()
+            BenchmarkReport.build_all(mkpath(joinpath(root, "live")), site)
+            @test occursin("archive/$commit/", read(joinpath(site, "index.html"), String))
+        finally
+            BenchmarkReport.ARCHIVE[] = ""
+            BenchmarkReport.ARCHIVE_URL[] = ""
+        end
+    end
+end
+
 @testset "no pull requests" begin
     mktempdir() do root
         _, clone, _ = archive_clone(root)
