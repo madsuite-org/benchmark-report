@@ -167,14 +167,13 @@ class TestDispatcher(Base):
         self.cfg.remote, self.cfg.live = "local", "/live"
         self.cfg.remote_start = [script("start", f'echo "start $@" >> {self.log}; sleep "${{SLEEP:-0}}"; exit "${{RC:-0}}"\n')]
         self.cfg.remote_stop = [script("stop", f'echo "stop $@" >> {self.log}; pkill -f "{self.dir}/start" || true\n')]
-        self.cfg.remote_preempt = [script("preempt", f'echo "preempt $@" >> {self.log}\n')]
         self.d = app.Dispatcher(self.cfg, self.q)
 
     def test_runs_a_job(self):
         self.q.add_pr(7, "alice", keep=False)
         self.assertEqual(self.d.run(self.q.take()), "finished")
         lines = open(self.log).read().splitlines()
-        self.assertEqual(lines, ["preempt start", f"start benchjob-1 /live/pr-7 {'a' * 40} pr 7 fresh", "preempt end"])
+        self.assertEqual(lines, [f"start benchjob-1 /live/pr-7 {'a' * 40} pr 7 fresh"])
         self.assertEqual(self.q.jobs("finished")[0]["pr"], 7)
 
     def test_failure_and_cancel(self):

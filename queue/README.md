@@ -17,9 +17,9 @@ It needs Python 3 and `openssl`, nothing else. The environment sets `QUEUE_REPO`
 ## Where jobs run
 
 With `QUEUE_REMOTE` set, the app runs the jobs itself: one at a time, it starts each on that host
-over SSH (`local` for the machine it runs on), with `QUEUE_REMOTE_START`, `QUEUE_REMOTE_STOP` and
-`QUEUE_REMOTE_PREEMPT` (by default the sudo wrappers of the benchmark machine) and the live folder
-under `QUEUE_LIVE`. So it can run anywhere, a laptop included, with any machine as its remote:
+over SSH (`local` for the machine it runs on), with `QUEUE_REMOTE_START` and `QUEUE_REMOTE_STOP`
+(by default the sudo wrappers of the benchmark machine) and the live folder under `QUEUE_LIVE`.
+Preemption of other work on that machine belongs to the machine's start wrapper, not to the app. So it can run anywhere, a laptop included, with any machine as its remote:
 
     QUEUE_REMOTE=005 QUEUE_STATE=/tmp/q.json ... python3 queue/app.py
 

@@ -42,7 +42,6 @@ class Config:
         self.remote = env.get("QUEUE_REMOTE", "")
         self.remote_start = shlex.split(env.get("QUEUE_REMOTE_START", "sudo -n /usr/local/sbin/benchjob-run"))
         self.remote_stop = shlex.split(env.get("QUEUE_REMOTE_STOP", "sudo -n /usr/local/sbin/benchjob-stop"))
-        self.remote_preempt = shlex.split(env.get("QUEUE_REMOTE_PREEMPT", "sudo -n /usr/local/bin/ci-preempt"))
         self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")   # the live folder on the remote
 
 
@@ -291,19 +290,17 @@ class Dispatcher:
     def run(self, job):
         unit = f"benchjob-{job['id']}"
         live = os.path.join(self.cfg.live, folder(job))
-        subprocess.run(self.command([*self.cfg.remote_preempt, "start"]))
-        try:
-            proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], job["kind"], str(job.get("pr") or ""),
-                                                  "keep" if job.get("keep", True) else "fresh"]))
-            stopped = False
-            while proc.poll() is None:
-                self.q.wait(lambda: any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")), 5)
-                if not stopped and any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")):
-                    subprocess.run(self.command([*self.cfg.remote_stop, unit]))
-                    stopped = True
-            rc = proc.wait()
-        finally:
-            subprocess.run(self.command([*self.cfg.remote_preempt, "end"]))
+        # the machine's own start command takes care of everything around the job there, its
+        # preemption of other work included
+        proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], job["kind"], str(job.get("pr") or ""),
+                                              "keep" if job.get("keep", True) else "fresh"]))
+        stopped = False
+        while proc.poll() is None:
+            self.q.wait(lambda: any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")), 5)
+            if not stopped and any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")):
+                subprocess.run(self.command([*self.cfg.remote_stop, unit]))
+                stopped = True
+        rc = proc.wait()
         state = "cancelled" if stopped else "finished" if rc == 0 else "failed"
         self.q.report(job["id"], state)
         return state
