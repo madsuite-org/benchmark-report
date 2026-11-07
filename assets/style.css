@@ -25,7 +25,7 @@ a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}
 h1 .tag{font-size:.8em}
 .state{display:inline-block;border-radius:3px;padding:0 7px;font-size:13px;font-weight:600}
 .state.on{background:var(--on-bg);color:var(--on)}.state.off{background:var(--soft);color:var(--ink2)}
-.state.on:before{content:"● ";font-size:10px;vertical-align:1px}
+.state.on:before{content:"● ";font-size:10px;vertical-align:1px}.state.on.stalled{background:#fdecc8;color:#7a4d00}
 .wide{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:1em}
 table{border-collapse:collapse;font-variant-numeric:tabular-nums}
 .table{--bs-table-bg:transparent;--bs-table-color:var(--ink);--bs-table-hover-color:var(--ink);margin-bottom:0}

@@ -428,6 +428,24 @@ class TestSite(Base):
         signed = {"Cookie": f"s={app.new_session(self.cfg, 'alice')}", "If-None-Match": tag}
         self.assertEqual(self.get("/madnlp/", signed)[0], 200)      # another banner, so another page
 
+    def test_stalled_run(self):
+        live = os.path.join(self.dir, "live")
+        os.makedirs(os.path.join(live, "pr-1"))
+        run = os.path.join(live, "pr-1", "run.json")
+        open(run, "w").write('{"state":"running"}')
+        self.cfg.live_local, self.cfg.stall = live, 600
+        self.assertNotIn("stalled", self.get("/madnlp/pr-1/")[2])
+        old = time.time() - 1200
+        os.utime(run, (old, old))
+        page = self.get("/madnlp/pr-1/")[2]
+        self.assertIn("stalled", page)
+        self.assertIn("Sign in</a> to resume", page)
+        page = self.get("/madnlp/pr-1/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
+        self.assertIn(">Resume</button>", page)
+        open(run, "w").write('{"state":"finished"}')
+        os.utime(run, (old, old))
+        self.assertNotIn("stalled", self.get("/madnlp/pr-1/")[2])
+
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")
         self.cfg.builder = ["sh", "-c", f"echo x >> {mark}; sleep 30"]
