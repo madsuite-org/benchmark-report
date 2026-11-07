@@ -34,15 +34,12 @@ stale(live, name) = !haskey(RUNS, name) || RUNS[name].mtime != mtime(joinpath(li
 function build_run(live, site, name)
     path = joinpath(live, name, "run.json")
     changed, text = mtime(path), read(path, String)
-    repository, pr, base = json_field(text, "repository"), json_field(text, "pr"), json_field(text, "base")
+    repository, pr = json_field(text, "repository"), json_field(text, "pr")
     (occursin(r"^[\w.-]+/[\w.-]+$", repository) && occursin(r"^\d+$", pr)) || error("$name: bad run.json")
     state = json_field(text, "state")
-    # master: its archived results, or those of the latest merged pull request on the same machines
-    compared = occursin(r"^[0-9a-f]{40}$", base) ? locate(base, "master") : nothing
-    compared === nothing && (compared = latest_merged(live, pr))
     write_report(
         joinpath(site, name), joinpath(live, name);
-        base = compared,
+        base = latest_merged(live, pr),
         reference = ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
         title = "Pull request #$pr", link = "https://github.com/$repository/pull/$pr",
         finished = state != "running", assets = "..", live = true,

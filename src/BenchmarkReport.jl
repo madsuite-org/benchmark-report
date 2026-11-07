@@ -206,11 +206,11 @@ function from_archive(rev; depth = 200)
     return ResultSet(label, rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
 end
 
-# The results that stand for master for the run in folder `pr-<pr>` of `live`: per machine, walking
-# back along master, those of a commit itself or of the pull request it merged. A merge commit
-# names its pull request, `(#N)` at the end of its subject, and `pr-N/run.json` names the commit
-# that was benchmarked, which may be an earlier head of that pull request. Timings are only
-# comparable on the same machine. `nothing` if there are none.
+# The results that stand for master for the run in folder `pr-<pr>` of `live`: for each machine and
+# set, the newest ones walking back along master, of a commit itself or of the pull request it
+# merged. A merge commit names its pull request, `(#N)` at the end of its subject, and
+# `pr-N/run.json` names the commit that was benchmarked, which may be an earlier head of that pull
+# request. Timings are only comparable on the same machine. `nothing` if there are none.
 function latest_merged(live, pr; depth = 200)
     archive = archive_revision()
     (archive === nothing || !success(git_command("rev-parse", "--verify", "--quiet", "origin/master"))) && return nothing
@@ -218,10 +218,9 @@ function latest_merged(live, pr; depth = 200)
     show(path) = read(git_command("show", "$archive:$path"), String)
     files = [m for m in (match(r"^([^/]+)/([0-9a-f]{40})/([a-z]+)_(.+)\.csv$", p) for p in paths) if m !== nothing]
     root = joinpath(live, "pr-$pr")
-    machines = Set(filter(d -> isdir(joinpath(root, d)), readdir(root)))
-    rs, used = ResultSet(""), String[]
+    machines = filter(d -> isdir(joinpath(root, d)), readdir(root))
+    rs, used, done = ResultSet(""), String[], Set{Tuple{String, String}}()
     for line in split(git("log", "--first-parent", "-n", string(depth), "--format=%H %s", "origin/master"), '\n'; keepempty = false)
-        isempty(machines) && break
         sha, subject = split(line, ' '; limit = 2)
         merged = match(r"\(#(\d+)\)$", subject)
         merged !== nothing && merged[1] == pr && continue
@@ -230,15 +229,16 @@ function latest_merged(live, pr; depth = 200)
             head = match(r"\"commit\"\s*:\s*\"([0-9a-f]{40})\"", read(joinpath(live, "pr-$(merged[1])", "run.json"), String))
             head === nothing || push!(commits, String(head[1]))
         end
-        for commit in commits, machine in collect(machines)
-            mine = [m for m in files if m[1] == machine && m[2] == commit]
+        for commit in commits, machine in machines
+            mine = [m for m in files if m[1] == machine && m[2] == commit && (machine, String(m[3])) ∉ done]
             isempty(mine) && continue
             for m in mine
                 path = String(m.match)
                 add!(rs, m[3], m[4], TOML.parse(show(path * ".meta.toml")), read_results(IOBuffer(show(path))))
             end
-            push!(used, "`$(commit[1:8])`" * (merged === nothing ? "" : ", from #$(merged[1])") * ", on " * replace(machine, "_" => " "))
-            delete!(machines, machine)
+            sets = unique!([String(m[3]) for m in mine])
+            union!(done, [(machine, set) for set in sets])
+            push!(used, "`$(commit[1:8])`" * (merged === nothing ? "" : ", from #$(merged[1])") * ", on " * replace(machine, "_" => " ") * " (" * join(sort(sets), ", ") * ")")
         end
     end
     isempty(used) && return nothing
