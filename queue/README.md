@@ -1,6 +1,6 @@
 # Run queue
 
-`app.py` is the run queue at https://benchmark.madsuite.org/queue: people with write access to
+`app.py` is the run queue at https://benchmark.madsuite.org/queue, next to the reports at `/madnlp/`: people with write access to
 MadNLP.jl queue benchmarks there, or with a comment `@MadSuiteBenchmarkBot benchmark` on a pull
 request, and every push to master queues one. One job runs at a time, master first. A runner on the
 benchmark machine takes a job by holding `GET /queue/runner/next` open, runs it, and reports with

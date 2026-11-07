@@ -32,7 +32,7 @@ class Config:
         self.runner_hash = read(env.get("RUNNER_TOKEN_HASH_FILE"))
         self.session_key = (read(env.get("SESSION_KEY_FILE")) or secrets.token_hex(32)).encode()
         self.base = env.get("QUEUE_BASE", "https://benchmark.madsuite.org/queue")
-        self.reports = env.get("QUEUE_REPORTS", "https://benchmark.madsuite.org/benchmark")
+        self.reports = env.get("QUEUE_REPORTS", "https://benchmark.madsuite.org/madnlp")
         self.bots = [b.lower() for b in env.get("QUEUE_BOTS", "MadSuiteBenchmarkBot,madsuite-benchmark").split(",") if b]
         self.port = int(env.get("QUEUE_PORT", "8091"))
         self.hold = float(env.get("QUEUE_HOLD", "50"))   # seconds a runner request is held open
@@ -309,10 +309,11 @@ def page(cfg, q, login, message=""):
             f'On a pull request, a comment <code>@{bot} benchmark</code> also queues it.</p>'
             + (f'<p class="fail">{e(message)}</p>' if message else "") + form
             + (table("Queue", queue) or '<p class="m">Nothing is running or waiting.</p>') + table("Recent", done))
+    r = e(cfg.reports)
     return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>Run queue: MadNLP benchmarks</title><script src="../benchmark/theme.js"></script>'
-            '<link rel="stylesheet" href="../benchmark/bootstrap.min.css"><link rel="stylesheet" href="../benchmark/style.css"><body>'
-            '<header class="site"><div class="container"><a class="brand" href="../benchmark/">MadNLP benchmarks</a>'
+            f'<title>Run queue: MadNLP benchmarks</title><script src="{r}/theme.js"></script>'
+            f'<link rel="stylesheet" href="{r}/bootstrap.min.css"><link rel="stylesheet" href="{r}/style.css"><body>'
+            f'<header class="site"><div class="container"><a class="brand" href="{r}/">MadNLP benchmarks</a>'
             '<span class="trail">Run queue</span><button id="theme" type="button" aria-label="Switch between light and dark">Theme</button></div></header>'
             f'<main class="container">{body}</main></body></html>')
 
