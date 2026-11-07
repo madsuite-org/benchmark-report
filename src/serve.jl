@@ -28,7 +28,7 @@ function code_commit()
     end
 end
 
-is_folder(name) = occursin(r"^(pr-\d+|run-[a-z0-9-]+)$", name)
+is_folder(name) = occursin(r"^(pr-\d+|run-[a-z0-9-]+|master-[0-9a-f]{8})$", name)
 is_run(live, name) = is_folder(name) && isfile(joinpath(live, name, "run.json"))
 stale(live, name) = !haskey(RUNS, name) || RUNS[name].mtime != mtime(joinpath(live, name, "run.json"))
 
@@ -36,7 +36,7 @@ function build_run(live, site, name)
     path = joinpath(live, name, "run.json")
     changed, text = mtime(path), read(path, String)
     repository, pr = json_field(text, "repository"), json_field(text, "pr")
-    manual = startswith(name, "run-")
+    manual = startswith(name, "run-") || startswith(name, "master-")
     (occursin(r"^[\w.-]+/[\w.-]+$", repository) && (manual || occursin(r"^\d+$", pr))) || error("$name: bad run.json")
     state, commit = json_field(text, "state"), json_field(text, "commit")
     named = json_field(text, "title")

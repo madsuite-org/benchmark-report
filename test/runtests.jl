@@ -237,6 +237,13 @@ end
         @test occursin("Manual run: &lt;b&gt;x try", report)
         @test occursin("o/r/commit/" * "b"^40, report)
         @test !isdir(joinpath(site, "other"))
+        # a run of master from the queue, under its commit
+        dir = mkpath(joinpath(live, "master-bbbbbbbb"))
+        hostile_results(dir)
+        write(joinpath(dir, "run.json"), """{"repository":"o/r","pr":"","title":"master bbbbbbbb","commit":"$("b"^40)","state":"running"}""")
+        reset_runs()
+        BenchmarkReport.build_all(live, site)
+        @test occursin("Manual run: master bbbbbbbb", read(joinpath(site, "master-bbbbbbbb", "index.html"), String))
         @test occursin("run-try-this", read(joinpath(site, "status.json"), String))
     end
 end
