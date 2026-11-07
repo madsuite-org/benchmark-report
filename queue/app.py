@@ -64,6 +64,9 @@ class GitHub:
         req = urllib.request.Request(url or "https://api.github.com" + path, method=method, data=data,
                                      headers={"Accept": "application/vnd.github+json" if not url else "application/json",
                                               "User-Agent": "madsuite-benchmark-queue"})
+        if data is not None:
+            # without it, GitHub's sign-in endpoint reads a JSON body as a form and answers Not Found
+            req.add_header("Content-Type", "application/x-www-form-urlencoded" if form else "application/json")
         if token:
             req.add_header("Authorization", ("Bearer " if not token.startswith("Basic ") else "") + token)
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -90,8 +93,11 @@ class GitHub:
 
     def user(self, code):
         """The login of the person who signed in with `code`."""
-        tok = self.call("POST", "", {"client_id": self.cfg.client_id, "client_secret": self.cfg.client_secret, "code": code},
-                        url="https://github.com/login/oauth/access_token").get("access_token")
+        answer = self.call("POST", "", {"client_id": self.cfg.client_id, "client_secret": self.cfg.client_secret, "code": code},
+                           url="https://github.com/login/oauth/access_token")
+        tok = answer.get("access_token")
+        if not tok:
+            print("sign-in refused by GitHub:", answer.get("error"), answer.get("error_description"), flush=True)
         return tok and self.call("GET", "/user", token=tok).get("login")
 
 
