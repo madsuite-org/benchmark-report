@@ -29,4 +29,6 @@ document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();
 if(q||c){const f=document.querySelector('#filter');f.value=q||'';document.querySelector('#failed').checked=c;f.dispatchEvent(new Event('input'))}},2000);
 // how long ago the shown data was built, so that a live page visibly is one
 setInterval(()=>document.querySelectorAll('.ago').forEach(a=>{const s=Math.max(0,Math.round((Date.now()-Date.parse(a.dataset.t))/1000));
-a.textContent=s<90?s+' s ago':s<5400?Math.round(s/60)+' min ago':a.dataset.t.slice(0,16).replace('T',' ')+' UTC'}),1000);
+a.textContent=s<90?s+' s ago':s<5400?Math.round(s/60)+' min ago':a.dataset.t.slice(0,16).replace('T',' ')+' UTC';
+// a run that says it is running but has had no new data for 15 minutes has stalled: say so
+const st=document.querySelector('.state.on');if(st)st.textContent=s>900?'stalled':'running';if(st)st.classList.toggle('stalled',s>900)}),1000);

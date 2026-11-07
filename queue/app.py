@@ -47,6 +47,10 @@ class Config:
         # command that runs the builder (bin/serve.jl), which this app starts and restarts.
         self.site = env.get("QUEUE_SITE", "")
         self.builder = shlex.split(env.get("QUEUE_BUILDER", ""))
+        # The live folders as this machine sees them, and how long a running one may go without new
+        # data before it is called stalled.
+        self.live_local = env.get("QUEUE_LIVE_LOCAL", "")
+        self.stall = float(env.get("QUEUE_STALL", "900"))
 
 
 class GitHub:
@@ -336,6 +340,35 @@ class Builder:
             time.sleep(30 if time.time() - started < 60 else 1)
 
 
+def stalled(cfg, name):
+    """Seconds since the live folder `name` said it is running and last had new data, if that is
+    longer than `cfg.stall`; else None."""
+    if not cfg.live_local or not re.fullmatch(r"pr-\d+|master-[0-9a-f]{8}|run-[a-z0-9-]+", name):
+        return None
+    path = os.path.join(cfg.live_local, name, "run.json")
+    try:
+        state = json.load(open(path)).get("state")
+        age = time.time() - os.stat(path).st_mtime
+    except (OSError, ValueError, AttributeError):
+        return None
+    return age if state == "running" and age > cfg.stall else None
+
+
+def resume_form(cfg, login, name):
+    """The button that resumes a stalled run: its pull request again, keeping what it has."""
+    e = html.escape
+    if not login or not name.startswith("pr-"):
+        return ""
+    return (f'<form method="post" action="{e(cfg.base)}/update" class="d-inline"><input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}">'
+            f'<input type="hidden" name="pr" value="{name[3:]}"><button class="btn btn-sm btn-primary" name="keep" value="1">Resume</button></form>')
+
+
+def stall_note(cfg, login, name, age):
+    action = resume_form(cfg, login, name) or (f'<a href="{html.escape(cfg.base)}/login">Sign in</a> to resume it.' if name.startswith("pr-") else "")
+    return (f'<div class="alert alert-warning container mt-2 mb-0">This run is <b>stalled</b>: it says it is running, but '
+            f'no new data has arrived for {int(age // 60)} min. {action}</div>')
+
+
 NAV = '<nav class="app"><a class="btn btn-sm btn-light" href="/queue/">Sign in</a></nav>'
 
 
@@ -414,7 +447,9 @@ def signin(cfg, message=""):
 STATE_BADGE = {"running": "primary", "waiting": "secondary", "finished": "success", "failed": "danger", "cancelled": "warning", "skipped": "light"}
 
 
-def badge(j):
+def badge(j, cfg=None):
+    if cfg is not None and j["state"] == "running" and j.get("sha") and stalled(cfg, folder(j)) is not None:
+        return '<span class="badge text-bg-warning">stalled</span>'
     state = "cancelling" if j.get("cancel") and j["state"] == "running" else j["state"]
     return f'<span class="badge text-bg-{STATE_BADGE.get(j["state"], "secondary")}">{html.escape(state)}</span>'
 
@@ -448,7 +483,7 @@ def jobs_page(cfg, q, login, message=""):
     def row(j):
         report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
         return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{e(name(cfg, j))}</a></td><td class="l">{e(j.get("title", ""))}</td>'
-                f'<td class="l">{badge(j)}</td><td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
+                f'<td class="l">{badge(j, cfg)}</td><td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
                 f'<td class="l">{report}</td></tr>')
     def table(title, jobs, empty):
         head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">title</th><th class="l">state</th>'
@@ -468,7 +503,7 @@ def jobs_page(cfg, q, login, message=""):
 def job_page(cfg, q, login, j):
     e = html.escape
     link = (f'https://github.com/{cfg.repo}/pull/{j["pr"]}' if j["kind"] == "pr" else f'https://github.com/{cfg.repo}/commits/master')
-    rows = [("Run", f'<a href="{link}">{e(name(cfg, j))}</a> {e(j.get("title", ""))}'), ("State", badge(j) + (f' {e(j["note"])}' if j.get("note") else "")),
+    rows = [("Run", f'<a href="{link}">{e(name(cfg, j))}</a> {e(j.get("title", ""))}'), ("State", badge(j, cfg) + (f' {e(j["note"])}' if j.get("note") else "")),
             ("Commit", f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}"><code>{j["sha"][:8]}</code></a>' if j.get("sha") else "resolved when it starts"),
             ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
             ("Results", "keep the results so far" if j.get("keep", True) else "start over")]
@@ -614,7 +649,7 @@ def handler(cfg, q):
             if kind.startswith("text/") or kind in ("application/javascript", "application/json"):
                 kind += "; charset=utf-8"
             # a page differs by who is signed in, so its tag does too
-            tag = '"%x-%x-%s"' % (st.st_mtime_ns, st.st_size, hashlib.sha256((login or "").encode()).hexdigest()[:8] if target.endswith(".html") else "")
+            tag = '"%x-%x-%s"' % (st.st_mtime_ns, st.st_size, hashlib.sha256(f"{login}|{int(time.time() // 60)}".encode()).hexdigest()[:8] if target.endswith(".html") else "")
             if self.headers.get("If-None-Match") == tag:
                 self.send_response(304)
                 self.send_header("ETag", tag)
@@ -624,6 +659,11 @@ def handler(cfg, q):
             data = open(target, "rb").read()
             if target.endswith(".html"):
                 data = data.replace(NAV.encode(), app_nav(cfg, login).encode(), 1)
+                parts = path.strip("/").split("/")
+                age = stalled(cfg, parts[1]) if len(parts) > 1 else None
+                if age is not None:
+                    member = bool(login) and q.permission(login) in WRITE
+                    data = data.replace(b"</header>", b"</header>" + stall_note(cfg, login if member else None, parts[1], age).encode(), 1)
             self.send_response(200)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(data)))
