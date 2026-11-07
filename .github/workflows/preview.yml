@@ -45,5 +45,8 @@ jobs:
           git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -q -m "Preview of pull request $PR" --allow-empty
           git push -q origin HEAD:gh-pages
       - name: Comment
-        if: github.event.action == 'opened' || github.event.action == 'reopened'
-        run: gh pr comment "$PR" --body "Preview, built from the sample results: https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/pr-$PR/ (updates with each push, gone when the pull request closes)."
+        if: github.event.action != 'closed'
+        run: |
+          gh pr view "$PR" --json comments --jq '.comments[].body' | grep -q '^Preview, built' && exit 0
+          url=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .html_url)
+          gh pr comment "$PR" --body "Preview, built from the sample results: ${url}pr-$PR/. It updates with each push and is removed when the pull request closes."
