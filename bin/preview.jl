@@ -32,6 +32,7 @@ function preview(site)
         git("add", "-A")
         git("commit", "-q", "-m", "results")
         git("update-ref", "refs/remotes/origin/benchmark-results", "HEAD")
+        git("update-ref", "refs/remotes/origin/master", base)
         cp(joinpath(sample, "live"), joinpath(live, "pr-1"))
         write(joinpath(live, "pr-1", "run.json"), """{"repository":"madsuite-org/MadNLP.jl","pr":"1","commit":"$("0"^40)","base":"$base","state":"running"}""")
         BenchmarkReport.REPOSITORY[] = clone

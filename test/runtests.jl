@@ -81,6 +81,27 @@ end
     end
 end
 
+@testset "a solve past the limit of a GPU counts as stopped there" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
+        hostile_results(results)
+        machine = joinpath(results, "machine")
+        lines = readlines(joinpath(machine, "smoke_default.csv"))
+        row = split(lines[2], ",")
+        row[findfirst(==("t_total"), split(lines[1], ","))] = "900"
+        write(joinpath(machine, "smoke_default.csv"), lines[1] * "\n" * join(row, ",") * "\n")
+        other = mkpath(joinpath(results, "other"))
+        cp(joinpath(machine, "smoke_default.csv"), joinpath(other, "smoke_default.csv"))
+        meta = read(joinpath(machine, "smoke_default.csv.meta.toml"), String)
+        write(joinpath(other, "smoke_default.csv.meta.toml"), replace(meta, "device = \"cuda\"" => "device = \"cpu\""))
+        write_report(site, results; wall = 7200.0, finished = true)
+        @test occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+        @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cpu-smoke.html"), String))
+        # the result files are left as they were
+        @test occursin(",900,", read(joinpath(site, "data", "machine", "smoke_default.csv"), String))
+    end
+end
+
 @testset "a device that has not run a set counts none of it" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
@@ -153,7 +174,13 @@ end
         head = "d"^40
         git("commit", "-q", "--allow-empty", "-m", "Older change (#6)")
         git("commit", "-q", "--allow-empty", "-m", "A change (#7)")
+        older = readchomp(`git -C $origin rev-parse "HEAD~1"`)
         git("branch", "master")
+        # #6 has a set that #7 has not, and an older result of the set they share
+        to = mkpath(joinpath(origin, "machine", older))
+        for (from, name) in (("smoke_default.csv", "smoke_default.csv"), ("smoke_default.csv.meta.toml", "smoke_default.csv.meta.toml"), ("smoke_default.csv", "other_default.csv"), ("smoke_default.csv.meta.toml", "other_default.csv.meta.toml"))
+            cp(joinpath(root, "machine", from), joinpath(to, name))
+        end
         for (machine, commit) in (("machine", head), ("elsewhere", "c"^40))
             to = mkpath(joinpath(origin, machine, commit))
             for file in ("smoke_default.csv", "smoke_default.csv.meta.toml")
@@ -167,15 +194,17 @@ end
         BenchmarkReport.FETCH[] = false
         live, site = mkpath(joinpath(root, "live")), mkpath(joinpath(root, "site"))
         live_run(live, "pr-1", "running")
-        @test BenchmarkReport.latest_merged(live, "1") === nothing
+        # #7 has not been benchmarked yet: its results are unknown, and #6 stands in
+        @test !occursin("#7", BenchmarkReport.latest_merged(live, "1").label)
         live_run(live, "pr-7", "finished")
         run_json = joinpath(live, "pr-7", "run.json")
         write(run_json, replace(read(run_json, String), "b"^40 => head))
         rs = BenchmarkReport.latest_merged(live, "1")
-        @test rs !== nothing && occursin("`dddddddd`, from #7, on machine", rs.label)
+        @test rs !== nothing && occursin("`dddddddd`, from #7, on machine (smoke)", rs.label)
+        @test occursin("`$(first(older, 8))`, from #6, on machine (other)", rs.label)
         @test !occursin("elsewhere", rs.label)
         # a pull request is not its own master
-        @test BenchmarkReport.latest_merged(live, "7") === nothing
+        @test !occursin("#7", BenchmarkReport.latest_merged(live, "7").label)
         reset_runs()
         BenchmarkReport.build_all(live, site)
         report = read(joinpath(site, "pr-1", "index.html"), String)
