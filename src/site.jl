@@ -150,6 +150,17 @@ end
 
 # The head of a table of Hans Mittelmann's benchmarks, per set: the scaled shifted geometric mean,
 # with the reference solver at 1, and the instances solved, over the instances all solvers have run.
+# The problems of a set: all those that any solver on any device has reported. The Ipopt
+# reference holds the whole set, so this is short of it only where there is no reference.
+function set_size(cand, base, set)
+    cases = Set{String}()
+    for rs in (cand, base)
+        rs === nothing && continue
+        foreach(k -> k[2] == set && union!(cases, keys(rs.rows[k])), keys(rs.rows))
+    end
+    return length(cases)
+end
+
 function summary_table(io, blocks, sides, cand, base, wall)
     # a column per label: Ipopt, master, current
     labels = unique!([s.label for (set, device) in blocks for s in on_device(sides, device) if !isempty(side_rows(s, cand, base, set))])
@@ -173,7 +184,7 @@ function summary_table(io, blocks, sides, cand, base, wall)
         # Ipopt is the reference where it has run, else the best solver
         scale = haskey(means, "Ipopt") ? means["Ipopt"] : minimum(values(means))
         cell(f) = join([l in have ? "<td>" * f(l) * "</td>" : "<td></td>" for l in labels])
-        println(io, "<tr class=\"set $device\"><td colspan=\"", length(labels) + 1, "\"><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set)), $(uppercase(device))</a> <span class=\"m\">$(length(cases)) problems</span></td></tr>")
+        println(io, "<tr class=\"set $device\"><td colspan=\"", length(labels) + 1, "\"><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set)), $(uppercase(device))</a> <span class=\"m\">$(all(==("Ipopt"), have) ? 0 : length(cases))/$(set_size(cand, base, set)) problems</span></td></tr>")
         println(io, "<tr><td>solved</td>", cell(l -> string(count(c -> solved(here[l][c]), cases))), "</tr>")
         println(io, "<tr><td>SGM (s)</td>", cell(l -> @sprintf("%.2f", means[l] - 10)), "</tr>")
         println(io, "<tr><td>SSGM</td>", cell(l -> @sprintf("%.3g", means[l] / scale)), "</tr>")
@@ -362,8 +373,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     println(io, "<p class=\"m\">SGM: shifted geometric mean of the solve time, with a shift of 10 s and a failure counting as ", round(Int, wall), " s, over the problems that all solvers shown have run. SSGM: the SGM scaled so that Ipopt, or the best solver where Ipopt has not run, is 1.</p>")
     page(joinpath(site, "index.html"), title, String(take!(io)), bar; refresh = !finished, assets)
     # for a check outside this machine that the report is alive
-    write(joinpath(site, "status.json"), "{\"state\":\"$(finished ? "finished" : "running")\",\"updated\":\"$stamp\"}\n")
-    chmod(joinpath(site, "status.json"), 0o644)
+    write_atomic(joinpath(site, "status.json"), "{\"state\":\"$(finished ? "finished" : "running")\",\"updated\":\"$stamp\"}\n")
     return
 end
 
@@ -371,8 +381,7 @@ end
 const ASSETS = joinpath(dirname(@__DIR__), "assets")
 function write_assets(site)
     for name in readdir(ASSETS)
-        cp(joinpath(ASSETS, name), joinpath(site, name); force = true)
-        chmod(joinpath(site, name), 0o644)
+        write_atomic(joinpath(site, name), read(joinpath(ASSETS, name)))
     end
     return
 end

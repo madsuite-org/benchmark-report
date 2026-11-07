@@ -17,10 +17,10 @@ const key=r=>{const v=r.cells[i].textContent,n=parseFloat(v);return isNaN(n)?v:n
 [...body.rows].sort((a,b)=>{const x=key(a),y=key(b),c=x<y?-1:x>y?1:0;return up?-c:c}).forEach(r=>body.append(r))})})})
 }
 bind();
-// while a run is going, take the page again every few seconds and swap its content in place
+// while a run is going, take the page again every two seconds and swap its content in place
 if(document.querySelector('meta[name=live]'))setInterval(async()=>{
 const r=await fetch(location.href,{cache:'no-store'});if(!r.ok)return;
 const d=new DOMParser().parseFromString(await r.text(),'text/html'),q=document.querySelector('#filter')?.value;
 document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();
 if(q){const f=document.querySelector('#filter');f.value=q;f.dispatchEvent(new Event('input'))}
-if(!d.querySelector('meta[name=live]'))document.querySelector('meta[name=live]').remove()},5000);
+if(!d.querySelector('meta[name=live]'))document.querySelector('meta[name=live]').remove()},2000);

@@ -6,9 +6,9 @@ treated as untrusted input, since the pages are public.
 """
 module BenchmarkReport
 
-using Dates, DelimitedFiles, Printf, TOML
+using Dates, DelimitedFiles, FileWatching, Printf, TOML
 
-export write_report, write_index, locate, ipopt_reference, benchmark_version
+export write_report, write_index, locate, ipopt_reference, benchmark_version, serve
 
 # Status recorded for an instance whose worker was killed for overrunning the wall limit, and
 # for one that could not be built or whose solve threw.
@@ -240,5 +240,6 @@ function locate(arg, label)
 end
 
 include("site.jl")
+include("serve.jl")
 
 end
