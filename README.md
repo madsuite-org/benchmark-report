@@ -19,4 +19,7 @@ request, kept up to date by the benchmark job, which replaces `run.json` in it a
 results; `bin/serve.jl` never fetches it. The result format and the benchmark itself are defined
 in [MadNLP.jl](https://github.com/madsuite-org/MadNLP.jl), under `benchmark/`.
 
+A pull request from this repository gets a preview on GitHub Pages, linked in a comment. It is
+built by `bin/preview.jl` from the results in `sample/`, which are a copy of real results.
+
 The theme is in `assets/`, with Bootstrap bundled, so the pages load nothing from elsewhere.

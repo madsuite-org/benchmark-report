@@ -1,0 +1,49 @@
+name: Preview
+
+# Publishes the site, built from `sample/`, at <pages>/pr-<N>/ for every pull request from this
+# repository, and removes it when the pull request is closed. A fork gets no write token, so no
+# preview. Nothing here runs on the server of the site.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: preview-pages
+
+jobs:
+  preview:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        if: github.event.action != 'closed'
+        with:
+          version: "1.13"
+      - name: Build
+        if: github.event.action != 'closed'
+        run: |
+          julia --project -e 'using Pkg; Pkg.instantiate()'
+          julia --project bin/preview.jl "$RUNNER_TEMP/site"
+      - name: Publish
+        run: |
+          git fetch -q origin gh-pages
+          git worktree add -q "$RUNNER_TEMP/pages" FETCH_HEAD
+          cd "$RUNNER_TEMP/pages"
+          rm -rf "pr-$PR"
+          if [ "${{ github.event.action }}" != closed ]; then cp -r "$RUNNER_TEMP/site" "pr-$PR"; fi
+          git add -A
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com commit -q -m "Preview of pull request $PR" --allow-empty
+          git push -q origin HEAD:gh-pages
+      - name: Comment
+        if: github.event.action == 'opened' || github.event.action == 'reopened'
+        run: gh pr comment "$PR" --body "Preview, built from the sample results: https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/pr-$PR/ (updates with each push, gone when the pull request closes)."
