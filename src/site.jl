@@ -55,11 +55,21 @@ end
 
 side_rows(side, cand, base, set) = get((side.base ? base : cand).rows, (side.key[1], set, side.key[2]), Dict{String, Any}())
 
-# GPU runs have a shorter limit on a solve. Every solver on a device's pages is held to that
-# device's limit, also in runs from before it: a longer solve counts as stopped at the limit. The
-# result files are left as they were.
+# Every solver on a device's pages is held to that device's limit on a solve, also in runs from
+# before it: a longer solve counts as stopped at the limit. The result files are left as they were.
+# A run states its limit as `wall_limit_s`; a run from before that takes `GPU_WALL` on a GPU.
 const GPU_WALL = 600.0
-device_wall(device, wall) = device in ("cuda", "amdgpu") ? min(wall, GPU_WALL) : wall
+function device_walls(root, wall)
+    stated = Dict{String, Float64}()
+    for (dir, _, files) in walkdir(root), file in files
+        endswith(file, ".meta.toml") || continue
+        meta = TOML.parsefile(joinpath(dir, file))
+        limit, device = get(meta, "wall_limit_s", nothing), get(meta, "device", nothing)
+        (limit isa Real && limit > 0 && device in DEVICES) && (stated[device] = min(get(stated, device, Inf), limit))
+    end
+    return Dict(d => get(stated, d, d == "cpu" ? wall : min(wall, GPU_WALL)) for d in DEVICES)
+end
+device_wall(device, walls) = walls[device]
 capped(rows, wall) = Dict{String, Any}(c => r.t_total > wall ? merge(r, (; status = MAXIMUM_WALLTIME_EXCEEDED, t_total = wall)) : r for (c, r) in rows)
 page_rows(side, cand, base, set, device, wall) = capped(side_rows(side, cand, base, set), device_wall(device, wall))
 
@@ -469,6 +479,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
         merge!(cand.harness, reference.harness)
     end
     sides = report_sides(cand, base)
+    walls = device_walls(root, wall)
     sets = sort!(unique!([k[2] for k in keys(cand.rows)]))
     stamp = Dates.format(now(UTC), "yyyy-mm-dd HH:MM:SS")
     # the bar pinned to the top of every page
@@ -481,13 +492,13 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     line = state_badge(finished ? "finished" : "running") * " <span class=\"m\">updated <span class=\"ago\" data-t=\"$(replace(stamp, " " => "T"))Z\">$stamp UTC</span></span>"
     bar = banner(assets == "." ? "index.html" : "$assets/index.html", trail, line, "<nav class=\"tools\">" * join(tools) * "</nav>" * join(menu.(devices)))
     for device in devices, set in sets
-        set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh = live, assets)
+        set_page(site, set, device, sides, cand, base, walls, logs, bar; refresh = live, assets)
     end
     finished || workers_page(site, root, bar, assets)
     io = IOBuffer()
     println(io, "<h1>Summary</h1>")
-    progress(io, devices, sets, sides, cand, base, wall)
-    summary_table(io, [(set, device) for device in devices for set in sets], sides, cand, base, wall)
+    progress(io, devices, sets, sides, cand, base, walls)
+    summary_table(io, [(set, device) for device in devices for set in sets], sides, cand, base, walls)
     println(io, "<h2>Solvers</h2>")
     solver_table(io, sides, cand, base, repository === nothing ? nothing : repository[1])
     for device in devices
@@ -497,7 +508,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     versions = filter(!=("–"), unique!(collect(values(cand.harness))))
     println(io, "<p class=\"m\">Benchmark ", escape_html(join(versions, ", ")), ": the version fixes the instances, the options, Ipopt and HSL.</p>")
     base === nothing || println(io, "<p class=\"m\">Base: ", escape_html(base.label), "</p>")
-    println(io, "<p class=\"m\">SGM: shifted geometric mean of the solve time, with a shift of 10 s and a failure counting as the time limit of a solve (CPU ", round(Int, wall), " s, GPU ", round(Int, device_wall("cuda", wall)), " s, for every solver on those pages), over the problems that all solvers shown have run. SSGM: the SGM scaled so that Ipopt, or the best solver where Ipopt has not run, is 1.</p>")
+    println(io, "<p class=\"m\">SGM: shifted geometric mean of the solve time, with a shift of 10 s and a failure counting as the time limit of a solve (CPU ", round(Int, walls["cpu"]), " s, GPU ", round(Int, walls["cuda"]), " s, for every solver on those pages), over the problems that all solvers shown have run. SSGM: the SGM scaled so that Ipopt, or the best solver where Ipopt has not run, is 1.</p>")
     page(joinpath(site, "index.html"), title, String(take!(io)), bar; refresh = live, assets)
     # for a check outside this machine that the report is alive
     write_atomic(joinpath(site, "status.json"), "{\"state\":\"$(finished ? "finished" : "running")\",\"updated\":\"$stamp\"}\n")
