@@ -746,6 +746,11 @@ class TestServer(Base):
         send("a", {}, state="finished")
         self.assertEqual(self.q.data["jobs"][-1]["state"], "finished")
         self.assertIn("external: n1, n2", app.machine_of(self.q.data["jobs"][-1]))
+        # a second job of the same commit, another report: both listed among recent jobs
+        code, out = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu"}, token="tok-alice")
+        self.q.cancel(out["id"], "alice")
+        listed = [j["id"] for j in app.recent(self.q)]
+        self.assertIn(out["id"], listed); self.assertIn(job, listed)
         # a cancelled job tells its nodes on their next upload
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 99}, token="tok-alice")[0], 400)   # no such pull request
         code, out = self.call_api("POST", "/queue/api/jobs", {"external": True, "branch": "feature/x"}, token="tok-alice")

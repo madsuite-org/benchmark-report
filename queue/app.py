@@ -1279,15 +1279,20 @@ def actions(cfg, q, login, j):
 
 
 def recent(q, n=30):
-    """Finished jobs, newest first, with only the latest of each pull request, and none of one that
-    is queued or running again."""
-    active = {(j["kind"], j.get("pr") or j.get("ref")) for j in q.jobs("waiting", "running") if j["kind"] != "master"}
+    """Finished jobs, newest first: the latest job of each report, and none of a report that is
+    being made again. Runs of one commit with other settings (CPU, GPU, Ipopt) are reports of their
+    own, so each is listed."""
+    def key(j):
+        if j["kind"] == "pr" and not variant(j) and not j.get("external"):
+            return ("pr", j["pr"])           # a pull request's latest run, whatever its commit
+        return folder(j) if j.get("sha") or j.get("folder") else (j["kind"], j.get("pr") or j.get("ref"))
+    active = {key(j) for j in q.jobs("waiting", "running") if j["kind"] != "master"}
     seen, out = set(), []
     for j in reversed(q.jobs("finished", "failed", "cancelled", "skipped")):
-        key = (j["kind"], j.get("pr") or j.get("ref") or j.get("sha"))
-        if key in seen or key in active:
+        key_ = key(j)
+        if key_ in seen or key_ in active:
             continue
-        seen.add(key)
+        seen.add(key_)
         out.append(j)
     return out[:n]
 
