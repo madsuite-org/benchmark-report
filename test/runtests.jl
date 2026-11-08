@@ -188,6 +188,19 @@ end
     end
 end
 
+@testset "a run with no results yet shows no reference" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "empty")), joinpath(root, "site")
+        other = mkpath(joinpath(root, "other"))
+        hostile_results(other)
+        machine = joinpath(other, "machine")
+        reference = BenchmarkReport.ResultSet("Ipopt reference")
+        BenchmarkReport.add!(reference, "smoke", "ipopt", BenchmarkReport.read_meta(joinpath(machine, "smoke_default.csv")), BenchmarkReport.read_results(joinpath(machine, "smoke_default.csv")))
+        write_report(site, results; wall = 7200.0, finished = false, reference)
+        @test !occursin("Ipopt</span>", read(joinpath(site, "index.html"), String))   # no Ipopt column
+    end
+end
+
 @testset "a device that has not run a set counts none of it" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
@@ -291,6 +304,12 @@ end
         @test !occursin("elsewhere", rs.label)
         # a pull request is not its own master
         @test !occursin("#7", BenchmarkReport.latest_merged(live, "pr-7").label)
+        # a run on a machine master has no results for takes the latest master's from another, marked
+        live_run(live, "run-x9-cluster", "running")
+        mv(joinpath(live, "run-x9-cluster", "machine"), joinpath(live, "run-x9-cluster", "cluster"))
+        rs = BenchmarkReport.latest_merged(live, "run-x9-cluster")
+        @test rs !== nothing && occursin("another machine", rs.label)
+        @test all(r -> hasproperty(r, :machine), Iterators.flatten(values(v) for v in values(rs.rows)))
         reset_runs()
         BenchmarkReport.build_all(live, site)
         report = read(joinpath(site, "pr-1", "index.html"), String)

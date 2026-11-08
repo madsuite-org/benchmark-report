@@ -284,6 +284,30 @@ function latest_merged(live, name; depth = 200)
             push!(used, "`$(commit[1:8])`" * (merged === nothing ? "" : ", from #$(merged[1])") * ", on " * replace(machine, "_" => " ") * " (" * join(sort(sets), ", ") * ")")
         end
     end
+    # A device of this run with no master results on its machines (a cluster's, say) takes the
+    # latest master's from another machine; its times say so, as they do not compare.
+    mine = Set{String}()
+    for (dir, _, _) in walkdir(root), path in values(result_files(dir))
+        isfile(path * ".meta.toml") && push!(mine, string(get(read_meta(path), "device", "")))
+    end
+    missing_devices = setdiff(mine, Set(k[1] for k in keys(rs.rows)))
+    for device in sort!(collect(missing_devices)), line in split(git("log", "--first-parent", "-n", string(depth), "--format=%H %s", "origin/master"), '\n'; keepempty = false)
+        sha = first(split(line, ' '; limit = 2))
+        found = false
+        for machine in unique!([String(m[1]) for m in files if m[2] == sha])
+            mine_files = [m for m in files if m[1] == machine && m[2] == sha]
+            metas = [TOML.parse(show(String(m.match) * ".meta.toml")) for m in mine_files]
+            any(meta -> get(meta, "device", "") == device, metas) || continue
+            for (m, meta) in zip(mine_files, metas)
+                get(meta, "device", "") == device || continue
+                add!(rs, m[3], m[4], meta, read_results(IOBuffer(show(String(m.match)))); machine)
+            end
+            push!(used, "`$(sha[1:8])` on " * replace(machine, "_" => " ") * " ($device, another machine)")
+            found = true
+            break
+        end
+        found && break
+    end
     isempty(used) && return nothing
     return ResultSet(join(used, "; "), rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
 end
