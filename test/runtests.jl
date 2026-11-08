@@ -322,6 +322,8 @@ end
         mv(joinpath(job, "machine"), joinpath(job, "cluster-gpu"))
         write(joinpath(job, "run.json"), """{"repository":"o/r","pr":"","commit":"$newest","state":"running"}""")
         BenchmarkReport.UPLOADS[] = uploads
+        @test !occursin("run-x5-newest", BenchmarkReport.latest_merged(live, "pr-1").label)   # not until it has finished
+        write(joinpath(job, "run.json"), """{"repository":"o/r","pr":"","commit":"$newest","state":"finished"}""")
         rs = BenchmarkReport.latest_merged(live, "pr-1")
         @test occursin("`$(first(newest, 8))` from run-x5-newest (cuda, cluster nodes)", rs.label)
         @test !occursin("from #7", rs.label)

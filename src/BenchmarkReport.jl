@@ -315,6 +315,8 @@ function latest_merged(live, name; depth = 200)
             end
             c = match(r"\"commit\"\s*:\s*\"([0-9a-f]{40})\"", text)
             (c === nothing || !haskey(position_of, c[1])) && continue
+            # only a finished run is a reference (Sungho): not one still running, cancelled or failed
+            json_field(text, "state") == "finished" || continue
             # of several jobs of one commit, the one with the most results first (not a test on a few)
             rows = sum((countlines(p) - 1 for (dir, _, _) in walkdir(joinpath(UPLOADS[], n)) for p in values(result_files(dir)) if endswith(p, "_default.csv")); init = 0)
             push!(external, (position_of[c[1]], -rows, n, String(c[1])))
