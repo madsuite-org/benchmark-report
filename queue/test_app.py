@@ -317,6 +317,17 @@ class TestDispatcher(Base):
         self.assertEqual(start, f"start benchjob-{job['id']} /live/{app.folder(job)} {'a' * 40} branch  keep default tol=1e-6  cpu")
         self.assertTrue(app.folder(job).startswith("run-custom-"))
 
+    def test_busy_machine_is_not_a_failure(self):
+        os.environ["RC"] = "75"
+        try:
+            self.q.add_pr(7, "alice")
+            job = self.q.take()
+            self.assertEqual(self.d.run(job), "busy")
+        finally:
+            del os.environ["RC"]
+        self.assertEqual(job["state"], "running")
+        self.assertEqual(self.d.run(self.q.take()), "finished")
+
     def test_ssh_quotes_each_word(self):
         self.cfg.remote = "node"
         cmd = self.d.command(["sudo", "-n", "x", "a b", "$(rm -rf /)"])

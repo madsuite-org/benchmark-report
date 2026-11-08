@@ -465,6 +465,9 @@ class Dispatcher:
                 stopped = True
         rc = proc.wait()
         proc.stdin.close()
+        if rc == 75 and not stopped:
+            # the machine is still cleaning up after this job's previous run: not a failure, try again
+            return "busy"
         if rc < 0 and not stopped:
             # the connection was killed on this side, e.g. the app is being stopped: not the job's
             # doing, so it stays running, and is started again, keeping what it has
@@ -477,8 +480,8 @@ class Dispatcher:
         while True:
             self.q.wait(lambda: self.q.jobs("running") or self.q.jobs("waiting"), 3600)
             job = self.q.take()
-            if job:
-                self.run(job)
+            if job and self.run(job) == "busy":
+                time.sleep(60)
 
 
 class Builder:
