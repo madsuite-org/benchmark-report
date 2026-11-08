@@ -406,6 +406,7 @@ const MAX_FILE_SIZE = 64 * 2^20
 # Bring `data/` up to date with the result directories, and index the solver logs.
 function sync_data(site, root)
     logs = Dict{Tuple{String, String, String, String}, String}()
+    chosen = current_machines(root)
     for dir in sort!(readdir(root))
         source = joinpath(root, dir)
         isdir(source) || continue
@@ -425,7 +426,8 @@ function sync_data(site, root)
             endswith(file, ".meta.toml") && device === nothing && (device = read_meta(from[1:(end - 10)])["device"])
         end
         logdir = joinpath(source, "logs")
-        (device === nothing || !isdir(logdir)) && continue
+        # the logs of the machine whose results are shown
+        (device === nothing || !isdir(logdir) || get(chosen, device, normpath(source)) != normpath(source)) && continue
         for set in readdir(logdir), file in readdir(joinpath(logdir, set))
             m = match(r"^(.*)__(.*)\.txt$", file)
             m === nothing || !safe_name(dir) || !safe_name(set) || !safe_name(file) || (logs[(device, set, m[1], m[2])] = "data/$dir/logs/$set/$file")

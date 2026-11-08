@@ -171,10 +171,31 @@ end
 
 function from_directory(dir, label)
     rs = ResultSet(label)
+    chosen = current_machines(dir)
     for (root, _, _) in walkdir(dir), ((set, config), path) in result_files(root)
-        isfile(path * ".meta.toml") && add!(rs, set, config, read_meta(path), read_results(path))
+        isfile(path * ".meta.toml") || continue
+        meta = read_meta(path)
+        get(chosen, string(get(meta, "device", "")), normpath(root)) == normpath(root) && add!(rs, set, config, meta, read_results(path))
     end
     return rs
+end
+
+"""
+    current_machines(dir) -> Dict(device => folder)
+
+The folder of results under `dir` to use for each device. A run can be taken up by another machine
+(when the first one went away), and then a folder has results of one device from two machines: the
+one written to last is the run's, and the other is not mixed in.
+"""
+function current_machines(dir)
+    latest = Dict{String, Tuple{Float64, String}}()
+    for (root, _, _) in walkdir(dir), path in values(result_files(root))
+        isfile(path * ".meta.toml") || continue
+        device = string(get(read_meta(path), "device", ""))
+        t = mtime(path)
+        (!haskey(latest, device) || t > latest[device][1] || (t == latest[device][1] && root == latest[device][2])) && (latest[device] = (t, root))
+    end
+    return Dict(d => normpath(r) for (d, (_, r)) in latest)
 end
 
 # The archived results of `rev`: for every device, those of the nearest commit on the

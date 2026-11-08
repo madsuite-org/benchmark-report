@@ -106,6 +106,34 @@ end
     end
 end
 
+@testset "a run taken up by another machine shows that machine's results" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
+        hostile_results(results)
+        machine = joinpath(results, "machine")
+        # a second machine of the same device, its solve past the GPU limit
+        later = mkpath(joinpath(results, "a-later-machine"))   # sorts first
+        lines = readlines(joinpath(machine, "smoke_default.csv"))
+        row = split(lines[2], ",")
+        row[findfirst(==("t_total"), split(lines[1], ","))] = "900"
+        write(joinpath(later, "smoke_default.csv"), lines[1] * "\n" * join(row, ",") * "\n")
+        cp(joinpath(machine, "smoke_default.csv.meta.toml"), joinpath(later, "smoke_default.csv.meta.toml"))
+        mkpath(joinpath(later, "logs", "smoke"))
+        write(joinpath(later, "logs", "smoke", "case14_ieee_polar__default.txt"), "the later log")
+        t = time()
+        stamp(path, at) = run(`touch -d @$(round(Int, at)) $path`)
+        stamp(joinpath(machine, "smoke_default.csv"), t - 60)
+        stamp(joinpath(later, "smoke_default.csv"), t)
+        write_report(site, results; wall = 7200.0, finished = true)
+        @test occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+        @test BenchmarkReport.current_machines(results)["cuda"] == normpath(later)
+        # and the first machine's, once it is the one written to last
+        stamp(joinpath(machine, "smoke_default.csv"), t + 60)
+        write_report(site, results; wall = 7200.0, finished = true)
+        @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+    end
+end
+
 @testset "a device that has not run a set counts none of it" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
