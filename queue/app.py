@@ -619,15 +619,20 @@ def receive_results(cfg, archive_path, name, login, repository, state="finished"
         with open(os.path.join(work, ".run.json"), "w") as f:
             json.dump(doc, f)
         os.chmod(work, 0o755)
-        old = None
-        if os.path.exists(target):
-            old = target + f".old-{secrets.token_hex(4)}"
-            os.rename(target, old)
-        os.rename(work, target)
+        if not os.path.exists(target):
+            os.rename(work, target)
+        else:
+            # into the same folder, file by file: the builder watches the folder, not its name, so a
+            # replaced folder would never be read again
+            for dirpath, _, files in os.walk(work):
+                rel = os.path.relpath(dirpath, work)
+                os.makedirs(os.path.join(target, rel), mode=0o755, exist_ok=True)
+                for f in files:
+                    if f != ".run.json":
+                        os.replace(os.path.join(dirpath, f), os.path.join(target, rel, f))
+            os.replace(os.path.join(work, ".run.json"), os.path.join(target, ".run.json"))
         # run.json last, by rename: that is what makes the builder take it
         os.rename(os.path.join(target, ".run.json"), os.path.join(target, "run.json"))
-        if old:
-            shutil.rmtree(old, ignore_errors=True)
         return folder, None
     finally:
         if os.path.isdir(work):

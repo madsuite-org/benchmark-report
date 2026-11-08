@@ -524,7 +524,11 @@ class TestServer(Base):
         doc = json.load(open(os.path.join(folder, "run.json")))
         self.assertEqual((doc["commit"], doc["uploaded_by"], doc["state"]), ("a" * 40, "alice", "finished"))
         self.assertTrue(os.path.exists(os.path.join(folder, "Some_CPU", "logs", "acopf", "x__default.txt")))
-        self.assertEqual(self.post_upload(self.make_tar(good), "try-1&state=running")[0], 201)
+        inode = os.stat(folder).st_ino
+        good2 = {**good, "Some_CPU/acopf_default.csv": "case,status\nx,1\ny,1\n"}
+        self.assertEqual(self.post_upload(self.make_tar(good2), "try-1&state=running")[0], 201)
+        self.assertEqual(os.stat(folder).st_ino, inode)      # the same folder, which the builder watches
+        self.assertIn("y,1", open(os.path.join(folder, "Some_CPU", "acopf_default.csv")).read())
         self.assertEqual(json.load(open(os.path.join(folder, "run.json")))["state"], "running")
         self.assertEqual(self.post_upload(self.make_tar(good), "try-1&state=bogus")[0], 400)
         self.assertEqual([f for f in os.listdir(self.cfg.uploads) if f.startswith(".")], [])          # nothing left behind
