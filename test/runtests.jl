@@ -334,6 +334,35 @@ end
     end
 end
 
+@testset "another run as a column, its times only on the same machine" begin
+    mktempdir() do root
+        _, clone, _ = archive_clone(root)
+        BenchmarkReport.REPOSITORY[] = clone
+        BenchmarkReport.FETCH[] = false
+        live, site = mkpath(joinpath(root, "live")), mkpath(joinpath(root, "site"))
+        for (name, host) in (("run-new", "shin-compute-001"), ("run-old", "shin-compute-005"))
+            d = mkpath(joinpath(live, name))
+            hostile_results(d)
+            meta = joinpath(d, "machine", "smoke_default.csv.meta.toml")
+            write(meta, replace(read(meta, String), "host = \"<script>alert(3)</script>\"" => "host = \"$host\""))
+            write(joinpath(d, "run.json"), """{"repository":"o/r","pr":"","title":"$name","commit":"","state":"finished"}""")
+        end
+        file = joinpath(root, "comparisons.toml")
+        write(file, "[\"run-new\"]\nwith = [\"run-old\"]\n")
+        BenchmarkReport.COMPARISONS[] = file
+        try
+            reset_runs()
+            BenchmarkReport.build_all(live, site)
+            page = read(joinpath(site, "run-new", "cuda-smoke.html"), String)
+            @test occursin("run-old (005) †", page)
+            @test occursin("its times do not", page)
+            @test !occursin("run-old (005) †", read(joinpath(site, "run-old", "index.html"), String))   # only where asked
+        finally
+            BenchmarkReport.COMPARISONS[] = ""
+        end
+    end
+end
+
 @testset "no pull requests" begin
     mktempdir() do root
         _, clone, _ = archive_clone(root)

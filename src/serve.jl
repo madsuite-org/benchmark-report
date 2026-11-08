@@ -55,9 +55,10 @@ function build_run(live, site, name)
     at = match(r"^pr-\d+-([0-9a-f]{8})$", name)
     title = manual ? "Manual run: " * (isempty(named) ? name[5:end] : named) : "Pull request #$pr" * (at === nothing ? "" : " at $(at[1])")
     link = manual ? (occursin(r"^[0-9a-f]{40}$", commit) ? "https://github.com/$repository/commit/$commit" : nothing) : "https://github.com/$repository/pull/$pr"
+    base = with_comparisons(latest_merged(live, name), live, name)
     write_report(
         joinpath(site, name), joinpath(live, name);
-        base = latest_merged(live, name),
+        base,
         reference = ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
         title, link,
         finished = state != "running", assets = "..", live = true,
@@ -65,6 +66,41 @@ function build_run(live, site, name)
     updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
     RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed)
     return
+end
+
+# Runs to show beside a report, from comparisons.toml in this repository: `["<folder>"] with = [...]`.
+const COMPARISONS = Ref(joinpath(dirname(@__DIR__), "comparisons.toml"))
+
+host_of(rs) = (m = match(r"shin-compute-(\d+)", join(Iterators.flatten(values(rs.machines)), " ")); m === nothing ? "" : m[1])
+
+function with_comparisons(base, live, name)
+    isfile(COMPARISONS[]) || return base
+    entry = get(TOML.parsefile(COMPARISONS[]), name, Dict())
+    others, names = get(entry, "with", String[]), get(entry, "names", String[])
+    isempty(others) && return base
+    own = from_directory(joinpath(live, name), "")
+    for (i, other) in enumerate(others)
+        is_folder(other) || continue
+        roots = filter(r -> isdir(joinpath(r, other)), [live; isempty(UPLOADS[]) ? String[] : [UPLOADS[]]])
+        isempty(roots) && continue
+        root = first(roots)
+        rs = from_directory(joinpath(root, other), other)
+        text = isfile(joinpath(root, other, "run.json")) ? read(joinpath(root, other, "run.json"), String) : ""
+        title = json_field(text, "title")
+        pr = json_field(text, "pr")
+        label = i <= length(names) ? names[i] : isempty(title) ? (isempty(pr) ? other : "#$pr " * other) : title
+        host = host_of(rs)
+        # the same machine only if its hardware is the same as this run's
+        same = host == host_of(own) && Set(Iterators.flatten(values(rs.machines))) == Set(Iterators.flatten(values(own.machines)))
+        label = label * (isempty(host) ? "" : " ($host)") * (same ? "" : " †")
+        base === nothing && (base = ResultSet(""))
+        for ((device, set, config), rows) in rs.rows
+            base.rows[(device, set, "cmp:$label:$config")] = rows
+            haskey(rs.revs, (device, config)) && (base.revs[(device, "cmp:$label:$config")] = rs.revs[(device, config)])
+            haskey(rs.harness, (device, config)) && (base.harness[(device, "cmp:$label:$config")] = rs.harness[(device, config)])
+        end
+    end
+    return base
 end
 
 # The list of benchmarks, and `status.json` for the check that watches running benchmarks.

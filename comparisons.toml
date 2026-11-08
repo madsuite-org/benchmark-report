@@ -1,0 +1,8 @@
+# Runs to show beside a report: the report's folder, the folders of the runs to compare it with, and
+# optionally their names (`names`, in the same order).
+# A run on another machine is labelled so (†): its solves and iterations compare, its times do not.
+
+# The quality-function variant of the shifted method, against the earlier shifted run of #708 (Sungho).
+["run-shifted-708-8ba98c-master"]
+with = ["run-shifted-708-ee8c81-pr708"]
+names = ["#708 shifted"]

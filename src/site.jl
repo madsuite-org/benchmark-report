@@ -41,9 +41,14 @@ struct Side
 end
 
 # Per device the columns are Ipopt, the base and the current results.
+# A run added for comparison sits in the base results under the configuration "cmp:<label>:<config>";
+# its label ends in † when it ran on another machine, whose times are not comparable.
+untimed(label) = endswith(label, "†")
+
 function report_sides(cand, base)
     suffix(key) = key[2] == "default" ? "" : " " * key[2]
-    label(key, name) = key[2] == "ipopt" ? "Ipopt" : name * suffix(key)
+    cmp(key) = match(r"^cmp:(.*):([^:]*)$", key[2])
+    label(key, name) = key[2] == "ipopt" ? "Ipopt" : cmp(key) !== nothing ? cmp(key)[1] : name * suffix(key)
     keys_of(rs) = rs === nothing ? [] : sort!(unique!([(k[1], k[3]) for k in keys(rs.rows)]); by = k -> (k[1] != "cpu", k))
     sides = [(label(k, "master"), k, true) for k in keys_of(base) if k[2] != "ipopt"]
     append!(sides, [(label(k, "current"), k, false) for k in keys_of(cand)])
@@ -144,11 +149,15 @@ function device_profile(io, set, device, sides, cand, base, wall)
     n > 0 || return
     println(io, "<div class=\"profiles\">")
     for (name, value) in PROFILE_METRICS
-        _, ratios = profile(rows[kept], value)
+        # a run on another machine shows in the iterations, never in the times
+        use = name == "Wall time" ? [i for i in kept if !untimed(sides[i].label)] : kept
+        length(use) < 2 && continue
+        _, ratios = profile(rows[use], value)
         println(io, "<div class=\"prof\"><p><b>", name, "</b></p>")
-        profile_svg(io, "$name profile of $set on $device", sides[kept], n, ratios)
+        profile_svg(io, "$name profile of $set on $device", sides[use], n, ratios)
         println(io, "</div>")
     end
+    any(i -> untimed(sides[i].label), kept) && println(io, "<p class=\"m\">† ran on another machine: its solves and iterations compare, its times do not.</p>")
     println(io, "</div>")
     return
 end
@@ -239,10 +248,11 @@ function summary_table(io, blocks, sides, cand, base, wall)
         isempty(cases) && continue
         means = Dict(l => sgm([score_time(here[l][c], device_wall(device, wall)) for c in cases]) + 10 for l in have)
         # Ipopt is the reference where it has run, else the best solver
-        scale = haskey(means, "Ipopt") ? means["Ipopt"] : minimum(values(means))
+        scale = haskey(means, "Ipopt") ? means["Ipopt"] : minimum(v for (l, v) in means if !untimed(l); init = minimum(values(means)))
         print(io, "<tr><td><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a></td><td class=\"l\">$(device_tag(device))</td><td>$(all(==("Ipopt"), have) ? 0 : length(cases))/$(set_size(cand, base, set))</td>")
         for l in labels
             if l in have
+                untimed(l) ? @printf(io, "<td class=\"g\">%d</td><td>–</td><td>–</td>", count(c -> solved(here[l][c]), cases)) :
                 @printf(io, "<td class=\"g\">%d</td><td>%.2f</td><td>%.3g</td>", count(c -> solved(here[l][c]), cases), means[l] - 10, means[l] / scale)
             else
                 print(io, "<td class=\"g\"></td><td></td><td></td>")
