@@ -771,6 +771,24 @@ class TestSite(Base):
         import shutil; shutil.rmtree(os.path.join(self.cfg.site, "madnlp", "pr-7"))
         self.assertEqual(self.get("/madnlp/pr-7/")[1]["Location"], "/madnlp/pr-7-aaaaaaaa/")
 
+    def test_columns_from_the_app(self):
+        import tomllib
+        self.cfg.uploads = os.path.join(self.dir, "uploads"); os.makedirs(self.cfg.uploads)
+        for n in ("run-new", "run-old"):
+            os.makedirs(os.path.join(self.cfg.site, "madnlp", n))
+            open(os.path.join(self.cfg.site, "madnlp", n, "index.html"), "w").write('<html><header class="site">' + app.NAV + '</header><main class="container"></main></html>')
+        self.assertIsNone(app.change_comparison(self.cfg, "run-new", add="run-old", label='#708 "shifted"'[:0] + "#708 shifted"))
+        data = tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb"))
+        self.assertEqual(data["run-new"], {"with": ["run-old"], "names": ["#708 shifted"]})
+        for bad in (dict(add="../x"), dict(add="run-new"), dict(add="run-nope")):
+            self.assertIsNotNone(app.change_comparison(self.cfg, "run-new", **bad), bad)
+        self.assertIsNotNone(app.change_comparison(self.cfg, "run-new", add="run-old", label='x"]\n[evil'))
+        page = self.get("/madnlp/run-new/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
+        self.assertIn("#708 shifted ×", page)
+        self.assertNotIn("Compared with", self.get("/madnlp/run-new/")[2])          # members only
+        self.assertIsNone(app.change_comparison(self.cfg, "run-new", remove="run-old"))
+        self.assertNotIn("run-new", tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb")))
+
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")
         self.cfg.builder = ["sh", "-c", f"echo x >> {mark}; sleep 30"]

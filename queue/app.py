@@ -842,6 +842,86 @@ def commits_panel(cfg, q, name):
     return f'<div class="container mt-2"><div class="alert alert-info py-2 mb-0">{" ".join(out)}</div></div>' if out else ""
 
 
+REPORT = re.compile(r"(pr-\d+(-[0-9a-f]{8})?|run-[a-z0-9-]+|master-[0-9a-f]{8})")
+
+
+def comparisons_file(cfg):
+    return os.path.join(cfg.uploads, "comparisons.toml") if cfg.uploads else ""
+
+
+def load_comparisons(cfg):
+    """The columns people chose: report folder => {"with": [...], "names": [...]}."""
+    import tomllib
+    try:
+        return tomllib.load(open(comparisons_file(cfg), "rb"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_comparisons(cfg, data):
+    """Written whole and replaced in one step; the builder rebuilds the reports when it changes."""
+    q = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    lines = ["# Columns chosen in the app; written by it."]
+    for report in sorted(data):
+        entry = data[report]
+        if not entry.get("with"):
+            continue
+        lines += [f"[{q(report)}]", "with = [" + ", ".join(q(w) for w in entry["with"]) + "]",
+                  "names = [" + ", ".join(q(n) for n in entry.get("names", [])) + "]", ""]
+    tmp = comparisons_file(cfg) + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, comparisons_file(cfg))
+
+
+def change_comparison(cfg, report, add=None, remove=None, label=""):
+    """Add a run as a column of a report, or take it away. Why not, or None."""
+    root = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/")) if cfg.site else ""
+    exists = lambda n: bool(n) and REPORT.fullmatch(n) is not None and os.path.isdir(os.path.join(root, n))
+    if not cfg.uploads or not exists(report):
+        return "No such report."
+    if label and not re.fullmatch(r"[A-Za-z0-9 #()._+-]{1,40}", label):
+        return "A name has letters, digits, spaces and # ( ) . _ + - only, up to 40."
+    data = load_comparisons(cfg)
+    entry = data.setdefault(report, {"with": [], "names": []})
+    names = dict(zip(entry.get("with", []), entry.get("names", []) + [""] * len(entry.get("with", []))))
+    if add:
+        if not exists(add) or add == report:
+            return "No such report to compare with."
+        names[add] = label or names.get(add, "")
+    if remove:
+        names.pop(remove, None)
+    entry["with"] = list(names)
+    # a name for each column, the folder's own if none was given
+    entry["names"] = [names[w] or w for w in entry["with"]]
+    save_comparisons(cfg, data)
+    return None
+
+
+def compare_panel(cfg, login, name):
+    """On a report, for members: the runs shown beside it, and a way to add or remove one."""
+    if not cfg.uploads or not cfg.site:
+        return ""
+    e = html.escape
+    root = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"))
+    entry = load_comparisons(cfg).get(name, {})
+    hidden = f'<input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}"><input type="hidden" name="report" value="{e(name)}">'
+    chips = "".join(f'<form method="post" action="{e(cfg.base)}/compare" class="d-inline">{hidden}<input type="hidden" name="remove" value="{e(w)}">'
+                    f'<button class="btn btn-sm btn-outline-secondary" title="Remove this column">{e(n)} ×</button></form> '
+                    for w, n in zip(entry.get("with", []), entry.get("names", [])))
+    try:
+        others = sorted(n for n in os.listdir(root) if REPORT.fullmatch(n) and n != name and n not in entry.get("with", []))
+    except OSError:
+        others = []
+    options = "".join(f'<option value="{e(n)}">{e(n)}</option>' for n in others)
+    return (f'<div class="container mt-2"><div class="jobbar"><span class="m">Compared with:</span> {chips or "<span class=m>nothing else</span>"}'
+            f'<form method="post" action="{e(cfg.base)}/compare" class="d-inline-flex gap-1">{hidden}'
+            f'<select name="add" class="form-select form-select-sm" style="width:auto">{options}</select>'
+            '<input name="name" class="form-control form-control-sm" style="width:10em" placeholder="column name">'
+            '<button class="btn btn-sm btn-outline-primary">Add column</button></form>'
+            '<span class="m">A run on another machine compares in solves and iterations only.</span></div></div>')
+
+
 def job_panel(cfg, q, login, name):
     """On a report, for members, the job that makes it: its state and its actions."""
     jobs = [j for j in q.data["jobs"] if (j.get("sha") or j["kind"] == "pr") and folder({**j, "sha": j.get("sha") or "0" * 40}) == name]
@@ -1201,6 +1281,12 @@ def handler(cfg, q):
                 if j is None:
                     return reply(404, {"error": "There is no such job."})
                 return reply(200, public(cfg, j)) if q.cancel(j["id"], login) else reply(403, {"error": "That job cannot be cancelled by you."})
+            if parts == ["compare"]:
+                if method == "GET":
+                    report = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("report", [""])[0]
+                    return reply(200, load_comparisons(cfg).get(report, {"with": [], "names": []}))
+                problem = change_comparison(cfg, str(data.get("report", "")), add=data.get("add"), remove=data.get("remove"), label=str(data.get("name", "")))
+                return reply(400, {"error": problem}) if problem else reply(200, load_comparisons(cfg).get(data.get("report"), {}))
             if parts == ["pulls"] and method == "GET":
                 return reply(200, {"pulls": q.open_pulls()})
             if len(parts) == 3 and parts[0] == "pulls" and parts[2] == "update" and method == "POST" and parts[1].isdigit():
@@ -1257,6 +1343,8 @@ def handler(cfg, q):
                 if len(parts) > 1 and member_of(login):
                     # the report and its job are one page: the job's state and actions, for members
                     data = data.replace(b"</header>", b"</header>" + job_panel(cfg, q, login, parts[1]).encode(), 1)
+                    if len(parts) == 2 or parts[2] in ("", "index.html"):
+                        data = data.replace(b"</header>", b"</header>" + compare_panel(cfg, login, parts[1]).encode(), 1)
             self.send_response(200)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(data)))
@@ -1392,6 +1480,12 @@ def handler(cfg, q):
                 if not problem:
                     q.place([j for j in q.jobs("waiting") if j.get("pr") == int(what)][-1], node)
                 return self.send(400, new_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
+            if self.path == "/queue/compare":
+                report = get("report")
+                problem = change_comparison(cfg, report, add=get("add") or None, remove=get("remove") or None, label=get("name").strip())
+                if problem:
+                    return self.send(400, shell(cfg, login, "Compare", f"<p>{html.escape(problem)}</p>"))
+                return self.redirect(f"{cfg.reports}/{report}/")
             if self.path == "/queue/update":
                 pr = get("pr")
                 if not pr.isdigit():

@@ -73,9 +73,25 @@ const COMPARISONS = Ref(joinpath(dirname(@__DIR__), "comparisons.toml"))
 
 host_of(rs) = (m = match(r"shin-compute-(\d+)", join(Iterators.flatten(values(rs.machines)), " ")); m === nothing ? "" : m[1])
 
+# the comparisons people choose in the app, in the uploads root, which the app writes; they come on
+# top of those of comparisons.toml in this repository
+app_comparisons() = isempty(UPLOADS[]) ? "" : joinpath(UPLOADS[], "comparisons.toml")
+
+function comparisons_of(name)
+    entry = Dict{String, Any}()
+    for file in (COMPARISONS[], app_comparisons())
+        isfile(file) || continue
+        try
+            haskey(TOML.parsefile(file), name) && (entry = TOML.parsefile(file)[name])
+        catch err
+            @warn "$file: not read" exception = err
+        end
+    end
+    return entry
+end
+
 function with_comparisons(base, live, name)
-    isfile(COMPARISONS[]) || return base
-    entry = get(TOML.parsefile(COMPARISONS[]), name, Dict())
+    entry = comparisons_of(name)
     others, names = get(entry, "with", String[]), get(entry, "names", String[])
     isempty(others) && return base
     own = from_directory(joinpath(live, name), "")
@@ -201,7 +217,18 @@ function serve(live, site; repository = DEFAULT_REPOSITORY)
         @warn "the archived results were not built" exception = err
     end
     isempty(UPLOADS[]) || errormonitor(@async while true
-        watch_folder(UPLOADS[])
+        file, _ = watch_folder(UPLOADS[])
+        if file == "comparisons.toml"
+            # chosen in the app: rebuild every report, since any may have gained or lost a column
+            for (root, name) in folders(live)
+                try
+                    is_run(root, name) && build_run(root, site, name)
+                catch err
+                    @warn "$name: the report was not updated" exception = err
+                end
+            end
+            publish(site; repository)
+        end
         watch_new()
     end)
     while true

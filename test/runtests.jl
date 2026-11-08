@@ -357,6 +357,14 @@ end
             @test occursin("run-old (005) †", page)
             @test occursin("its times do not", page)
             @test !occursin("run-old (005) †", read(joinpath(site, "run-old", "index.html"), String))   # only where asked
+            # columns chosen in the app, in the uploads root, come on top
+            uploads = mkpath(joinpath(root, "uploads"))
+            write(joinpath(uploads, "comparisons.toml"), "[\"run-old\"]\nwith = [\"run-new\"]\nnames = [\"the new one\"]\n")
+            BenchmarkReport.UPLOADS[] = uploads
+            reset_runs()
+            BenchmarkReport.build_all(live, site)
+            @test occursin("the new one (001) †", read(joinpath(site, "run-old", "index.html"), String))
+            BenchmarkReport.UPLOADS[] = ""
         finally
             BenchmarkReport.COMPARISONS[] = ""
         end
