@@ -183,6 +183,12 @@ class TestQueue(Base):
         job, problem = self.q.add_ref("feature/x", "alice", settings={"harness": "shifted-cholmod-experiment", "devices": "cpu"})
         self.assertTrue(re.fullmatch(r"run-shifted-cholmod-[0-9a-f]{6}-feature-x", app.folder(job)), app.folder(job))
         self.assertEqual(app.name(self.cfg, job), "harness shifted-cholmod-experiment, CPU only on feature/x")
+        # the devices alone keep a run in its standard report
+        self.assertIsNone(self.q.add_pr(7, "alice", settings={"devices": "cpu"}))
+        cpu = [j for j in self.q.jobs("waiting") if j.get("pr") == 7 and j.get("devices") == "cpu"][0]
+        self.assertEqual(app.folder({**cpu, "sha": "a" * 40}), "pr-7")
+        mc = self.q.add_master_now("alice", {"devices": "cuda"})
+        self.assertEqual((mc["kind"], mc["devices"]), ("master", "cuda"))
         m = self.q.add_master_now("alice", {"config": "ipopt", "devices": "cpu"})
         self.assertEqual((m["kind"], app.folder(m)[:4]), ("commit", "run-"))    # never taken for master's results
         with self.assertRaises(ValueError):

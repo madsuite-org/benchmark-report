@@ -152,7 +152,9 @@ def settings_problem(cfg, settings):
 def variant(job):
     """For a job with other settings than the standard ones, a short name of them: its results then
     have a folder of their own, and never mix with the standard runs. Empty for the standard ones."""
-    st = settings_of(job)
+    # the devices alone do not make another benchmark: a CPU-only or GPU-only run of a pull request
+    # adds to its report, since every device has a result directory of its own
+    st = {**settings_of(job), "devices": DEFAULTS["devices"]}
     if st == DEFAULTS:
         return ""
     digest = hashlib.sha1(json.dumps(st, sort_keys=True).encode()).hexdigest()[:6]
@@ -274,7 +276,7 @@ class Queue:
         """A run of master at its latest commit, asked for by someone. With other settings than the
         standard ones it is a run of that commit, so that it is never taken for master's results."""
         sha = self.gh.api("GET", f"/repos/{self.cfg.repo}/commits/master")["sha"]
-        if settings and {**DEFAULTS, **settings} != DEFAULTS:
+        if settings and variant({**DEFAULTS, **settings}):
             settings = {**DEFAULTS, **settings}
             problem = settings_problem(self.cfg, settings)
             if problem:
@@ -287,7 +289,12 @@ class Queue:
                 self.save()
             return job
         self.add_master(sha, by)
-        return next(j for j in self.jobs("waiting") if j["kind"] == "master")
+        job = next(j for j in self.jobs("waiting") if j["kind"] == "master")
+        if settings and settings.get("devices") in ("cpu", "cuda"):
+            with self.changed:
+                job["devices"] = settings["devices"]
+                self.save()
+        return job
 
     def add_master(self, sha, by="push"):
         with self.changed:
@@ -897,16 +904,16 @@ def new_page(cfg, q, login, message=""):
             f'<label class="form-label" for="what">What to benchmark</label><select class="form-select mb-2" id="what" name="what">{options}</select>'
             '<input class="form-control mb-3" name="ref" placeholder="Branch name, or a commit in master\'s history" '
             'aria-label="Branch or commit, if chosen above">'
-            '<details class="mb-3"><summary>Settings: configuration, options, harness, devices</summary><div class="mt-2">'
+            '<label class="form-label" for="devices">Run on</label><select class="form-select mb-3" id="devices" name="devices">'
+            '<option value="cpu,cuda">CPU and GPU</option><option value="cpu">CPU only</option><option value="cuda">GPU only</option></select>'
+            '<details class="mb-3"><summary>More settings: configuration, options, harness</summary><div class="mt-2">'
             '<label class="form-label" for="config">Configuration</label>'
             f'<input class="form-control mb-2" id="config" name="config" value="default" list="configs">{configs_list(cfg)}'
             '<label class="form-label" for="options">MadNLP options, on top of the configuration</label>'
             '<input class="form-control mb-2" id="options" name="options" placeholder="tol=1e-6,max_iter=500">'
             '<label class="form-label" for="harness">Harness: a branch of MadNLPBenchmark.jl, for an experiment</label>'
             '<input class="form-control mb-2" id="harness" name="harness" placeholder="main, as deployed">'
-            '<label class="form-label" for="devices">Devices</label><select class="form-select mb-2" id="devices" name="devices">'
-            '<option value="cpu,cuda">CPU and GPU</option><option value="cpu">CPU only</option><option value="cuda">GPU only</option></select>'
-            '<p class="m">A job with other settings than these defaults gets a report of its own, never mixed with the standard runs. '
+            '<p class="m">A job with another configuration, options or harness gets a report of its own, never mixed with the standard runs. '
             'A run of master with other settings runs as a run of its commit.</p></div></details>'
             '<fieldset class="mb-3"><legend class="form-label fs-6">If a report of this pull request exists</legend>'
             '<div class="form-check"><input class="form-check-input" type="radio" name="keep" id="keep1" value="1" checked>'
