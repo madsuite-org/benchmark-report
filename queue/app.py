@@ -452,8 +452,12 @@ class Dispatcher:
         if variant(job):
             kind, pr = ("branch" if job["kind"] in ("pr", "branch") else "commit"), ""
         extra = [st["config"], st["options"], st["harness"], st["devices"]] if st != DEFAULTS else []
+        # the start command's output, of which the end becomes the job's note if it fails: a refusal
+        # on the machine then shows on the job's page
+        output = tempfile.TemporaryFile()
         proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], kind, pr,
-                                              "keep" if keep else "fresh", *extra]), stdin=subprocess.PIPE)
+                                              "keep" if keep else "fresh", *extra]), stdin=subprocess.PIPE,
+                                stdout=output, stderr=subprocess.STDOUT)
         with self.q.changed:
             job["dispatched"] = True
             self.q.save()
@@ -465,6 +469,9 @@ class Dispatcher:
                 stopped = True
         rc = proc.wait()
         proc.stdin.close()
+        output.seek(max(0, output.seek(0, os.SEEK_END) - 2000))
+        tail = output.read().decode(errors="replace")
+        output.close()
         if rc == 75 and not stopped:
             # the machine is still cleaning up after this job's previous run: not a failure, try again
             return "busy"
@@ -473,6 +480,10 @@ class Dispatcher:
             # doing, so it stays running, and is started again, keeping what it has
             return "interrupted"
         state = "cancelled" if stopped else "finished" if rc == 0 else "failed"
+        if state == "failed":
+            lines = [l for l in re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", tail).splitlines() if l.strip()]
+            with self.q.changed:
+                job["note"] = f"exit {rc}: " + " | ".join(lines[-3:])[-400:]
         self.q.report(job["id"], state)
         return state
 

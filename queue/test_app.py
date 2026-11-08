@@ -269,6 +269,17 @@ class TestDispatcher(Base):
         self.assertEqual(lines, [f"start benchjob-1 /live/pr-7 {'a' * 40} pr 7 fresh", "stdin-open"])
         self.assertEqual(self.q.jobs("finished")[0]["pr"], 7)
 
+    def test_a_refusal_becomes_the_note(self):
+        os.environ["RC"] = "2"
+        try:
+            self.q.add_pr(7, "alice")
+            job = self.q.take()
+            self.cfg.remote_start = ["sh", "-c", 'echo "benchjob-run: unknown configuration shifted" >&2; exit 2', "x"]
+            self.assertEqual(self.d.run(job), "failed")
+        finally:
+            del os.environ["RC"]
+        self.assertIn("exit 2: benchjob-run: unknown configuration shifted", job["note"])
+
     def test_failure_and_cancel(self):
         os.environ["RC"] = "3"
         try:
