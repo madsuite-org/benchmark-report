@@ -25,7 +25,12 @@ if(document.querySelector('meta[name=live]'))setInterval(async()=>{
 const r=await fetch(location.href,{cache:'no-cache'});if(!r.ok)return;
 const v=r.headers.get('etag')||r.headers.get('last-modified');if(v&&v===seen)return;seen=v;
 const d=new DOMParser().parseFromString(await r.text(),'text/html'),q=document.querySelector('#filter')?.value,c=document.querySelector('#failed')?.checked;
+// keep where the reader had scrolled every table to, and any open menu, across the swap
+const boxes=()=>[...document.querySelectorAll('#live .wide,#live .scroll')].map(b=>[b.scrollLeft,b.scrollTop]);
+const kept=boxes(),open=[...document.querySelectorAll('#live details[open]')].map(x=>x.querySelector('summary')?.textContent);
 document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();
+document.querySelectorAll('#live .wide,#live .scroll').forEach((b,i)=>{if(kept[i]){b.scrollLeft=kept[i][0];b.scrollTop=kept[i][1]}});
+document.querySelectorAll('#live details').forEach(x=>{if(open.includes(x.querySelector('summary')?.textContent))x.open=true});
 if(q||c){const f=document.querySelector('#filter');f.value=q||'';document.querySelector('#failed').checked=c;f.dispatchEvent(new Event('input'))}},2000);
 // how long ago the shown data was built, so that a live page visibly is one
 setInterval(()=>document.querySelectorAll('.ago').forEach(a=>{const s=Math.max(0,Math.round((Date.now()-Date.parse(a.dataset.t))/1000));
