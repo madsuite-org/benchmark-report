@@ -234,6 +234,8 @@ class Queue:
             self.data["jobs"].append(job)
             self.data["next"] += 1
             self.save()
+        # its report exists from the start, empty until a node sends results
+        write_run_json(self.cfg, job)
         return job, token
 
     def external_job(self, job_id, token):
@@ -950,6 +952,20 @@ def solved_already(cfg, j, device, set_name, case, configs):
     return done
 
 
+def write_run_json(cfg, j):
+    """The run.json of an external job's report folder; replacing it is what makes the builder rebuild."""
+    target = os.path.join(cfg.uploads, folder(j))
+    os.makedirs(target, mode=0o755, exist_ok=True)
+    hosts = sorted({v.get("host", "") for v in j.get("nodes", {}).values()} - {""})
+    title = (j.get("title") or folder(j)) + (f" ({', '.join(hosts)[:80]})" if hosts else "")
+    doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
+    tmp = os.path.join(target, ".run.json")
+    with open(tmp, "w") as f:
+        json.dump(doc, f)
+    os.chmod(tmp, 0o644)
+    os.rename(tmp, os.path.join(target, "run.json"))
+
+
 def receive_job_files(cfg, q, j, node, archive_path, state):
     """Take the files a node of external job `j` sends: result rows merged into the job's files, its
     workers' status as a file of its own, solver logs, metadata and its log. Everything is untrusted,
@@ -1010,14 +1026,7 @@ def receive_job_files(cfg, q, j, node, archive_path, state):
         with open(tmp, "w") as out:
             out.write("```\n" + "\n".join(lines) + "\n```\n")
         os.replace(tmp, os.path.join(target, machine, "summary.md"))
-    hosts = sorted({v.get("host", "") for v in j.get("nodes", {}).values()} - {""})
-    title = (j.get("title") or folder(j)) + (f" ({', '.join(hosts)[:80]})" if hosts else "")
-    doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title,
-           "state": j["state"] if j["state"] != "running" else ("running" if state != "interrupted" else "running"), "job": j["id"]}
-    tmp = os.path.join(target, ".run.json")
-    with open(tmp, "w") as f:
-        json.dump(doc, f)
-    os.rename(tmp, os.path.join(target, "run.json"))
+    write_run_json(cfg, j)
     return None
 
 
@@ -1160,18 +1169,24 @@ def save_comparisons(cfg, data):
     lines = ["# Columns chosen in the app; written by it."]
     for report in sorted(data):
         entry = data[report]
-        if not entry.get("with"):
+        if not entry.get("with") and not entry.get("hide"):
             continue
-        lines += [f"[{q(report)}]", "with = [" + ", ".join(q(w) for w in entry["with"]) + "]",
-                  "names = [" + ", ".join(q(n) for n in entry.get("names", [])) + "]", ""]
+        lines += [f"[{q(report)}]", "with = [" + ", ".join(q(w) for w in entry.get("with", [])) + "]",
+                  "names = [" + ", ".join(q(n) for n in entry.get("names", [])) + "]"]
+        lines += (["hide = [" + ", ".join(q(h) for h in entry["hide"]) + "]"] if entry.get("hide") else []) + [""]
     tmp = comparisons_file(cfg) + ".tmp"
     with open(tmp, "w") as f:
         f.write("\n".join(lines) + "\n")
     os.replace(tmp, comparisons_file(cfg))
 
 
+# The columns every report has unless taken away: the latest master's results and the Ipopt reference.
+DEFAULT_COLUMNS = {"master": "latest master", "ipopt": "Ipopt"}
+
+
 def change_comparison(cfg, report, add=None, remove=None, label=""):
-    """Add a run as a column of a report, or take it away. Why not, or None."""
+    """Add a run as a column of a report, or take it away; `master` and `ipopt` are the default
+    columns, which can be taken away and brought back. Why not, or None."""
     root = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/")) if cfg.site else ""
     exists = lambda n: bool(n) and REPORT.fullmatch(n) is not None and os.path.isdir(os.path.join(root, n))
     if not cfg.uploads or not exists(report):
@@ -1180,6 +1195,12 @@ def change_comparison(cfg, report, add=None, remove=None, label=""):
         return "A name has letters, digits, spaces and # ( ) . _ + - only, up to 40."
     data = load_comparisons(cfg)
     entry = data.setdefault(report, {"with": [], "names": []})
+    if add in DEFAULT_COLUMNS or remove in DEFAULT_COLUMNS:
+        hide = set(entry.get("hide", []))
+        (hide.discard if add else hide.add)(add or remove)
+        entry["hide"] = sorted(hide)
+        save_comparisons(cfg, data)
+        return None
     names = dict(zip(entry.get("with", []), entry.get("names", []) + [""] * len(entry.get("with", []))))
     if add:
         if not exists(add) or add == report:
@@ -1204,12 +1225,14 @@ def compare_panel(cfg, login, name):
     hidden = f'<input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}"><input type="hidden" name="report" value="{e(name)}">'
     chips = "".join(f'<form method="post" action="{e(cfg.base)}/compare" class="d-inline">{hidden}<input type="hidden" name="remove" value="{e(w)}">'
                     f'<button class="btn btn-sm btn-outline-secondary" title="Remove this column">{e(n)} ×</button></form> '
-                    for w, n in zip(entry.get("with", []), entry.get("names", [])))
+                    for w, n in [(k, v) for k, v in DEFAULT_COLUMNS.items() if k not in entry.get("hide", [])]
+                    + list(zip(entry.get("with", []), entry.get("names", []))))
     try:
         others = sorted(n for n in os.listdir(root) if REPORT.fullmatch(n) and n != name and n not in entry.get("with", []))
     except OSError:
         others = []
-    options = "".join(f'<option value="{e(n)}">{e(n)}</option>' for n in others)
+    options = "".join(f'<option value="{e(k)}">{e(v)}</option>' for k, v in DEFAULT_COLUMNS.items() if k in entry.get("hide", []))
+    options += "".join(f'<option value="{e(n)}">{e(n)}</option>' for n in others)
     return (f'<div class="container mt-2"><div class="jobbar"><span class="m">Compared with:</span> {chips or "<span class=m>nothing else</span>"}'
             f'<form method="post" action="{e(cfg.base)}/compare" class="d-inline-flex gap-1">{hidden}'
             f'<select name="add" class="form-select form-select-sm" style="width:auto">{options}</select>'
@@ -1420,13 +1443,15 @@ def run_script(cfg):
     the harness and runs its runner/publish.sh, which uploads the results here as they come."""
     site = cfg.base.rsplit("/queue", 1)[0]
     return f"""#!/bin/bash
-# Benchmark MadNLP.jl on this machine and publish the results at {cfg.reports}/run-up-NAME/.
+# Benchmark MadNLP.jl on machines of your own, with {site} coordinating them and building the report.
 #
-#     curl -fsSL {cfg.base}/run.sh | bash -s -- NAME [REV] [--devices=cpu|cuda|cpu,cuda] [--hsl=PATH] ...
+#     curl -fsSL {cfg.base}/run.sh | bash -s -- new master --devices=cuda       # once: creates a job, writes its job file
+#     curl -fsSL {cfg.base}/run.sh | bash -s -- run --job-file=benchmark-job-N  # on each machine, as many as you like
 #
-# Needs julia, git, curl and tar, and a GitHub token of someone with write access to MadNLP.jl
-# (BENCHMARK_TOKEN, or `gh auth token`). The harness, MadNLPBenchmark.jl, goes to ./MadNLPBenchmark.jl
-# (BENCHMARK_HARNESS_DIR); its runner/publish.sh lists every option.
+# `new` needs a GitHub token of someone with write access to MadNLP.jl (BENCHMARK_TOKEN, or
+# `gh auth token`); a node needs only the job file. Needs julia, git, curl and tar. The harness,
+# MadNLPBenchmark.jl, goes to ./MadNLPBenchmark.jl (BENCHMARK_HARNESS_DIR); its runner/publish.sh
+# describes every option.
 set -eu
 dir=${{BENCHMARK_HARNESS_DIR:-$PWD/MadNLPBenchmark.jl}}
 if [ -d "$dir/.git" ]; then
@@ -1442,11 +1467,14 @@ exec env BENCHMARK_SITE={shlex.quote(site)} runner/publish.sh "$@"
 def run_card(cfg):
     e = html.escape
     return ('<div class="card mt-4"><div class="card-body"><h2 class="h5">Run it on your own machine</h2>'
-            '<p class="m">On any machine you can use, a cluster node included: it runs the benchmark there and publishes '
-            'the results here as they come, as a report of its own. It needs julia, git and a GitHub token with write access '
-            '(<code>gh auth login</code>, or <code>BENCHMARK_TOKEN</code>). Run CPU and GPU as two runs with their own names.</p>'
-            f'<pre class="log">curl -fsSL {e(cfg.base)}/run.sh | bash -s -- my-run master --devices=cuda</pre>'
-            f'<p class="m">The report: <code>{e(cfg.reports)}/run-up-my-run/</code>. <a href="{e(cfg.base)}/run.sh">The script</a>.</p></div></div>')
+            '<p class="m">On machines you can use, cluster nodes included. Create a job once, with a GitHub token with write '
+            'access (<code>gh auth login</code>, or <code>BENCHMARK_TOKEN</code>); it fixes what is run and writes a job file. Then run '
+            'the job on as many machines as you like, at once or later: this server hands each instance to one of them, merges '
+            'their results into the job\'s report and shows it on this dashboard. A stopped node (a preempted batch job) carries on '
+            'when started again. Run CPU and GPU as two jobs.</p>'
+            f'<pre class="log">curl -fsSL {e(cfg.base)}/run.sh | bash -s -- new master --devices=cuda --options=tol=1e-6\n'
+            f'curl -fsSL {e(cfg.base)}/run.sh | bash -s -- run --job-file=benchmark-job-N</pre>'
+            f'<p class="m"><a href="{e(cfg.base)}/run.sh">The script</a>; its <code>runner/publish.sh</code> describes every option.</p></div></div>')
 
 
 def new_page(cfg, q, login, message=""):

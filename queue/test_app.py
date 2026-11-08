@@ -699,6 +699,7 @@ class TestServer(Base):
         folder = app.folder(self.q.data["jobs"][-1])
         self.assertTrue(folder.startswith(f"run-x{job}-"), folder)
         the_job = [job]
+        self.assertEqual(json.load(open(os.path.join(self.cfg.uploads, folder, "run.json")))["state"], "running")   # a report from the start
         def claim(node, case, tok=token):
             body = json.dumps({"node": node, "device": "cuda", "set": "acopf", "case": case, "configs": ["default"]}).encode()
             code, _, data = self.request("POST", f"/queue/api/jobs/{the_job[0]}/claim", body, {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})
@@ -920,7 +921,7 @@ class TestSite(Base):
         self.assertEqual(subprocess.run(["bash", "-n", path]).returncode, 0)
         page = self.get("/queue/new", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
         self.assertIn("Run it on your own machine", page)
-        self.assertIn("/run.sh | bash -s --", page)
+        self.assertIn("/run.sh | bash -s -- new master", page)
 
     def test_columns_from_the_app(self):
         import tomllib
@@ -937,8 +938,14 @@ class TestSite(Base):
         page = self.get("/madnlp/run-new/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
         self.assertIn("#708 shifted ×", page)
         self.assertNotIn("Compared with", self.get("/madnlp/run-new/")[2])          # members only
+        self.assertIn("latest master ×", page)                                       # the default columns, which can go
+        self.assertIsNone(app.change_comparison(self.cfg, "run-new", remove="master"))
+        self.assertEqual(tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb"))["run-new"]["hide"], ["master"])
+        self.assertNotIn("latest master ×", self.get("/madnlp/run-new/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2])
+        self.assertIsNone(app.change_comparison(self.cfg, "run-new", add="master"))
+        self.assertNotIn("hide", tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb"))["run-new"])
         self.assertIsNone(app.change_comparison(self.cfg, "run-new", remove="run-old"))
-        self.assertNotIn("run-new", tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb")))
+        self.assertNotIn("run-new", tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb")))   # nothing left to say
 
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")

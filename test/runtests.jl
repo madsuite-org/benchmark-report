@@ -416,6 +416,11 @@ end
             reset_runs()
             BenchmarkReport.build_all(live, site)
             @test occursin("the new one (001) †", read(joinpath(site, "run-old", "index.html"), String))
+            # the default columns can be taken away
+            write(joinpath(uploads, "comparisons.toml"), "[\"run-old\"]\nwith = []\nnames = []\nhide = [\"ipopt\", \"master\"]\n")
+            reset_runs()
+            BenchmarkReport.build_all(live, site)
+            @test BenchmarkReport.comparisons_of("run-old")["hide"] == ["ipopt", "master"]
             BenchmarkReport.UPLOADS[] = ""
         finally
             BenchmarkReport.COMPARISONS[] = ""

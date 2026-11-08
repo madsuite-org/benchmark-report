@@ -57,11 +57,13 @@ function build_run(live, site, name)
     at = match(r"^pr-\d+-([0-9a-f]{8})$", name)
     title = manual ? "Manual run: " * (isempty(named) ? name[5:end] : named) : "Pull request #$pr" * (at === nothing ? "" : " at $(at[1])")
     link = manual ? (occursin(r"^[0-9a-f]{40}$", commit) ? "https://github.com/$repository/commit/$commit" : nothing) : "https://github.com/$repository/pull/$pr"
-    base = with_comparisons(latest_merged(live, name), live, name)
+    # the latest master and the Ipopt reference are shown unless taken away in the app
+    hide = get(comparisons_of(name), "hide", String[])
+    base = with_comparisons("master" in hide ? nothing : latest_merged(live, name), live, name)
     write_report(
         joinpath(site, name), joinpath(live, name);
         base,
-        reference = ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
+        reference = "ipopt" in hide ? nothing : ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
         title, link,
         finished = state != "running", assets = "..", live = true,
     )
