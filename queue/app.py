@@ -350,8 +350,13 @@ class Dispatcher:
         # preemption of other work included
         # stdin stays open for the whole job: the machine stops the job when it closes, so a lost
         # connection ends the job rather than leaving it running unseen
+        # a job started before, and interrupted here, carries on from what it has
+        keep = job.get("keep", True) or job.get("dispatched")
         proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], job["kind"], str(job.get("pr") or ""),
-                                              "keep" if job.get("keep", True) else "fresh"]), stdin=subprocess.PIPE)
+                                              "keep" if keep else "fresh"]), stdin=subprocess.PIPE)
+        with self.q.changed:
+            job["dispatched"] = True
+            self.q.save()
         stopped = False
         while proc.poll() is None:
             self.q.wait(lambda: any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")), 5)
@@ -360,6 +365,10 @@ class Dispatcher:
                 stopped = True
         rc = proc.wait()
         proc.stdin.close()
+        if rc < 0 and not stopped:
+            # the connection was killed on this side, e.g. the app is being stopped: not the job's
+            # doing, so it stays running, and is started again, keeping what it has
+            return "interrupted"
         state = "cancelled" if stopped else "finished" if rc == 0 else "failed"
         self.q.report(job["id"], state)
         return state

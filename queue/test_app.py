@@ -3,7 +3,7 @@
     python3 -m unittest discover -s queue
 """
 
-import hashlib, hmac, http.client, http.server, json, os, sys, tempfile, threading, time, unittest, urllib.error, urllib.parse
+import hashlib, hmac, http.client, http.server, json, os, subprocess, sys, tempfile, threading, time, unittest, urllib.error, urllib.parse
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -251,6 +251,27 @@ class TestDispatcher(Base):
             del os.environ["SLEEP"]
         self.assertIn("stop benchjob-2", open(self.log).read())
 
+    def test_an_interrupted_job_resumes(self):
+        os.environ["SLEEP"] = "30"
+        try:
+            self.q.add_pr(7, "alice", keep=False)
+            job = self.q.take()
+            t = threading.Thread(target=lambda: setattr(self, "state", self.d.run(job)))
+            t.start()
+            deadline = time.time() + 10
+            while time.time() < deadline and "start benchjob" not in (open(self.log).read() if os.path.exists(self.log) else ""):
+                time.sleep(0.1)
+            subprocess.run(["pkill", "-TERM", "-f", f"{self.dir}/start"])     # as when the app's service stops
+            t.join(10)
+        finally:
+            del os.environ["SLEEP"]
+        self.assertEqual(self.state, "interrupted")
+        self.assertEqual(job["state"], "running")
+        self.assertIs(self.q.take(), job)
+        self.assertEqual(self.d.run(job), "finished")
+        starts = [l for l in open(self.log).read().splitlines() if l.startswith("start")]
+        self.assertEqual([l.rsplit(" ", 1)[1] for l in starts], ["fresh", "keep"])   # fresh the first time only
+
     def test_ssh_quotes_each_word(self):
         self.cfg.remote = "node"
         cmd = self.d.command(["sudo", "-n", "x", "a b", "$(rm -rf /)"])
@@ -337,7 +358,8 @@ class TestServer(Base):
         self.assertEqual(post("/queue/add", "alice", {"pr": "7", "csrf": app.sign(self.cfg, "csrf|alice")})[0], 303)
         self.assertEqual([j["pr"] for j in self.q.jobs("waiting")], [7])
         # a forged session is no session
-        forged = app.new_session(self.cfg, "alice")[:-1] + "0"
+        real = app.new_session(self.cfg, "alice")
+        forged = real[:-1] + ("1" if real[-1] == "0" else "0")   # always a different signature
         self.assertIsNone(app.session(self.cfg, forged))
 
     def get(self, path, login=None):
