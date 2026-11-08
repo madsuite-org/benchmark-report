@@ -211,6 +211,17 @@ class TestQueue(Base):
         self.q.report(a["id"], "finished")
         self.assertEqual(self.q.take("001")["pr"], 8)
 
+    def test_drain(self):
+        self.cfg.drain = os.path.join(self.dir, "drain")
+        self.q.add_pr(7, "alice")
+        open(self.cfg.drain, "w").close()
+        self.assertIsNone(self.q.take())            # draining: nothing new starts
+        os.remove(self.cfg.drain)
+        job = self.q.take()
+        self.assertEqual(job["pr"], 7)
+        open(self.cfg.drain, "w").close()
+        self.assertIs(self.q.take(), job)           # a running job carries on
+
     def test_state_survives_a_restart(self):
         self.q.add_pr(7, "alice")
         again = app.Queue(self.cfg, self.gh)
@@ -572,6 +583,10 @@ class TestServer(Base):
         self.gh_tokens = None
         self.cfg.upload_limit = 10
         self.assertEqual(self.post_upload(self.make_tar(good), "try-3")[0], 413)
+
+    def test_version(self):
+        code, _, out = self.request("GET", "/queue/version")
+        self.assertEqual((code, json.loads(out)["commit"]), (200, app.CODE_COMMIT))
 
     def test_login(self):
         code, headers, _ = self.request("GET", "/queue/login")

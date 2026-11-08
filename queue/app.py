@@ -45,6 +45,8 @@ class Config:
         # whether a push to master queues a run of it; off: master runs only when someone queues it
         self.auto_master = env.get("QUEUE_AUTO_MASTER", "") == "1"
         self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")
+        # while this file exists, no machine takes a new job: a restart can wait for the running ones
+        self.drain = env.get("QUEUE_DRAIN", "")
         # The machines that run jobs, each with its own lane: a JSON list of {"name", "remote", "live"}.
         # Without it, the one machine of QUEUE_REMOTE, named QUEUE_NODE_NAME.
         nodes = json.loads(env.get("QUEUE_NODES", "") or "[]")
@@ -113,6 +115,16 @@ class GitHub:
             print("sign-in refused by GitHub:", answer.get("error"), answer.get("error_description"), flush=True)
         return tok and self.call("GET", "/user", token=tok).get("login")
 
+
+def _code_commit():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        return subprocess.run(["git", "-c", f"safe.directory={root}", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+CODE_COMMIT = _code_commit()
 
 DEFAULTS = {"config": "default", "options": "", "harness": "", "devices": "cpu,cuda"}
 
@@ -373,6 +385,8 @@ class Queue:
             running = [j for j in self.jobs("running") if mine(j)]
             if running:
                 return running[0]
+            if self.cfg.drain and os.path.exists(self.cfg.drain):
+                return None
             while True:
                 # one run of a pull request at a time, and one writer per folder
                 lane = lambda j: f"pr-{j['pr']}" if j["kind"] == "pr" and not variant(j) else folder({**j, "sha": j.get("sha") or "0" * 40})
@@ -1236,6 +1250,9 @@ def handler(cfg, q):
                 return self.api("GET", path, b"")
             login = session(cfg, self.cookie("s"))
             member = bool(login) and q.permission(login) in WRITE
+            if path == "/queue/version":
+                # which code this app runs, to tell when a deploy has reached it
+                return self.send(200, json.dumps({"commit": CODE_COMMIT}), kind="application/json")
             if path in ("/queue", "/queue/", "/queue/new") or path.startswith("/queue/job/"):
                 # only the reports are public: every page of the app needs someone who may run jobs
                 if not login:

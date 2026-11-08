@@ -92,3 +92,9 @@ limits, and there must be at least one `<machine>/<set>_<config>.csv` with its `
 the same name again replaces your own upload; another person's cannot be replaced. Uploads are
 kept apart from the queue's runs (`QUEUE_UPLOADS`, read by the builder with `--uploads`) and are
 never used as master's results for comparisons.
+
+## Deploying
+
+`GET /queue/version` gives the commit the app runs. While the file `QUEUE_DRAIN` exists, no machine
+takes a new job, and running jobs carry on: a restart sets it, waits for the running jobs to end,
+restarts the app and removes it, with nothing interrupted.
