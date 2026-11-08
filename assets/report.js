@@ -21,10 +21,17 @@ bind();
 document.querySelectorAll('pre.log').forEach(b=>b.scrollTop=b.scrollHeight);
 // while a run is going, take the page again every two seconds and swap its content in place
 // the browser asks the server whether the page has changed, and downloads it only if so
-let seen;
+let seen,touched=0,pressed=false;
+// the new content waits while the reader is scrolling or touching the page: swapping it in then
+// would cut the gesture short and throw the table back
+for(const k of ['scroll','wheel','touchmove'])addEventListener(k,()=>touched=Date.now(),{capture:true,passive:true});
+addEventListener('pointerdown',()=>{pressed=true;touched=Date.now()},{capture:true,passive:true});
+for(const k of ['pointerup','pointercancel','touchend'])addEventListener(k,()=>{pressed=false;touched=Date.now()},{capture:true,passive:true});
 if(document.querySelector('meta[name=live]'))setInterval(async()=>{
+if(pressed||Date.now()-touched<2500)return;
 const r=await fetch(location.href,{cache:'no-cache'});if(!r.ok)return;
-const v=r.headers.get('etag')||r.headers.get('last-modified');if(v&&v===seen)return;seen=v;
+const v=r.headers.get('etag')||r.headers.get('last-modified');if(v&&v===seen)return;
+if(pressed||Date.now()-touched<2500)return;seen=v;
 const d=new DOMParser().parseFromString(await r.text(),'text/html'),q=document.querySelector('#filter')?.value,c=document.querySelector('#failed')?.checked;
 // keep where the reader had scrolled every table to, and any open menu, across the swap
 // a log followed at its end keeps following it; anything else stays where it was
