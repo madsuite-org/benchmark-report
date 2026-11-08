@@ -95,7 +95,7 @@ class TestQueue(Base):
         self.gh.pulls[7] = ("open", REPO, "f" * 40, "Seven")   # pushed while it waited
         job = self.q.take()
         self.assertEqual((job["pr"], job["sha"]), (7, "f" * 40))
-        self.assertEqual(self.gh.statuses[-1], ("f" * 40, "pending", "https://x/benchmark/pr-7/"))
+        self.assertEqual(self.gh.statuses[-1], ("f" * 40, "pending", "https://x/benchmark/pr-7-ffffffff/"))
 
     def test_skips_a_pull_request_closed_while_waiting(self):
         self.q.add_pr(7, "alice")
@@ -177,7 +177,7 @@ class TestQueue(Base):
         self.q.add_pr(7, "alice")
         self.assertIsNone(self.q.add_pr(7, "alice", settings={"options": "tol=1e-6"}))   # another job, not a duplicate
         plain, custom = self.q.jobs("waiting")
-        self.assertEqual(app.folder({**plain, "sha": "a" * 40}), "pr-7")
+        self.assertEqual(app.folder({**plain, "sha": "a" * 40}), "pr-7-aaaaaaaa")      # per commit
         f = app.folder({**custom, "sha": "a" * 40})
         self.assertTrue(re.fullmatch(r"run-custom-[0-9a-f]{6}-pr7", f), f)
         job, problem = self.q.add_ref("feature/x", "alice", settings={"harness": "shifted-cholmod-experiment", "devices": "cpu"})
@@ -186,7 +186,7 @@ class TestQueue(Base):
         # the devices alone keep a run in its standard report
         self.assertIsNone(self.q.add_pr(7, "alice", settings={"devices": "cpu"}))
         cpu = [j for j in self.q.jobs("waiting") if j.get("pr") == 7 and j.get("devices") == "cpu"][0]
-        self.assertEqual(app.folder({**cpu, "sha": "a" * 40}), "pr-7")
+        self.assertEqual(app.folder({**cpu, "sha": "a" * 40}), "pr-7-aaaaaaaa")
         mc = self.q.add_master_now("alice", {"devices": "cuda"})
         self.assertEqual((mc["kind"], mc["devices"]), ("master", "cuda"))
         m = self.q.add_master_now("alice", {"config": "ipopt", "devices": "cpu"})
@@ -283,7 +283,7 @@ class TestDispatcher(Base):
         self.q.add_pr(7, "alice", keep=False)
         self.assertEqual(self.d.run(self.q.take()), "finished")
         lines = open(self.log).read().splitlines()
-        self.assertEqual(lines, [f"start benchjob-1 /live/pr-7 {'a' * 40} pr 7 fresh", "stdin-open"])
+        self.assertEqual(lines, [f"start benchjob-1 /live/pr-7-aaaaaaaa {'a' * 40} pr 7 fresh", "stdin-open"])
         self.assertEqual(self.q.jobs("finished")[0]["pr"], 7)
 
     def test_a_refusal_becomes_the_note(self):
@@ -710,14 +710,23 @@ class TestSite(Base):
         job = self.q.take()
         alice = {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"}
         self.assertNotIn("jobbar", self.get("/madnlp/pr-1/")[2])         # another report
-        os.makedirs(os.path.join(self.cfg.site, "madnlp", "pr-7"))
-        open(os.path.join(self.cfg.site, "madnlp", "pr-7", "index.html"), "w").write('<html><header class="site">' + app.NAV + '</header><main class="container"></main></html>')
-        self.assertNotIn("jobbar", self.get("/madnlp/pr-7/")[2])         # not to the public
-        page = self.get("/madnlp/pr-7/", alice)[2]
+        page_html = '<html><header class="site">' + app.NAV + '</header><main class="container"></main></html>'
+        for n in ("pr-7", "pr-7-aaaaaaaa"):
+            os.makedirs(os.path.join(self.cfg.site, "madnlp", n))
+            open(os.path.join(self.cfg.site, "madnlp", n, "index.html"), "w").write(page_html)
+        self.assertNotIn("jobbar", self.get("/madnlp/pr-7-aaaaaaaa/")[2])         # not to the public
+        # an earlier report of the pull request says a newer run is going, and links the others
+        old = self.get("/madnlp/pr-7/")[2]
+        self.assertIn("a run of aaaaaaaa is in progress", old)
+        self.assertIn('href="../pr-7-aaaaaaaa/"', old)
+        page = self.get("/madnlp/pr-7-aaaaaaaa/", alice)[2]
         self.assertIn(f'Job <a href="https://x/queue/job/{job["id"]}">{job["id"]}</a>', page)
         self.assertIn(">Cancel</button>", page)
         code, headers, _ = self.get(f"/queue/job/{job['id']}", alice)
-        self.assertEqual((code, headers["Location"]), (303, "/madnlp/pr-7/"))
+        self.assertEqual((code, headers["Location"]), (303, "/madnlp/pr-7-aaaaaaaa/"))
+        # a pull request's own address leads to its newest commit's report
+        import shutil; shutil.rmtree(os.path.join(self.cfg.site, "madnlp", "pr-7"))
+        self.assertEqual(self.get("/madnlp/pr-7/")[1]["Location"], "/madnlp/pr-7-aaaaaaaa/")
 
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")

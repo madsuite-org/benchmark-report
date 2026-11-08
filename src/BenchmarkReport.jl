@@ -229,11 +229,15 @@ function latest_merged(live, name; depth = 200)
     for line in split(git("log", "--first-parent", "-n", string(depth), "--format=%H %s", "origin/master"), '\n'; keepempty = false)
         sha, subject = split(line, ' '; limit = 2)
         merged = match(r"\(#(\d+)\)$", subject)
-        merged !== nothing && "pr-$(merged[1])" == name && continue
+        own(n) = n == "pr-$(merged[1])" || startswith(n, "pr-$(merged[1])-")
+        merged !== nothing && own(name) && continue
         commits = [String(sha)]
-        if merged !== nothing && isfile(joinpath(live, "pr-$(merged[1])", "run.json"))
-            head = match(r"\"commit\"\s*:\s*\"([0-9a-f]{40})\"", read(joinpath(live, "pr-$(merged[1])", "run.json"), String))
-            head === nothing || push!(commits, String(head[1]))
+        if merged !== nothing
+            # the pull request's runs, one folder per commit (or one folder, from before that)
+            for n in filter(n -> own(n) && isfile(joinpath(live, n, "run.json")), readdir(live))
+                head = match(r"\"commit\"\s*:\s*\"([0-9a-f]{40})\"", read(joinpath(live, n, "run.json"), String))
+                head === nothing || head[1] in commits || push!(commits, String(head[1]))
+            end
         end
         for commit in commits, machine in machines
             mine = [m for m in files if m[1] == machine && m[2] == commit && (machine, String(m[3])) ∉ done]

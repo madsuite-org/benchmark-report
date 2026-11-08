@@ -28,7 +28,8 @@ function code_commit()
     end
 end
 
-is_folder(name) = occursin(r"^(pr-\d+|run-[a-z0-9-]+|master-[0-9a-f]{8})$", name)
+# a pull request's results are kept per commit, pr-<N>-<sha8>; plain pr-<N> is from before that
+is_folder(name) = occursin(r"^(pr-\d+(-[0-9a-f]{8})?|run-[a-z0-9-]+|master-[0-9a-f]{8})$", name)
 
 # Uploaded results, in a root of their own: only their run-up-* folders are read there, and no
 # run-up-* folder is read from the live root, so neither can stand in for the other.
@@ -51,7 +52,8 @@ function build_run(live, site, name)
     (occursin(r"^[\w.-]+/[\w.-]+$", repository) && (manual || occursin(r"^\d+$", pr))) || error("$name: bad run.json")
     state, commit = json_field(text, "state"), json_field(text, "commit")
     named = json_field(text, "title")
-    title = manual ? "Manual run: " * (isempty(named) ? name[5:end] : named) : "Pull request #$pr"
+    at = match(r"^pr-\d+-([0-9a-f]{8})$", name)
+    title = manual ? "Manual run: " * (isempty(named) ? name[5:end] : named) : "Pull request #$pr" * (at === nothing ? "" : " at $(at[1])")
     link = manual ? (occursin(r"^[0-9a-f]{40}$", commit) ? "https://github.com/$repository/commit/$commit" : nothing) : "https://github.com/$repository/pull/$pr"
     write_report(
         joinpath(site, name), joinpath(live, name);

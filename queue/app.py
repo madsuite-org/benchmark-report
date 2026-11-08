@@ -374,9 +374,11 @@ class Queue:
             if running:
                 return running[0]
             while True:
-                busy = {folder({**j, "sha": j.get("sha") or "0" * 40}) for j in self.jobs("running")}
+                # one run of a pull request at a time, and one writer per folder
+                lane = lambda j: f"pr-{j['pr']}" if j["kind"] == "pr" and not variant(j) else folder({**j, "sha": j.get("sha") or "0" * 40})
+                busy = {lane(j) for j in self.jobs("running")}
                 waiting = [j for j in sorted(self.jobs("waiting"), key=order)
-                           if (node is None or j.get("node") in (None, "", node)) and folder({**j, "sha": j.get("sha") or "0" * 40}) not in busy]
+                           if (node is None or j.get("node") in (None, "", node)) and lane(j) not in busy]
                 if not waiting:
                     return None
                 job = waiting[0]
@@ -432,13 +434,19 @@ def public(cfg, j):
 
 
 def folder(job):
+    # the folder a job was started into, once it has one: a later change of naming leaves it as it was
+    if job.get("folder"):
+        return job["folder"]
     v = variant(job)
     if v:
         target = (f"pr{job['pr']}" if job["kind"] == "pr" else
                   re.sub(r"[^a-z0-9]+", "-", job.get("ref", "").lower()).strip("-")[:12] if job["kind"] == "branch" else (job.get("sha") or "")[:8])
         return f"run-{v}-{target}"[:48].rstrip("-")
     if job["kind"] == "pr":
-        return f"pr-{job['pr']}"
+        # a pull request's results are kept per commit, so a run at a new commit never takes over
+        # another commit's; before the run starts its commit is not known yet
+        sha = job.get("sha") or ""
+        return f"pr-{job['pr']}-{sha[:8]}" if re.fullmatch(r"[0-9a-f]{40}", sha) and sha != "0" * 40 else f"pr-{job['pr']}"
     if job["kind"] == "branch":
         return "run-" + (re.sub(r"[^a-z0-9]+", "-", job["ref"].lower()).strip("-")[:40] or "branch")
     if job["kind"] == "commit":
@@ -461,7 +469,13 @@ class Dispatcher:
 
     def run(self, job):
         unit = f"benchjob-{job['id']}"
-        live = os.path.join(self.node["live"], folder(job))
+        with self.q.changed:
+            if job.get("dispatched") and not job.get("folder") and job["kind"] == "pr" and not variant(job):
+                # started before results were kept per commit: it carries on in the folder it began in
+                job["folder"] = f"pr-{job['pr']}"
+            job["folder"] = folder(job)
+            self.q.save()
+        live = os.path.join(self.node["live"], job["folder"])
         # the machine's own start command takes care of everything around the job there, its
         # preemption of other work included
         # stdin stays open for the whole job: the machine stops the job when it closes, so a lost
@@ -765,6 +779,32 @@ def cancel_button(cfg, q, login, j):
         return ""
     return (f'<form method="post" action="{html.escape(cfg.base)}/cancel" class="d-inline"><input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}">'
             f'<input type="hidden" name="id" value="{j["id"]}"><button class="btn btn-sm btn-outline-danger">Cancel</button></form>')
+
+
+def commits_panel(cfg, q, name):
+    """On a report of one commit of a pull request: its other commits' reports, and any newer run
+    of it that is waiting or running, so that a rerun never silently stands for these results."""
+    m = re.fullmatch(r"pr-(\d+)(?:-([0-9a-f]{8}))?", name)
+    if not m or not cfg.site:
+        return ""
+    pr, sha = m[1], m[2]
+    root = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"))
+    try:
+        others = sorted((n for n in os.listdir(root) if re.fullmatch(rf"pr-{pr}(-[0-9a-f]{{8}})?", n) and n != name),
+                        key=lambda n: os.stat(os.path.join(root, n)).st_mtime, reverse=True)
+    except OSError:
+        others = []
+    e, out = html.escape, []
+    newer = [j for j in q.jobs("waiting", "running") if j["kind"] == "pr" and str(j.get("pr")) == pr and not variant(j)
+             and (j.get("sha") or "")[:8] != sha]
+    if newer:
+        j = newer[0]
+        what = f"a run of {e((j.get('sha') or '')[:8])} is in progress" if j["state"] == "running" else "a run of its latest commit is waiting"
+        out.append(f'For #{pr}, {what}; this page shows {e(sha or "the earlier")} commit\'s results.')
+    if others:
+        links = ", ".join(f'<a href="../{e(n)}/">{e(n[len(f"pr-{pr}-"):] if n != f"pr-{pr}" else "before per-commit reports")}</a>' for n in others)
+        out.append(f"Other commits of #{pr}: {links}.")
+    return f'<div class="container mt-2"><div class="alert alert-info py-2 mb-0">{" ".join(out)}</div></div>' if out else ""
 
 
 def job_panel(cfg, q, login, name):
@@ -1140,6 +1180,14 @@ def handler(cfg, q):
             if m and cfg.live_local and os.path.isdir(os.path.join(cfg.live_local, m[1])):
                 return self.send(200, workers_page(cfg, login, m[1]))
             target = site_file(cfg, path)
+            m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/pr-(\d+)/?", path)
+            if target is None and m:
+                # a pull request's page: its newest commit's report
+                root = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"))
+                mine = [n for n in os.listdir(root) if re.fullmatch(rf"pr-{m[1]}-[0-9a-f]{{8}}", n)] if os.path.isdir(root) else []
+                if mine:
+                    newest = max(mine, key=lambda n: os.stat(os.path.join(root, n)).st_mtime)
+                    return self.redirect(f"{cfg.reports}/{newest}/")
             if target is None:
                 return self.send(404, "Not found", kind="text/plain")
             if os.path.isdir(os.path.realpath(os.path.join(cfg.site, urllib.parse.unquote(path).lstrip("/")))) and not path.endswith("/"):
@@ -1167,6 +1215,8 @@ def handler(cfg, q):
                 if age is not None:
                     member = bool(login) and q.permission(login) in WRITE
                     data = data.replace(b"</header>", b"</header>" + stall_note(cfg, login if member else None, parts[1], age).encode(), 1)
+                if len(parts) > 1:
+                    data = data.replace(b"</header>", b"</header>" + commits_panel(cfg, q, parts[1]).encode(), 1)
                 if len(parts) > 1 and member_of(login):
                     # the report and its job are one page: the job's state and actions, for members
                     data = data.replace(b"</header>", b"</header>" + job_panel(cfg, q, login, parts[1]).encode(), 1)

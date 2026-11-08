@@ -314,6 +314,26 @@ end
     end
 end
 
+@testset "a pull request's results per commit" begin
+    mktempdir() do root
+        _, clone, _ = archive_clone(root)
+        BenchmarkReport.REPOSITORY[] = clone
+        BenchmarkReport.FETCH[] = false
+        live, site = mkpath(joinpath(root, "live")), mkpath(joinpath(root, "site"))
+        for sha in ("d89f8eeb", "95f40cad")
+            d = mkpath(joinpath(live, "pr-704-$sha"))
+            hostile_results(d)
+            write(joinpath(d, "run.json"), """{"repository":"o/r","pr":"704","commit":"$(sha * "0"^32)","state":"finished"}""")
+        end
+        reset_runs()
+        BenchmarkReport.build_all(live, site)
+        @test occursin("Pull request #704 at 95f40cad", read(joinpath(site, "pr-704-95f40cad", "index.html"), String))
+        @test isfile(joinpath(site, "pr-704-d89f8eeb", "index.html"))      # the earlier commit's report stays
+        index = read(joinpath(site, "index.html"), String)
+        @test occursin("#704 at d89f8eeb", index) && occursin("#704 at 95f40cad", index)
+    end
+end
+
 @testset "no pull requests" begin
     mktempdir() do root
         _, clone, _ = archive_clone(root)

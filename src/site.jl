@@ -536,6 +536,9 @@ end
 Write the list of benchmarks to `site/index.html`: the running pull requests, the finished ones
 and the archived results. `runs` holds `(; name, pr, title, commit, state, updated)` per run; `pr` is empty for a manual run.
 """
+# " at <sha8>" for the folder of one commit of a pull request
+at_commit(name) = (m = match(r"^pr-\d+-([0-9a-f]{8})$", name); m === nothing ? "" : " at " * m[1])
+
 function write_index(site, runs; repository)
     write_assets(site)
     code = "https://github.com/" * repository
@@ -545,7 +548,7 @@ function write_index(site, runs; repository)
         println(io, "<h2>", title, "</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
         for r in (sorted ? sort(selected; by = r -> r.updated, rev = true) : selected)
             commit = occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">$(first(r.commit, 8))</a>" : escape_html(first(r.commit, 8))
-            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(r.state), "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
+            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(r.state), "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
         end
         return println(io, "</tbody></table></div>")
     end
