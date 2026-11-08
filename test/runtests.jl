@@ -99,10 +99,15 @@ end
         @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cpu-smoke.html"), String))
         # the result files are left as they were
         @test occursin(",900,", read(joinpath(site, "data", "machine", "smoke_default.csv"), String))
-        # a limit stated by the run wins
+        # a run with a longer limit of its own is still held to the benchmark's
         write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 1000.0\n")
         write_report(site, results; wall = 7200.0, finished = true)
-        @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+        @test occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+        # and one with a shorter limit to that
+        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 950.0\n")
+        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 600.0
+        # on the host, 1800 s, also for a run made with 7200 s
+        @test BenchmarkReport.device_walls(results, 7200.0)["cpu"] == 1800.0
     end
 end
 
@@ -162,6 +167,25 @@ end
     @test BenchmarkReport.shown_state((; state = "running", mtime = time() - 7200)) == "stalled"
     @test BenchmarkReport.shown_state((; state = "running", mtime = time() - 60)) == "running"
     @test BenchmarkReport.shown_state((; state = "finished", mtime = time() - 7200)) == "finished"
+end
+
+@testset "a run of Ipopt shows its own results" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
+        hostile_results(results)
+        machine = joinpath(results, "machine")
+        meta = read(joinpath(machine, "smoke_default.csv.meta.toml"), String)
+        mv(joinpath(machine, "smoke_default.csv"), joinpath(machine, "smoke_ipopt.csv"))
+        rm(joinpath(machine, "smoke_default.csv.meta.toml"))
+        write(joinpath(machine, "smoke_ipopt.csv.meta.toml"), replace(meta, "device = \"cuda\"" => "device = \"cpu\""))
+        # an archived reference of the same set, which the run's own results come before
+        reference = BenchmarkReport.ResultSet("Ipopt reference")
+        BenchmarkReport.add!(reference, "smoke", "ipopt", BenchmarkReport.read_meta(joinpath(machine, "smoke_ipopt.csv")), [(; BenchmarkReport.read_results(joinpath(machine, "smoke_ipopt.csv"))[1]..., iters = 99999)])
+        write_report(site, results; wall = 7200.0, finished = true, reference)
+        page = read(joinpath(site, "cpu-smoke.html"), String)
+        @test !occursin("99999", page)
+        @test occursin("Ipopt", page)
+    end
 end
 
 @testset "a device that has not run a set counts none of it" begin

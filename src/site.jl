@@ -61,8 +61,10 @@ end
 side_rows(side, cand, base, set) = get((side.base ? base : cand).rows, (side.key[1], set, side.key[2]), Dict{String, Any}())
 
 # Every solver on a device's pages is held to that device's limit on a solve, also in runs from
-# before it: a longer solve counts as stopped at the limit. The result files are left as they were.
-# A run states its limit as `wall_limit_s`; a run from before that takes `GPU_WALL` on a GPU.
+# before it (run with a longer one): a longer solve counts as stopped at the limit. The result
+# files are left as they were. The limits are the benchmark's, 1800 s on the host and 600 s on a
+# GPU (Sungho, 2026-11-08); a run that states a lower one (`wall_limit_s`) is held to that.
+const CPU_WALL = 1800.0
 const GPU_WALL = 600.0
 function device_walls(root, wall)
     stated = Dict{String, Float64}()
@@ -72,7 +74,7 @@ function device_walls(root, wall)
         limit, device = get(meta, "wall_limit_s", nothing), get(meta, "device", nothing)
         (limit isa Real && limit > 0 && device in DEVICES) && (stated[device] = min(get(stated, device, Inf), limit))
     end
-    return Dict(d => get(stated, d, d == "cpu" ? wall : min(wall, GPU_WALL)) for d in DEVICES)
+    return Dict(d => min(get(stated, d, Inf), wall, d == "cpu" ? CPU_WALL : GPU_WALL) for d in DEVICES)
 end
 device_wall(device, walls) = walls[device]
 capped(rows, wall) = Dict{String, Any}(c => r.t_total > wall ? merge(r, (; status = MAXIMUM_WALLTIME_EXCEEDED, t_total = wall)) : r for (c, r) in rows)
@@ -218,6 +220,9 @@ function progress(io, devices, sets, sides, cand, base, wall)
     println(io, "<div class=\"tiles\">")
     for device in devices
         candidates = [s for s in sides if s.key[1] == device && s.key[2] != "ipopt"]
+        # a run of Ipopt alone: its own Ipopt
+        isempty(candidates) && (candidates = [s for s in sides if s.key[2] == "ipopt" && !s.base])
+        isempty(candidates) && continue
         mine = something(findfirst(s -> !s.base, candidates), 1) |> i -> candidates[i]
         done = solved_count = total = 0
         for set in sets
@@ -495,17 +500,19 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
         end
     end
     cand = from_directory(root, "this run")
+    # a run of Ipopt itself (config `ipopt`) is shown with its own results, not the reference's
+    own_ipopt = any(k -> k[3] == "ipopt", keys(cand.rows))
     if reference !== nothing
-        merge!(cand.rows, reference.rows)
-        merge!(cand.revs, reference.revs)
-        merge!(cand.harness, reference.harness)
+        mergewith!((mine, _) -> mine, cand.rows, reference.rows)
+        mergewith!((mine, _) -> mine, cand.revs, reference.revs)
+        mergewith!((mine, _) -> mine, cand.harness, reference.harness)
     end
     sides = report_sides(cand, base)
     walls = device_walls(root, wall)
     sets = sort!(unique!([k[2] for k in keys(cand.rows)]))
     stamp = Dates.format(now(UTC), "yyyy-mm-dd HH:MM:SS")
     # the bar pinned to the top of every page
-    devices = unique!([s.key[1] for s in sides if s.key[2] != "ipopt"])
+    devices = unique!(vcat([s.key[1] for s in sides if s.key[2] != "ipopt"], own_ipopt ? ["cpu"] : String[]))
     menu(device) = "<nav class=\"$device\">" * device_tag(device) * join(["<a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a>" for set in sets]) * "</nav>"
     tools = ["<a href=\"index.html\">Summary</a>"]
     finished || push!(tools, "<a href=\"workers.html\">Workers</a>")
