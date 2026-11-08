@@ -394,10 +394,74 @@ class TestDispatcher(Base):
         self.assertEqual(self.d.run(self.q.take()), "finished")              # waited on again, not started again
         self.assertEqual(sum(l.startswith("start") for l in open(self.log).read().splitlines()), 1)
 
+    def remote(self, name="005"):
+        # a machine reached over ssh, with the commands run here: an exit of 255 is then ssh's
+        self.d.node = {"name": name, "remote": "fake", "live": "/live"}
+        self.d.command = lambda words: words
+
+    def test_an_unreachable_machine_keeps_its_jobs_waiting(self):
+        self.remote()
+        os.environ["RC"] = "255"
+        start = self.cfg.remote_start
+        self.cfg.remote_start = ["sh", "-c", 'echo "ssh: connect to host 005 port 22: No route to host" >&2; exit 255', "x"]
+        try:
+            self.q.add_pr(7, "alice", keep=False)
+            job = self.q.take("005")
+            self.assertEqual(job["node"], "005")
+            self.assertEqual(self.d.run(job), "unreachable")
+        finally:
+            del os.environ["RC"]
+        self.assertEqual(job["state"], "waiting")
+        self.assertIsNone(job["node"])                  # placed as it was: any machine
+        self.assertNotIn("folder", job)
+        self.assertTrue(self.q.down("005"))
+        self.assertIsNone(self.q.down("001"))
+        self.cfg.remote_start = start
+        # once it answers, the job runs there, from the start, and the machine is up again
+        self.assertEqual(self.d.run(self.q.take("005")), "finished")
+        self.assertIsNone(self.q.down("005"))
+        self.assertTrue(all(l.endswith("fresh") for l in open(self.log).read().splitlines() if l.startswith("start")))
+
+    def test_a_job_lost_with_its_machine_carries_on(self):
+        self.remote()
+        state = os.path.join(self.dir, "machine")
+        os.makedirs(state)
+        def script(name, body):
+            path = os.path.join(self.dir, name)
+            open(path, "w").write("#!/bin/bash\n" + body)
+            os.chmod(path, 0o755)
+            return [path]
+        self.cfg.remote_start = script("start3", f'echo "start $@" >> {self.log}\n')
+        # the first wait loses the connection; then the machine has restarted and knows nothing of the job
+        self.cfg.remote_wait = script("wait3", f'n=$(cat {state}/n 2>/dev/null || echo 0); echo $((n+1)) > {state}/n\n'
+                                      f'[ $n = 0 ] && {{ echo "Timeout, server not responding." >&2; exit 255; }}\n'
+                                      f'[ $n = 1 ] && {{ echo "no status for $1" >&2; exit 1; }}\nexit 0\n')
+        self.q.add_pr(7, "alice", keep=False)
+        job = self.q.take("005")
+        self.assertEqual(self.d.run(job), "unreachable")
+        self.assertEqual(job["state"], "running")
+        self.assertTrue(job["lost"])
+        self.assertIn("not responding", self.q.down("005")["reason"])
+        self.assertEqual(self.d.run(self.q.take("005")), "interrupted")      # back, but the job is gone there
+        self.assertIsNone(self.q.down("005"))
+        self.assertEqual(self.d.run(self.q.take("005")), "finished")         # started again, keeping its results
+        starts = [l for l in open(self.log).read().splitlines() if l.startswith("start")]
+        self.assertEqual([l.rsplit(" ", 1)[1] for l in starts], ["fresh", "keep"])
+        self.assertNotIn("lost", job)
+
+    def test_down_machines_on_the_dashboard_and_the_api(self):
+        self.q.mark_down("005", "ssh: connect to host 005 port 22: No route to host")
+        page = app.jobs_section(self.cfg, self.q, "alice")
+        self.assertIn("Machine 005 could not be reached", page)
+        self.assertIn("No route to host", page)
+        self.assertIn("Try it now", page)
+        self.q.mark_up("005")
+        self.assertNotIn("could not be reached", app.jobs_section(self.cfg, self.q, "alice"))
+
     def test_ssh_quotes_each_word(self):
         self.d.node["remote"] = "node"
         cmd = self.d.command(["sudo", "-n", "x", "a b", "$(rm -rf /)"])
-        self.assertEqual(cmd[:-1], ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60", "node"])
+        self.assertEqual(cmd[:-1], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=60", "node"])
         import shlex
         self.assertEqual(shlex.split(cmd[-1]), ["sudo", "-n", "x", "a b", "$(rm -rf /)"])
 

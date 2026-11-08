@@ -201,7 +201,23 @@ class Queue:
         with open(tmp, "w") as f:
             json.dump(self.data, f)
         os.replace(tmp, self.cfg.state)
+        self.version = getattr(self, "version", 0) + 1
         self.changed.notify_all()
+
+    def down(self, node=None):
+        """The machines the app could not reach, `name => {since, reason}`, or the entry of one."""
+        d = self.data.get("down", {})
+        return d if node is None else d.get(node)
+
+    def mark_down(self, node, reason):
+        with self.changed:
+            self.data.setdefault("down", {})[node] = {"since": int(time.time()), "reason": reason[-300:]}
+            self.save()
+
+    def mark_up(self, node):
+        with self.changed:
+            if self.data.get("down", {}).pop(node, None) is not None:
+                self.save()
 
     def jobs(self, *states):
         return [j for j in self.data["jobs"] if j["state"] in states]
@@ -417,6 +433,7 @@ class Queue:
                         continue
                 job["state"], job["started"] = "running", int(time.time())
                 if node is not None:
+                    job["asked"] = job.get("node") or ""
                     job["node"] = node
                 self.save()
                 break
@@ -472,6 +489,10 @@ def folder(job):
     return f"master-{job['sha'][:8]}"
 
 
+# What ssh says when it cannot connect at all, as opposed to losing a connection it had
+NO_CONNECTION = re.compile(r"ssh: (connect to host|Could not resolve)|No route to host|Connection refused|Connection timed out during banner")
+
+
 class Dispatcher:
     """Runs the queue's jobs on one machine, one at a time, as the runner of the machine would."""
 
@@ -483,7 +504,23 @@ class Dispatcher:
         if self.node["remote"] == "local":
             return words
         # ssh joins its arguments into one line for the remote shell, so each is quoted
-        return ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60", self.node["remote"], shlex.join(words)]
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30", "-o", "ServerAliveInterval=60", self.node["remote"], shlex.join(words)]
+
+    def unreachable(self, rc):
+        # ssh exits 255 when it cannot connect or loses the connection; the machine's commands never do
+        return rc == 255 and self.node["remote"] != "local"
+
+    def back_to_waiting(self, job, reason):
+        """The machine cannot be reached before the job started on it: the job waits again, placed
+        as it was, and the machine is marked down."""
+        with self.q.changed:
+            job["state"], job["started"] = "waiting", None
+            job["node"] = job.pop("asked", job.get("node")) or None
+            if not job.get("dispatched"):
+                job.pop("folder", None)
+            self.q.save()
+        self.q.mark_down(self.node["name"], reason)
+        return "unreachable"
 
     def run(self, job):
         unit = f"benchjob-{job['id']}"
@@ -515,9 +552,14 @@ class Dispatcher:
                 if rc == 75:
                     output.close()
                     return "busy"
+                output.seek(0)
+                text = output.read().decode(errors="replace")
+                if self.unreachable(rc):
+                    output.close()
+                    return self.back_to_waiting(job, text.strip())
+                self.q.mark_up(self.node["name"])
                 if rc != 0:
-                    output.seek(0)
-                    return self.finish(job, "failed", rc, output.read().decode(errors="replace"), False)
+                    return self.finish(job, "failed", rc, text, False)
                 with self.q.changed:
                     job["dispatched"] = job["started_on_machine"] = True
                     self.q.save()
@@ -526,6 +568,7 @@ class Dispatcher:
             # stdin stays open for the whole job: the machine stops the job when it closes, so a lost
             # connection ends the job rather than leaving it running unseen
             proc = subprocess.Popen(start, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT)
+            was_dispatched = job.get("dispatched")
             with self.q.changed:
                 job["dispatched"] = True
                 self.q.save()
@@ -544,6 +587,29 @@ class Dispatcher:
         if rc == 75 and not stopped:
             # the machine is still cleaning up after this job's previous run: not a failure, try again
             return "busy"
+        if self.unreachable(rc) and not stopped:
+            if not self.cfg.remote_wait and not was_dispatched and NO_CONNECTION.search(tail):
+                # never got to the machine, so the job did not start there
+                job["dispatched"] = False
+                return self.back_to_waiting(job, tail.strip())
+            # the machine went away during the job: the job stays on it, and is waited on again (or
+            # carried on from what it has) once the machine can be reached
+            with self.q.changed:
+                job["lost"] = True
+                self.q.save()
+            self.q.mark_down(self.node["name"], tail.strip())
+            return "unreachable"
+        self.q.mark_up(self.node["name"])
+        if job.get("lost") and not stopped and rc != 0:
+            # back after losing the machine, which no longer knows the job (it restarted): the job
+            # starts again there, keeping its results so far
+            with self.q.changed:
+                job.pop("lost", None)
+                job["started_on_machine"] = False
+                self.q.save()
+            return "interrupted"
+        if job.pop("lost", None):
+            self.q.save()
         if rc < 0 and not stopped:
             # the connection was killed on this side, e.g. the app is being stopped: not the job's
             # doing, so it stays running, and is waited on (or started) again
@@ -558,8 +624,18 @@ class Dispatcher:
         self.q.report(job["id"], state)
         return state
 
+    # A machine that could not be reached is tried again when the queue changes, at most this often,
+    # or at once when someone marks it up. Not on a clock: nothing is retried while nothing changes.
+    RETRY_DOWN = 900
+
     def serve(self):
+        name = self.node["name"]
         while True:
+            if name is not None and self.q.down(name):
+                seen, since = getattr(self.q, "version", 0), self.q.down(name)["since"]
+                self.q.wait(lambda: not self.q.down(name) or (getattr(self.q, "version", 0) != seen and time.time() - since >= self.RETRY_DOWN), 3600)
+                if self.q.down(name) and (getattr(self.q, "version", 0) == seen or time.time() - since < self.RETRY_DOWN):
+                    continue
             self.q.wait(lambda: self.q.jobs("running") or self.q.jobs("waiting"), 3600)
             job = self.q.take(self.node["name"])
             if job is None:
@@ -1051,11 +1127,20 @@ def jobs_section(cfg, q, login=None):
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
     bot = e(cfg.bots[0]) if cfg.bots else ""
+    down = ""
+    for node, d in sorted(q.down().items()):
+        button = ""
+        if login:
+            button = (f' <form method="post" action="{e(cfg.base)}/node-up" class="d-inline"><input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}">'
+                      f'<input type="hidden" name="node" value="{e(node)}"><button class="btn btn-sm btn-outline-secondary">Try it now</button></form>')
+        down += (f'<div class="alert alert-warning">Machine {e(node)} could not be reached at {when(d["since"])} UTC. Its jobs wait; '
+                 f'it is tried again when the queue changes, at most every {Dispatcher.RETRY_DOWN // 60} min.{button}'
+                 f'<div class="m small">{e(d.get("reason", ""))}</div></div>')
     return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2>'
             f'<a class="btn btn-primary" href="{e(cfg.base)}/new">New job</a></div>'
             '<p class="m">One job runs at a time: updates first, then master, then in the order queued. Master runs when someone queues it. '
             f'A comment <code>@{bot} benchmark</code> on a pull request also queues it.</p>'
-            + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
+            + down + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
             + table("Recent jobs", recent(q), "No jobs yet.").replace("<h2>", "<h3>").replace("</h2>", "</h3>"))
 
 
@@ -1287,6 +1372,13 @@ def handler(cfg, q):
                     return reply(200, load_comparisons(cfg).get(report, {"with": [], "names": []}))
                 problem = change_comparison(cfg, str(data.get("report", "")), add=data.get("add"), remove=data.get("remove"), label=str(data.get("name", "")))
                 return reply(400, {"error": problem}) if problem else reply(200, load_comparisons(cfg).get(data.get("report"), {}))
+            if parts == ["nodes"] and method == "GET":
+                return reply(200, {"nodes": [{"name": n["name"], "down": q.down(n["name"])} for n in cfg.nodes]})
+            if len(parts) == 3 and parts[0] == "nodes" and parts[2] == "up" and method == "POST":
+                if parts[1] not in [n["name"] for n in cfg.nodes]:
+                    return reply(404, {"error": "There is no such machine."})
+                q.mark_up(parts[1])
+                return reply(200, {"name": parts[1], "down": None})
             if parts == ["pulls"] and method == "GET":
                 return reply(200, {"pulls": q.open_pulls()})
             if len(parts) == 3 and parts[0] == "pulls" and parts[2] == "update" and method == "POST" and parts[1].isdigit():
@@ -1492,6 +1584,10 @@ def handler(cfg, q):
                     return self.send(400, jobs_page(cfg, q, login, "Give the number of a pull request."))
                 problem = q.update(int(pr), login, get("keep") != "0")
                 return self.send(400, jobs_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
+            if self.path == "/queue/node-up":
+                if get("node") in [n["name"] for n in cfg.nodes]:
+                    q.mark_up(get("node"))
+                return self.redirect(cfg.base + "/")
             if self.path == "/queue/cancel":
                 job_id = get("id")
                 if not job_id.isdigit() or not q.cancel(int(job_id), login):
