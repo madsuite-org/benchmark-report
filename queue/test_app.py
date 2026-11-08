@@ -323,6 +323,9 @@ class TestServer(Base):
         self.assertEqual([j["pr"] for j in self.q.jobs("waiting")], [7])
 
     def test_push_to_master(self):
+        self.hook("push", {"ref": "refs/heads/master", "after": "c" * 40, "repository": {"full_name": REPO}})
+        self.assertEqual(self.q.jobs("waiting"), [])        # by default master runs only when queued by hand
+        self.cfg.auto_master = True
         self.hook("push", {"ref": "refs/heads/master", "after": "d" * 40, "repository": {"full_name": REPO}})
         self.hook("push", {"ref": "refs/heads/other", "after": "e" * 40, "repository": {"full_name": REPO}})
         self.assertEqual([j["sha"] for j in self.q.jobs("waiting")], ["d" * 40])

@@ -42,6 +42,8 @@ class Config:
         self.remote = env.get("QUEUE_REMOTE", "")
         self.remote_start = shlex.split(env.get("QUEUE_REMOTE_START", "sudo -n /usr/local/sbin/benchjob-run"))
         self.remote_stop = shlex.split(env.get("QUEUE_REMOTE_STOP", "sudo -n /usr/local/sbin/benchjob-stop"))
+        # whether a push to master queues a run of it; off: master runs only when someone queues it
+        self.auto_master = env.get("QUEUE_AUTO_MASTER", "") == "1"
         self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")   # the live folder on the remote
         # The reports: the site the builder writes, served by this app with the rest, and the
         # command that runs the builder (bin/serve.jl), which this app starts and restarts.
@@ -633,7 +635,7 @@ def jobs_section(cfg, q):
     bot = e(cfg.bots[0]) if cfg.bots else ""
     return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2>'
             f'<a class="btn btn-primary" href="{e(cfg.base)}/new">New job</a></div>'
-            '<p class="m">One job runs at a time: updates first, then master, then in the order queued. '
+            '<p class="m">One job runs at a time: updates first, then master, then in the order queued. Master runs when someone queues it. '
             f'A comment <code>@{bot} benchmark</code> on a pull request also queues it.</p>'
             + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
             + table("Recent jobs", recent(q), "No jobs yet.").replace("<h2>", "<h3>").replace("</h2>", "</h3>"))
@@ -900,7 +902,7 @@ def handler(cfg, q):
                     login = data["comment"]["user"]["login"]
                     if q.permission(login) in WRITE:
                         q.add_pr(int(data["issue"]["number"]), login)
-                elif event == "push" and data.get("ref") == "refs/heads/master" and not data.get("deleted"):
+                elif event == "push" and cfg.auto_master and data.get("ref") == "refs/heads/master" and not data.get("deleted"):
                     q.add_master(data["after"])
                 return self.send(204, kind="text/plain")
             if self.path == "/queue/runner/status":
