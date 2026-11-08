@@ -807,9 +807,67 @@ def app_nav(cfg, login):
                 f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a>{theme}</div></details></nav>')
     csrf = sign(cfg, "csrf|" + login)
     return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">{e(login)} ☰</summary><div>'
-            f'<a href="{e(cfg.reports)}/">Dashboard</a><a href="{e(cfg.base)}/new">New job</a>{theme}'
+            f'<a href="{e(cfg.reports)}/">Dashboard</a>{theme}'
             f'<form method="post" action="{e(cfg.base)}/logout"><input type="hidden" name="csrf" value="{csrf}"><button>Sign out</button></form>'
             '</div></details></nav>')
+
+
+class Links:
+    """Each report's long, unguessable address, /<reports>/r/<token>/, which anyone given it can open
+    (Sungho): reports are private by not being findable, and the list of them is for members. The
+    reports there before this keep their short addresses (`legacy`). Kept in the uploads root."""
+
+    def __init__(self, cfg):
+        self.cfg, self.lock = cfg, threading.Lock()
+        self.path = os.path.join(cfg.uploads, "report-links.json") if cfg.uploads else ""
+        self.data = None
+
+    def root(self):
+        return os.path.join(self.cfg.site, urllib.parse.urlsplit(self.cfg.reports).path.strip("/")) if self.cfg.site else ""
+
+    def load(self):
+        if self.data is not None:
+            return self.data
+        try:
+            self.data = json.load(open(self.path)) if self.path else {"tokens": {}, "legacy": []}
+        except (OSError, ValueError):
+            # the first time: every report already there keeps its short address
+            root, legacy = self.root(), []
+            if root and os.path.isdir(root):
+                legacy = [n for n in os.listdir(root) if REPORT.fullmatch(n)]
+                archive = os.path.join(root, "archive")
+                if os.path.isdir(archive):
+                    legacy += ["archive/" + c for c in os.listdir(archive) if re.fullmatch(r"[0-9a-f]{40}", c)]
+            self.data = {"tokens": {}, "legacy": sorted(legacy)}
+            self.save()
+        return self.data
+
+    def save(self):
+        if not self.path:
+            return
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(self.data, f)
+        os.replace(tmp, self.path)
+
+    def token_of(self, name):
+        with self.lock:
+            d = self.load()
+            if name not in d["tokens"]:
+                d["tokens"][name] = secrets.token_urlsafe(24)
+                self.save()
+            return d["tokens"][name]
+
+    def name_of(self, token):
+        with self.lock:
+            return next((n for n, t in self.load()["tokens"].items() if hmac.compare_digest(t, token)), None)
+
+    def public(self, name):
+        # without the uploads root to keep the addresses in, everything is as it was: public
+        if not self.path:
+            return True
+        with self.lock:
+            return name in self.load()["legacy"]
 
 
 def site_file(cfg, path):
@@ -1423,12 +1481,11 @@ def jobs_section(cfg, q, login=None):
         down += (f'<div class="alert alert-warning">Machine {e(node)} could not be reached at {when(d["since"])} UTC. Its jobs wait; '
                  f'it is tried again when the queue changes, at most every {Dispatcher.RETRY_DOWN // 60} min.{button}'
                  f'<div class="m small">{e(d.get("reason", ""))}</div></div>')
-    return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2>'
-            f'<a class="btn btn-primary" href="{e(cfg.base)}/new">New job</a></div>'
-            '<p class="m">One job runs at a time: updates first, then master, then in the order queued. Master runs when someone queues it. '
-            f'A comment <code>@{bot} benchmark</code> on a pull request also queues it.</p>'
+    # jobs start through the API (Sungho), so the dashboard has no form for them: it says how
+    return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2></div>'
             # finished runs are in the one list of runs below, with the rest (Sungho)
-            + down + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>"))
+            + down + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
+            + run_card(cfg))
 
 
 def jobs_page(cfg, q, login, message=""):
@@ -1502,7 +1559,7 @@ exec env BENCHMARK_SITE={shlex.quote(site)} runner/publish.sh "$@"
 
 def run_card(cfg):
     e = html.escape
-    return ('<div class="card mt-4"><div class="card-body"><h2 class="h5">Run it on your own machine</h2>'
+    return ('<div class="card mt-3 mb-3"><div class="card-body"><h2 class="h5">Starting a job</h2>'
             '<p class="m">On machines you can use, cluster nodes included. Create a job once, with a GitHub token with write '
             'access (<code>gh auth login</code>, or <code>BENCHMARK_TOKEN</code>); it fixes what is run and writes a job file. Then run '
             'the job on as many machines as you like, at once or later: this server hands each instance to one of them, merges '
@@ -1548,6 +1605,7 @@ def new_page(cfg, q, login, message=""):
 
 def handler(cfg, q):
     tokens = {}   # SHA-256 of a GitHub token => (login, expiry)
+    links = Links(cfg)
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -1560,6 +1618,11 @@ def handler(cfg, q):
                 if k == name:
                     return v
             return ""
+
+        def end_headers(self):
+            # no page of this site is for search engines (Sungho)
+            self.send_header("X-Robots-Tag", "noindex, nofollow")
+            super().end_headers()
 
         def send(self, code, body="", headers=(), kind="text/html; charset=utf-8"):
             data = body.encode()
@@ -1794,6 +1857,25 @@ def handler(cfg, q):
             """A page or file of the reports. A report's own banner gets the links of the signed-in user."""
             if path == "/":
                 return self.redirect(cfg.reports + "/")
+            base = urllib.parse.urlsplit(cfg.reports).path.rstrip("/")
+            # a report by its long address: anyone with it may read it
+            m = re.fullmatch(re.escape(base) + r"/r/([A-Za-z0-9_-]{20,64})(/.*)?", path)
+            by_link = False
+            if m:
+                name = links.name_of(m[1])
+                if name is None:
+                    return self.send(404, "Not found", kind="text/plain")
+                if not m[2]:
+                    return self.redirect(path + "/")
+                path, by_link = f"{base}/{name}{m[2]}", True
+            rest = path[len(base):].strip("/")
+            parts_ = rest.split("/") if rest else []
+            # what is not public: the list of runs, and a report opened by its short address that was
+            # not there before (its long one is shared instead)
+            report = "/".join(parts_[:2]) if parts_[:1] == ["archive"] else (parts_[0] if parts_ and REPORT.fullmatch(parts_[0]) else None)
+            listing = not parts_ or parts_ == ["index.html"]
+            if links.path and not member_of(login) and not by_link and (listing or (report and not links.public(report))):
+                return self.send(200 if not login else 403, signin(cfg, "" if not login else f"{login} has no write access to {cfg.repo}."))
             m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/(pr-\d+|master-[0-9a-f]{8}|run-[a-z0-9-]+)/workers\.html", path)
             if m and live_dir(cfg, m[1]) and os.path.isdir(live_dir(cfg, m[1])):
                 return self.send(200, workers_page(cfg, login, m[1]))
@@ -1838,6 +1920,10 @@ def handler(cfg, q):
                 if len(parts) > 1 and member_of(login):
                     # the report and its job are one page: the job's state and actions, for members
                     data = data.replace(b"</header>", b"</header>" + job_panel(cfg, q, login, parts[1]).encode(), 1)
+                    if report and (len(parts) == 2 or parts[2] in ("", "index.html")):
+                        share = f"{cfg.reports.rstrip('/')}/r/{links.token_of(report)}/"
+                        data = data.replace(b"</header>", b"</header>" + (f'<div class="container mt-2"><div class="jobbar"><span class="m">Link to share (no sign-in needed):</span> '
+                                                                         f'<a href="{html.escape(share)}">{html.escape(share)}</a></div></div>').encode(), 1)
                     if len(parts) == 2 or parts[2] in ("", "index.html"):
                         data = data.replace(b"</header>", b"</header>" + compare_panel(cfg, login, parts[1]).encode(), 1)
             self.send_response(200)
@@ -1859,6 +1945,8 @@ def handler(cfg, q):
                 return self.api("GET", path, b"")
             login = session(cfg, self.cookie("s"))
             member = bool(login) and q.permission(login) in WRITE
+            if path == "/robots.txt":
+                return self.send(200, "User-agent: *\nDisallow: /\n", kind="text/plain; charset=utf-8")
             if path == "/queue/run.sh":
                 return self.send(200, run_script(cfg), kind="text/x-shellscript; charset=utf-8")
             if path == "/queue/version":

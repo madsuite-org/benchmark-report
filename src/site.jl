@@ -198,7 +198,7 @@ function page(path, title, content, bar; refresh = false, assets = ".")
     tmp = path * ".tmp"
     write(
         tmp, "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">",
-        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex, nofollow\">",
         refresh ? "<meta name=\"live\" content=\"1\">" : "",
         "<title>", escape_html(title), "</title><script src=\"", assets, "/theme.js\"></script><link rel=\"stylesheet\" href=\"", assets, "/bootstrap.min.css\"><link rel=\"stylesheet\" href=\"", assets, "/style.css\"><body><div id=\"live\">",
         bar, "<main class=\"container\">", content, "</main></div><script src=\"", assets, "/report.js\"></script></body></html>\n",

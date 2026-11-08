@@ -577,7 +577,8 @@ class TestServer(Base):
         code, page = self.get("/queue/", "alice")
         self.assertIn("&lt;script&gt;", page)
         self.assertNotIn("<script>x", page)
-        self.assertIn("New job", page)
+        self.assertNotIn("New job", page)                   # jobs start through the API
+        self.assertIn("Starting a job", page)
         code, page = self.get("/queue/job/1", "alice")
         self.assertIn("Update, start over", page)
         self.assertEqual(self.get("/queue/job/99", "alice")[0], 404)
@@ -825,7 +826,7 @@ class TestSite(Base):
         self.assertIn("/queue/login", page)
         self.assertNotIn(app.NAV, page)
         code, _, page = self.get("/madnlp/pr-1/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})
-        self.assertIn("New job", page)
+        self.assertIn("Sign out", page)
         self.assertIn("alice", page)
         self.assertEqual(self.get("/madnlp/pr-1")[0], 303)
         self.assertEqual(self.get("/")[1]["Location"], "/madnlp/")
@@ -892,6 +893,33 @@ class TestSite(Base):
         open(os.path.join(live, "pr-1", "run.json"), "w").write('{"state":"failed"}')
         self.assertIn("not running: it failed", self.get("/madnlp/pr-1/workers.html")[2])
 
+    def test_reports_by_long_link_and_the_list_for_members(self):
+        root = os.path.join(self.cfg.site, "madnlp")
+        os.makedirs(os.path.join(root, "run-old"))
+        page = '<html><header class="site">' + app.NAV + '</header><main class="container">report</main></html>'
+        open(os.path.join(root, "run-old", "index.html"), "w").write(page)
+        open(os.path.join(root, "index.html"), "w").write(page)
+        open(os.path.join(root, "style.css"), "w").write("body{}")
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads, exist_ok=True)
+        self.assertEqual(self.get("/madnlp/run-old/")[0], 200)          # there before: its short address stays public
+        os.makedirs(os.path.join(root, "run-new"))
+        open(os.path.join(root, "run-new", "index.html"), "w").write(page)
+        self.assertIn("Sign in", self.get("/madnlp/run-new/")[2])      # a new one: not by its short address
+        self.assertIn("Sign in", self.get("/madnlp/")[2])              # the list: members only
+        self.assertEqual(self.get("/madnlp/style.css")[2], "body{}")   # the site's own files are public
+        member = {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"}
+        code, headers, body = self.get("/madnlp/run-new/", member)
+        self.assertEqual(code, 200)
+        share = re.search(r'href="([^"]*/r/([A-Za-z0-9_-]+)/)"', body)
+        self.assertIsNotNone(share, body)
+        code, headers, body = self.get(f"/madnlp/r/{share[2]}/")      # anyone with the long address
+        self.assertEqual(code, 200); self.assertIn("report", body)
+        self.assertEqual(headers.get("X-Robots-Tag"), "noindex, nofollow")
+        self.assertEqual(self.get(f"/madnlp/r/{'x' * 32}/")[0], 404)
+        self.assertEqual(self.get(f"/madnlp/r/{share[2]}")[0], 303)
+        code, _, robots = self.get("/robots.txt")
+        self.assertEqual((code, robots), (200, "User-agent: *\nDisallow: /\n"))
+
     def test_one_dashboard(self):
         os.makedirs(os.path.join(self.cfg.site, "madnlp"), exist_ok=True)
         open(os.path.join(self.cfg.site, "madnlp", "index.html"), "w").write('<html><header class="site">' + app.NAV + '</header><main class="container"><h2>Reports</h2></main></html>')
@@ -937,7 +965,7 @@ class TestSite(Base):
         path = os.path.join(self.dir, "run.sh"); open(path, "w").write(body)
         self.assertEqual(subprocess.run(["bash", "-n", path]).returncode, 0)
         page = self.get("/queue/new", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
-        self.assertIn("Run it on your own machine", page)
+        self.assertIn("Starting a job", page)
         self.assertIn("/run.sh | bash -s -- new master", page)
 
     def test_columns_from_the_app(self):

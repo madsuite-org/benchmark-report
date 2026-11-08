@@ -304,7 +304,7 @@ function latest_merged(live, name; depth = 200)
     # results too (Sungho): per device, the newest commit wins, theirs or the archive's. Only their
     # default configuration; their rows from other machines than this run's say so.
     position_of = Dict(String(first(split(line, ' '; limit = 2))) => i for (i, line) in enumerate(history))
-    external = Tuple{Int, String, String}[]
+    external = Tuple{Int, Int, String, String}[]
     if !isempty(UPLOADS[]) && isdir(UPLOADS[])
         for n in readdir(UPLOADS[])
             (startswith(n, "run-x") && n != name) || continue
@@ -315,10 +315,12 @@ function latest_merged(live, name; depth = 200)
             end
             c = match(r"\"commit\"\s*:\s*\"([0-9a-f]{40})\"", text)
             (c === nothing || !haskey(position_of, c[1])) && continue
-            push!(external, (position_of[c[1]], n, String(c[1])))
+            # of several jobs of one commit, the one with the most results first (not a test on a few)
+            rows = sum((countlines(p) - 1 for (dir, _, _) in walkdir(joinpath(UPLOADS[], n)) for p in values(result_files(dir)) if endswith(p, "_default.csv")); init = 0)
+            push!(external, (position_of[c[1]], -rows, n, String(c[1])))
         end
     end
-    for (position, n, commit) in sort!(external)
+    for (position, _, n, commit) in sort!(external)
         dir = joinpath(UPLOADS[], n)
         found = Dict{String, Vector{Tuple{String, String, Dict{String, Any}, String}}}()   # device => (machine, set, meta, path)
         for machine in filter(d -> isdir(joinpath(dir, d)), readdir(dir)), ((set, config), path) in result_files(joinpath(dir, machine))
@@ -353,6 +355,11 @@ function latest_merged(live, name; depth = 200)
             break
         end
         found && break
+    end
+    # only the devices this run has: a CPU run is not compared with GPU results
+    if !isempty(mine)
+        foreach(k -> k[1] in mine || delete!(rs.rows, k), collect(keys(rs.rows)))
+        foreach(d -> d in mine || delete!(used, d), collect(keys(used)))
     end
     isempty(rs.rows) && return nothing
     return ResultSet(join(reduce(vcat, [used[d] for d in sort!(collect(keys(used)))]; init = String[]), "; "), rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
