@@ -134,6 +134,30 @@ end
     end
 end
 
+@testset "a job run on several kinds of node merges their rows and marks where each ran" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "run-x7-master")), joinpath(root, "site")
+        hostile_results(results)
+        machine = joinpath(results, "machine")
+        other = mkpath(joinpath(results, "other-gpu"))
+        lines = readlines(joinpath(machine, "smoke_default.csv"))
+        row = split(lines[2], ",")
+        row[1] = "another_case"
+        write(joinpath(other, "smoke_default.csv"), lines[1] * "\n" * join(row, ",") * "\n")
+        cp(joinpath(machine, "smoke_default.csv.meta.toml"), joinpath(other, "smoke_default.csv.meta.toml"))
+        rs = BenchmarkReport.from_directory(results, "job")
+        rows = rs.rows[("cuda", "smoke", "default")]
+        @test length(rows) == 2
+        @test Set(r.machine for r in values(rows)) == Set(["machine", "other-gpu"])
+        write_report(site, results; wall = 7200.0, finished = true)
+        @test occursin("<sup>m</sup>", read(joinpath(site, "cuda-smoke.html"), String))
+        # one kind of node: nothing to mark
+        rm(other; recursive = true)
+        write_report(site, results; wall = 7200.0, finished = true)
+        @test !occursin("<sup>m</sup>", read(joinpath(site, "cuda-smoke.html"), String))
+    end
+end
+
 @testset "a device that has not run a set counts none of it" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")

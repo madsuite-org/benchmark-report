@@ -31,13 +31,15 @@ end
 # a pull request's results are kept per commit, pr-<N>-<sha8>; plain pr-<N> is from before that
 is_folder(name) = occursin(r"^(pr-\d+(-[0-9a-f]{8})?|run-[a-z0-9-]+|master-[0-9a-f]{8})$", name)
 
-# Uploaded results, in a root of their own: only their run-up-* folders are read there, and no
-# run-up-* folder is read from the live root, so neither can stand in for the other.
+# Uploaded results, in a root of their own: only their run-up-* and run-x* (jobs run elsewhere)
+# folders are read there, and none of those is read from the live root, so neither can stand in
+# for the other.
 const UPLOADS = Ref("")
 function folders(live)
-    out = [(live, n) for n in readdir(live) if is_folder(n) && !startswith(n, "run-up-")]
+    uploaded(n) = startswith(n, "run-up-") || startswith(n, "run-x")
+    out = [(live, n) for n in readdir(live) if is_folder(n) && !uploaded(n)]
     if !isempty(UPLOADS[]) && isdir(UPLOADS[])
-        append!(out, [(UPLOADS[], n) for n in readdir(UPLOADS[]) if startswith(n, "run-up-") && is_folder(n)])
+        append!(out, [(UPLOADS[], n) for n in readdir(UPLOADS[]) if uploaded(n) && is_folder(n)])
     end
     return out
 end

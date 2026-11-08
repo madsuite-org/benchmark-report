@@ -204,6 +204,88 @@ class Queue:
         self.version = getattr(self, "version", 0) + 1
         self.changed.notify_all()
 
+    def add_external(self, login, what, settings):
+        """A job run outside the app's machines by `login`, who publishes its results through the API
+        with the token returned here. `what` is {"master": true}, {"pr": N}, {"branch": name} or
+        {"commit": sha}. Returns (job, token) or (None, problem)."""
+        title = ""
+        if what.get("pr"):
+            p, problem = self.pull(int(what["pr"]))
+            if problem:
+                return None, problem
+            kind, pr, ref, sha, title = "pr", int(what["pr"]), None, p["head"]["sha"], p.get("title", "")
+        else:
+            kind, pr = ("branch" if what.get("branch") else "commit"), None
+            ref = what.get("branch") or what.get("commit") or "master"
+            if not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", ref) or ".." in ref:
+                return None, "That is not a branch or a commit."
+            try:
+                sha = self.gh.api("GET", f"/repos/{self.cfg.repo}/commits/{urllib.parse.quote(ref, safe='')}")["sha"]
+            except urllib.error.HTTPError:
+                return None, f"{ref} is not a branch or commit of {self.cfg.repo}."
+            title = ("master " + sha[:8]) if what.get("master") else ref if kind == "branch" else sha[:8]
+            if what.get("master"):
+                kind, ref = "commit", sha
+        token = secrets.token_urlsafe(32)
+        with self.changed:
+            job = {"id": self.data["next"], "kind": kind, "pr": pr, "ref": ref, "sha": sha, "title": title, "by": login,
+                   "state": "running", "queued": int(time.time()), "started": int(time.time()), "keep": True,
+                   "external": True, "node": "external", "nodes": {}, "token_hash": hashlib.sha256(token.encode()).hexdigest(), **settings}
+            self.data["jobs"].append(job)
+            self.data["next"] += 1
+            self.save()
+        return job, token
+
+    def external_job(self, job_id, token):
+        j = next((j for j in self.data["jobs"] if j["id"] == job_id and j.get("external")), None)
+        if j is None or not hmac.compare_digest(j.get("token_hash", ""), hashlib.sha256(token.encode()).hexdigest()):
+            return None
+        return j
+
+    # A node silent this long has gone (preempted, killed): its claims go to whoever asks next.
+    NODE_GONE = 600
+
+    def seen(self, j, node, host=""):
+        """Record that `node` of external job `j` is alive; the first time, on the job too."""
+        beats = self.__dict__.setdefault("beats", {})
+        beats[(j["id"], node)] = time.time()
+        if node not in j["nodes"] or (host and j["nodes"][node].get("host") != host[:80]):
+            with self.changed:
+                n = j["nodes"].setdefault(node, {"host": "", "state": "running", "joined": int(time.time())})
+                n["host"] = host[:80] or n["host"]
+                self.save()
+
+    def alive(self, j, node):
+        return time.time() - self.__dict__.setdefault("beats", {}).get((j["id"], node), 0) < self.NODE_GONE
+
+    def claim(self, j, node, key):
+        """Whether `node` may solve the instance `key` (device/set/case) of `j`: no other node that is
+        still alive holds it. A node that comes back (requeued after preemption) keeps its own claims."""
+        claims = self.__dict__.setdefault("claims", {}).setdefault(j["id"], {})
+        with self.changed:
+            holder = claims.get(key)
+            if holder and holder != node and self.alive(j, holder):
+                return False
+            claims[key] = node
+            return True
+
+    def node_state(self, j, node, state):
+        """A node's own state; the job ends when every node still alive has finished."""
+        final = {"finished", "failed", "cancelled"}
+        with self.changed:
+            n = j["nodes"].setdefault(node, {"host": "", "joined": int(time.time())})
+            changed = n.get("state") != state
+            n["state"] = state
+            if state in final and j["state"] == "running":
+                live = [k for k, v in j["nodes"].items() if v.get("state") not in final and self.alive(j, k)]
+                if not live:
+                    states = {v.get("state") for v in j["nodes"].values()}
+                    j["state"] = "finished" if "finished" in states else "failed"
+                    j["ended"] = int(time.time())
+                    changed = True
+            if changed:
+                self.save()
+
     def down(self, node=None):
         """The machines the app could not reach, `name => {since, reason}`, or the entry of one."""
         d = self.data.get("down", {})
@@ -380,7 +462,7 @@ class Queue:
                 if j["id"] == job_id and (j["by"].lower() == login.lower() or self.permission(login) == "admin"):
                     # who cancelled, kept with the job, since a cancel is otherwise hard to account for
                     j["cancelled_by"], j["cancelled_at"] = login, int(time.time())
-                    if j["state"] == "waiting":
+                    if j["state"] == "waiting" or j.get("external"):
                         j["state"], j["ended"] = "cancelled", int(time.time())
                     else:
                         j["cancel"] = True
@@ -465,6 +547,9 @@ def order(job):
 def public(cfg, j):
     """A job as the API gives it."""
     out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note", "cancelled_by", "cancelled_at", "node")}
+    if j.get("external"):
+        out["nodes"] = {k: {"host": v.get("host", ""), "state": v.get("state", "")} for k, v in j.get("nodes", {}).items()}
+        out["external"] = True
     out |= settings_of(j) | {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
             "report": f"{cfg.reports}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
     return out
@@ -474,6 +559,11 @@ def folder(job):
     # the folder a job was started into, once it has one: a later change of naming leaves it as it was
     if job.get("folder"):
         return job["folder"]
+    if job.get("external"):
+        # run where its users chose, published through the API: a folder of its own, never master's
+        target = (f"pr{job['pr']}" if job["kind"] == "pr" else
+                  re.sub(r"[^a-z0-9]+", "-", (job.get("ref") or "").lower()).strip("-")[:16] if job["kind"] == "branch" else (job.get("sha") or "")[:8])
+        return f"run-x{job['id']}-{target}"[:48].rstrip("-")
     v = variant(job)
     if v:
         target = (f"pr{job['pr']}" if job["kind"] == "pr" else
@@ -664,12 +754,19 @@ class Builder:
             time.sleep(30 if time.time() - started < 60 else 1)
 
 
+def live_dir(cfg, name):
+    """Where the live files of report folder `name` are: uploads and external jobs in the uploads
+    root, the runs of the app's machines in the live root. "" if not set up."""
+    root = cfg.uploads if name.startswith(("run-up-", "run-x")) else cfg.live_local
+    return os.path.join(root, name) if root else ""
+
+
 def stalled(cfg, name):
     """Seconds since the live folder `name` said it is running and last had new data, if that is
     longer than `cfg.stall`; else None."""
-    if not cfg.live_local or not re.fullmatch(r"pr-\d+|master-[0-9a-f]{8}|run-[a-z0-9-]+", name):
+    if not live_dir(cfg, name) or not re.fullmatch(r"pr-\d+(-[0-9a-f]{8})?|master-[0-9a-f]{8}|run-[a-z0-9-]+", name):
         return None
-    path = os.path.join(cfg.live_local, name, "run.json")
+    path = os.path.join(live_dir(cfg, name), "run.json")
     try:
         state = json.load(open(path)).get("state")
         age = time.time() - os.stat(path).st_mtime
@@ -801,6 +898,127 @@ def receive_results(cfg, archive_path, name, login, repository, state="finished"
     finally:
         if os.path.isdir(work):
             shutil.rmtree(work, ignore_errors=True)
+
+
+RESULT_FILE = re.compile(r"([A-Za-z0-9_.+-]+)/([a-z]+)_([A-Za-z0-9_.+-]+)\.csv")
+
+
+def merge_rows(path, lines):
+    """Merge result rows into the result file `path`, one row per instance: a row sent again (a
+    rerun, or a resumed node) replaces the one there. The header must be run.jl's."""
+    if not lines or not lines[0].startswith("case,status"):
+        return False
+    rows = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            old = f.read().splitlines()
+        if old and old[0] != lines[0]:
+            return False
+        for line in old[1:]:
+            rows[line.split(",", 1)[0]] = line
+    for line in lines[1:]:
+        if line.strip():
+            rows[line.split(",", 1)[0]] = line
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(lines[0] + "\n" + "".join(r + "\n" for r in rows.values()))
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+    return True
+
+
+def solved_already(cfg, j, device, set_name, case, configs):
+    """The configurations of an instance whose rows the job already has, from any node, on that device."""
+    root = os.path.join(cfg.uploads, folder(j))
+    done = set()
+    try:
+        machines = [m for m in os.listdir(root) if os.path.isdir(os.path.join(root, m))]
+    except OSError:
+        return done
+    for m in machines:
+        for c in configs:
+            path = os.path.join(root, m, f"{set_name}_{c}.csv")
+            try:
+                meta = open(path + ".meta.toml").read()
+            except OSError:
+                continue
+            if not re.search(rf'^device\s*=\s*"{re.escape(device)}"', meta, re.M):
+                continue
+            with open(path) as f:
+                if any(line.split(",", 1)[0] == case for line in f):
+                    done.add(c)
+    return done
+
+
+def receive_job_files(cfg, q, j, node, archive_path, state):
+    """Take the files a node of external job `j` sends: result rows merged into the job's files, its
+    workers' status as a file of its own, solver logs, metadata and its log. Everything is untrusted,
+    checked as an upload is. Returns a problem, or None."""
+    target = os.path.join(cfg.uploads, folder(j))
+    os.makedirs(target, mode=0o755, exist_ok=True)
+    total, count = 0, 0
+    try:
+        tar = tarfile.open(archive_path, "r:gz")
+    except (tarfile.TarError, OSError):
+        return "The upload is not a .tar.gz archive."
+    with tar:
+        members = []
+        for m in tar:
+            path = m.name.removeprefix("./").strip("/")
+            if m.isdir() or not path:
+                continue
+            if not m.isreg() or not UPLOAD_FILE.fullmatch(path) or ".." in path.split("/") or not path.endswith(UPLOAD_KINDS):
+                return f"Not allowed in an upload: {path[:80]}."
+            count, total = count + 1, total + m.size
+            if count > 20000 or total > cfg.upload_limit:
+                return "The upload is too large."
+            members.append((path, m))
+        for path, m in members:
+            data = tar.extractfile(m).read()
+            parts = path.split("/")
+            if RESULT_FILE.fullmatch(path):
+                os.makedirs(os.path.join(target, parts[0]), mode=0o755, exist_ok=True)
+                merge_rows(os.path.join(target, path), data.decode(errors="replace").splitlines())
+                continue
+            if len(parts) == 2 and parts[1] == "summary.md":
+                # each node's workers in a file of its own; summary.md is all of them
+                dest = os.path.join(target, parts[0], "workers", f"{node}.md")
+            elif len(parts) == 1 and path.endswith(".log"):
+                dest = os.path.join(target, "job.log")       # the log of the node that sent last
+            elif path.endswith(".complete"):
+                continue                                       # a node does not know the whole job
+            else:
+                dest = os.path.join(target, path)
+            os.makedirs(os.path.dirname(dest), mode=0o755, exist_ok=True)
+            tmp = dest + ".tmp"
+            with open(tmp, "wb") as out:
+                out.write(data)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, dest)
+    # the combined workers' status of every machine
+    for machine in os.listdir(target):
+        wdir = os.path.join(target, machine, "workers")
+        if not os.path.isdir(wdir):
+            continue
+        lines = []
+        for f in sorted(os.listdir(wdir)):
+            m = re.match(r"^```\n(.*?)\n```", open(os.path.join(wdir, f)).read(), re.S)
+            if m:
+                lines.append(f"node {f[:-3]}:")
+                lines.extend(m[1].split("\n"))
+        tmp = os.path.join(target, machine, ".summary.md")
+        with open(tmp, "w") as out:
+            out.write("```\n" + "\n".join(lines) + "\n```\n")
+        os.replace(tmp, os.path.join(target, machine, "summary.md"))
+    hosts = sorted({v.get("host", "") for v in j.get("nodes", {}).values()} - {""})
+    title = (j.get("title") or folder(j)) + (f" ({', '.join(hosts)[:80]})" if hosts else "")
+    doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title,
+           "state": j["state"] if j["state"] != "running" else ("running" if state != "interrupted" else "running"), "job": j["id"]}
+    tmp = os.path.join(target, ".run.json")
+    with open(tmp, "w") as f:
+        json.dump(doc, f)
+    os.rename(tmp, os.path.join(target, "run.json"))
+    return None
 
 
 def sign(cfg, value):
@@ -1064,7 +1282,7 @@ def log_tail(path, lines=80, limit=1 << 20):
 def workers_page(cfg, login, name):
     """What every worker of a run is on, read from its live folder when asked."""
     e = html.escape
-    root = os.path.join(cfg.live_local, name)
+    root = live_dir(cfg, name)
     try:
         state = json.load(open(os.path.join(root, "run.json"))).get("state", "")
     except (OSError, ValueError, AttributeError):
@@ -1114,13 +1332,21 @@ def workers_page(cfg, login, name):
     return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace("</main></body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)
 
 
+def machine_of(j):
+    """Where a job runs: its machine, or the hosts of an external job's nodes."""
+    if j.get("external"):
+        hosts = sorted({v.get("host") or k for k, v in j.get("nodes", {}).items()})
+        return "external: " + (", ".join(hosts) if hosts else "no node yet")
+    return j.get("node") or ("any" if j["state"] == "waiting" else "")
+
+
 def jobs_section(cfg, q, login=None):
     """The jobs: what runs and waits, and what ran lately. On the dashboard, above the reports."""
     e = html.escape
     def row(j):
         report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
         return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{e(name(cfg, j))}</a></td><td class="l">{e(j.get("title", ""))}</td>'
-                f'<td class="l">{badge(j, cfg)}</td><td class="l">{e(j.get("node") or ("any" if j["state"] == "waiting" else ""))}</td>'
+                f'<td class="l">{badge(j, cfg)}</td><td class="l">{e(machine_of(j))}</td>'
                 f'<td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
                 f'<td class="l">{report}</td><td class="l">{cancel_button(cfg, q, login, j)}</td></tr>')
     def table(title, jobs, empty):
@@ -1158,7 +1384,7 @@ def job_page(cfg, q, login, j):
             f'https://github.com/{cfg.repo}/pull/{j["pr"]}' if j["kind"] == "pr" else f'https://github.com/{cfg.repo}/commits/master')
     rows = [("Run", f'<a href="{link}">{e(name(cfg, j))}</a> {e(j.get("title", ""))}'), ("State", badge(j, cfg) + (f' {e(j["note"])}' if j.get("note") else "")),
             ("Commit", f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}"><code>{j["sha"][:8]}</code></a>' if j.get("sha") else "resolved when it starts"),
-            ("Machine", e(j.get("node") or "any free")), ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
+            ("Machine", e(machine_of(j) or "any free")), ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
             ("Results", "keep the results so far" if j.get("keep", True) else "start over")]
     st = settings_of(j)
     if st != DEFAULTS:
@@ -1344,6 +1570,67 @@ def handler(cfg, q):
                 return reply(400, {"error": problem})
             return reply(201, {"report": f"{cfg.reports}/{folder}/", "folder": folder})
 
+        def from_node(self, job_id, what, first):
+            """A node of an external job: POST .../files (a .tar.gz of what changed, with ?node=&state=)
+            or .../claim (JSON {node, device, set, case, configs}). Authorized by the job's token."""
+            reply = lambda code, data: self.send(code, json.dumps(data), kind="application/json")
+            token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            j = q.external_job(job_id, token)
+            if j is None:
+                return reply(401, {"error": "Not this job's token."})
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            if what == "spec":
+                # what a node runs: everything about the job is the server's, set when it was created
+                return reply(200, {"id": j["id"], "sha": j["sha"], "repository": cfg.repo, "state": j["state"],
+                                   "sets": j.get("sets", "acopf,cops,mittelmann,cutest"), **settings_of(j),
+                                   "files": f"{cfg.base}/api/jobs/{j['id']}/files", "claim": f"{cfg.base}/api/jobs/{j['id']}/claim",
+                                   "report": f"{cfg.reports}/{folder(j)}/"})
+            if what == "claim":
+                try:
+                    data = json.loads(first or b"{}")
+                except ValueError:
+                    return reply(400, {"error": "The body is not JSON."})
+                node, device, set_name, case = (str(data.get(k, "")) for k in ("node", "device", "set", "case"))
+                configs = [str(c) for c in data.get("configs", []) if isinstance(c, str)]
+                if not (re.fullmatch(r"[A-Za-z0-9_-]{1,40}", node) and device in ("cpu", "cuda") and re.fullmatch(r"[a-z]+", set_name)
+                        and re.fullmatch(r"[A-Za-z0-9_.+-]{1,100}", case) and all(re.fullmatch(r"[A-Za-z0-9_.+-]{1,100}", c) for c in configs)):
+                    return reply(400, {"error": "Give node, device, set, case and configs."})
+                if j["state"] != "running":
+                    return reply(200, {"todo": [], "cancel": True})
+                q.seen(j, node)
+                todo = [c for c in configs if c not in solved_already(cfg, j, device, set_name, case, configs)]
+                if todo and not q.claim(j, node, f"{device}/{set_name}/{case}"):
+                    todo = []
+                return reply(200, {"todo": todo, "cancel": False})
+            node, state = query.get("node", [""])[0], query.get("state", ["running"])[0]
+            host = query.get("host", [""])[0]
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", node) or state not in ("running", "interrupted", "finished", "failed", "cancelled"):
+                return reply(400, {"error": "Give node, and a state of running, interrupted, finished, failed or cancelled."})
+            if not cfg.uploads:
+                return reply(503, {"error": "Uploads are not set up on this server."})
+            fd, path = tempfile.mkstemp(dir=cfg.uploads, prefix=".up-", suffix=".tar.gz")
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    out.write(first)
+                    left = int(self.headers.get("Content-Length", 0)) - len(first)
+                    if left + len(first) > cfg.upload_limit:
+                        return reply(413, {"error": "The upload is too large."})
+                    while left > 0:
+                        chunk = self.rfile.read(min(left, 1 << 20))
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        left -= len(chunk)
+                q.seen(j, node, re.sub(r"[^A-Za-z0-9_.-]", "", host))
+                if j["state"] == "running":
+                    q.node_state(j, node, state)
+                problem = receive_job_files(cfg, q, j, node, path, state) if os.path.getsize(path) else None
+            finally:
+                os.remove(path)
+            if problem:
+                return reply(400, {"error": problem})
+            return reply(200, {"cancel": j["state"] == "cancelled", "state": j["state"], "report": f"{cfg.reports}/{folder(j)}/"})
+
         def api(self, method, path, body):
             reply = lambda code, data: self.send(code, json.dumps(data), kind="application/json")
             login = self.api_login()
@@ -1367,7 +1654,7 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
-                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", *DEFAULTS})
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", *DEFAULTS})
                 if unknown:
                     # a field this app does not know would otherwise be ignored without a word
                     return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
@@ -1376,6 +1663,22 @@ def handler(cfg, q):
                 problem = settings_problem(cfg, settings)
                 if problem:
                     return reply(400, {"error": problem})
+                if data.get("external"):
+                    # run on a machine of the caller's: it publishes through /queue/api/jobs/<id>/files
+                    if not cfg.uploads:
+                        return reply(503, {"error": "Uploads are not set up on this server."})
+                    what = {k: data[k] for k in ("master", "pr", "branch", "commit") if data.get(k)}
+                    sets = str(data.get("sets") or "acopf,cops,mittelmann,cutest")
+                    if not re.fullmatch(r"[a-z]+(,[a-z]+){0,9}", sets):
+                        return reply(400, {"error": "sets is a comma-separated list of set names."})
+                    settings = settings | {"sets": sets}
+                    if len(what) != 1 or ("pr" in what and not str(what["pr"]).isdigit()):
+                        return reply(400, {"error": "Give one of master, pr, branch or commit."})
+                    job, token = q.add_external(login, {k: (int(v) if k == "pr" else v) for k, v in what.items()}, settings)
+                    if job is None:
+                        return reply(400, {"error": token})
+                    return reply(201, public(cfg, job) | {"token": token, "files": f"{cfg.base}/api/jobs/{job['id']}/files",
+                                                          "claim": f"{cfg.base}/api/jobs/{job['id']}/claim"})
                 node = str(data.get("node") or "")
                 if node and node not in [n["name"] for n in cfg.nodes]:
                     return reply(400, {"error": "Unknown machine; it is one of " + ", ".join(n["name"] for n in cfg.nodes) + "."})
@@ -1428,7 +1731,7 @@ def handler(cfg, q):
             if path == "/":
                 return self.redirect(cfg.reports + "/")
             m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/(pr-\d+|master-[0-9a-f]{8}|run-[a-z0-9-]+)/workers\.html", path)
-            if m and cfg.live_local and os.path.isdir(os.path.join(cfg.live_local, m[1])):
+            if m and live_dir(cfg, m[1]) and os.path.isdir(live_dir(cfg, m[1])):
                 return self.send(200, workers_page(cfg, login, m[1]))
             target = site_file(cfg, path)
             m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/pr-(\d+)/?", path)
@@ -1485,6 +1788,9 @@ def handler(cfg, q):
         def do_GET(self):
             path, _, query = self.path.partition("?")
             args = urllib.parse.parse_qs(query)
+            m = re.fullmatch(r"/queue/api/jobs/(\d+)/spec", path)
+            if m:
+                return self.from_node(int(m[1]), "spec", b"")
             if path.startswith("/queue/api/"):
                 return self.api("GET", path, b"")
             login = session(cfg, self.cookie("s"))
@@ -1546,6 +1852,9 @@ def handler(cfg, q):
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))
             if self.path.startswith("/queue/api/results"):
                 return self.upload(body)
+            m = re.fullmatch(r"/queue/api/jobs/(\d+)/(files|claim|spec)", self.path.partition("?")[0])
+            if m:
+                return self.from_node(int(m[1]), m[2], body)
             if self.path.startswith("/queue/api/"):
                 return self.api("POST", self.path.partition("?")[0], body)
             if self.path == "/queue/hook":

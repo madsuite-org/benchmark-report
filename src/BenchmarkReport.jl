@@ -155,10 +155,12 @@ clean_row(r) = NamedTuple{keys(r)}(Tuple(name === :case ? string(r[name]) : numb
 const DEVICES = ("cpu", "cuda", "amdgpu")
 safe_name(s) = occursin(r"^[A-Za-z0-9_.+-]+$", s) && !startswith(s, ".")
 
-function add!(rs::ResultSet, set, config, meta, rows)
+function add!(rs::ResultSet, set, config, meta, rows; machine = "")
     device = string(get(meta, "device", ""))
     (device in DEVICES && safe_name(set) && safe_name(config)) || return rs
-    rs.rows[(device, set, config)] = Dict(string(r.case) => clean_row(r) for r in rows)
+    # rows of several machines (a job whose nodes differ) are merged, each saying where it ran
+    tagged(r) = isempty(machine) ? clean_row(r) : merge(clean_row(r), (; machine = replace(machine, "_" => " ")))
+    merge!(get!(rs.rows, (device, set, config), Dict{String, Any}()), Dict(string(r.case) => tagged(r) for r in rows))
     abbreviate(commit) = replace(commit, r"^([0-9a-f]{8})[0-9a-f]{32}" => s"\1")
     commit = abbreviate(get(meta, "madnlp_commit", "unknown"))
     haskey(meta, "first_commit") && (commit = abbreviate(meta["first_commit"]) * " to " * commit)
@@ -171,11 +173,21 @@ end
 
 function from_directory(dir, label)
     rs = ResultSet(label)
-    chosen = current_machines(dir)
+    # a job run on several nodes (run-x*) has the rows of all of them; elsewhere one machine per device
+    together = startswith(basename(normpath(dir)), "run-x")
+    chosen = together ? Dict{String, String}() : current_machines(dir)
+    # the machines of each device: rows say where they ran only when there is more than one
+    machines = Dict{String, Set{String}}()
+    for (root, _, _) in walkdir(dir), path in values(result_files(root))
+        isfile(path * ".meta.toml") && push!(get!(machines, string(get(read_meta(path), "device", "")), Set{String}()), normpath(root))
+    end
     for (root, _, _) in walkdir(dir), ((set, config), path) in result_files(root)
         isfile(path * ".meta.toml") || continue
         meta = read_meta(path)
-        get(chosen, string(get(meta, "device", "")), normpath(root)) == normpath(root) && add!(rs, set, config, meta, read_results(path))
+        device = string(get(meta, "device", ""))
+        get(chosen, device, normpath(root)) == normpath(root) || continue
+        mixed = together && length(get(machines, device, ())) > 1
+        add!(rs, set, config, meta, read_results(path); machine = mixed ? basename(normpath(root)) : "")
     end
     return rs
 end

@@ -45,6 +45,13 @@ class FakeGitHub:
             return getattr(self, "open", [])
         if path == f"/repos/{REPO}/commits/master":
             return {"sha": "9" * 40}
+        if path.startswith(f"/repos/{REPO}/commits/"):
+            ref = urllib.parse.unquote(path.rsplit("/commits/", 1)[1])
+            if ref in self.branches:
+                return {"sha": self.branches[ref]}
+            if re.fullmatch(r"[0-9a-f]{40}", ref):
+                return {"sha": ref}
+            raise urllib.error.HTTPError(path, 404, "", {}, None)
         if "/statuses/" in path:
             self.statuses.append((path.rsplit("/", 1)[1], body["state"], body["target_url"]))
             return {}
@@ -676,6 +683,73 @@ class TestServer(Base):
         self.gh_tokens = None
         self.cfg.upload_limit = 10
         self.assertEqual(self.post_upload(self.make_tar(good), "try-3")[0], 413)
+
+    def test_a_job_run_elsewhere_on_two_nodes(self):
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        code, out = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cuda", "options": "tol=1e-6"}, token="tok-alice")
+        self.assertEqual(code, 201, out)
+        job, token = out["id"], out["token"]
+        self.assertEqual((out["state"], out["sha"], out["devices"], out["options"]), ("running", "9" * 40, "cuda", "tol=1e-6"))
+        self.assertNotIn("token_hash", json.dumps(self.call_api("GET", f"/queue/api/jobs/{job}", token="tok-alice")[1]))
+        code, _, data = self.request("GET", f"/queue/api/jobs/{job}/spec", headers={"Authorization": "Bearer " + token})
+        spec = json.loads(data)
+        self.assertEqual((code, spec["sha"], spec["devices"], spec["options"], spec["sets"]), (200, "9" * 40, "cuda", "tol=1e-6", "acopf,cops,mittelmann,cutest"))
+        self.assertEqual(self.request("GET", f"/queue/api/jobs/{job}/spec", headers={"Authorization": "Bearer x"})[0], 401)
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True}, token="tok-eve")[0], 403)
+        folder = app.folder(self.q.data["jobs"][-1])
+        self.assertTrue(folder.startswith(f"run-x{job}-"), folder)
+        the_job = [job]
+        def claim(node, case, tok=token):
+            body = json.dumps({"node": node, "device": "cuda", "set": "acopf", "case": case, "configs": ["default"]}).encode()
+            code, _, data = self.request("POST", f"/queue/api/jobs/{the_job[0]}/claim", body, {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})
+            return code, json.loads(data)
+        def send(node, files, state="running", host="n1", tok=token):
+            body = self.make_tar(files)
+            code, _, data = self.request("POST", f"/queue/api/jobs/{the_job[0]}/files?node={node}&state={state}&host={host}", body,
+                                         {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})
+            return code, json.loads(data)
+        self.assertEqual(claim("a", "x", tok="nope")[0], 401)
+        self.assertEqual(claim("a", "x")[1]["todo"], ["default"])
+        self.assertEqual(claim("b", "x")[1]["todo"], [])          # node a holds it
+        self.assertEqual(claim("a", "x")[1]["todo"], ["default"])  # a, back after preemption, keeps it
+        meta = 'device = "cuda"\n'
+        head = "case,status,iters\n"
+        code, out = send("a", {"H200/acopf_default.csv": head + "x,1,10\n", "H200/acopf_default.csv.meta.toml": meta,
+                                "H200/summary.md": "```\nworker 1 solving x\n```\n", "publish.log": "a's log"})
+        self.assertEqual((code, out["cancel"]), (200, False), out)
+        self.assertEqual(claim("b", "x")[1]["todo"], [])          # solved now
+        self.assertEqual(claim("b", "y")[1]["todo"], ["default"])
+        # another kind of node: its rows in a folder of its own
+        send("b", {"L40S/acopf_default.csv": head + "y,1,12\n", "L40S/acopf_default.csv.meta.toml": meta,
+                   "L40S/summary.md": "```\nworker 1 solving y\n```\n"}, host="n2")
+        # a again: its rows merged, one per instance
+        send("a", {"H200/acopf_default.csv": head + "x,1,11\nz,2,30\n"})
+        root = os.path.join(self.cfg.uploads, folder)
+        self.assertEqual(open(os.path.join(root, "H200", "acopf_default.csv")).read(), head + "x,1,11\nz,2,30\n")
+        self.assertIn("node a:", open(os.path.join(root, "H200", "summary.md")).read())
+        self.assertEqual(open(os.path.join(root, "job.log")).read(), "a's log")
+        doc = json.load(open(os.path.join(root, "run.json")))
+        self.assertEqual((doc["state"], doc["commit"], doc["job"]), ("running", "9" * 40, job))
+        self.assertIn("n1, n2", doc["title"])
+        # a node gone silent (preempted) loses its claims
+        self.assertEqual(claim("b", "w")[1]["todo"], ["default"])
+        self.assertEqual(claim("a", "w")[1]["todo"], [])
+        self.q.beats[(job, "b")] = 0
+        self.assertEqual(claim("a", "w")[1]["todo"], ["default"])
+        # the job ends when every node still there has finished
+        send("a", {}, state="finished")
+        self.assertEqual(self.q.data["jobs"][-1]["state"], "finished")
+        self.assertIn("external: n1, n2", app.machine_of(self.q.data["jobs"][-1]))
+        # a cancelled job tells its nodes on their next upload
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 99}, token="tok-alice")[0], 400)   # no such pull request
+        code, out = self.call_api("POST", "/queue/api/jobs", {"external": True, "branch": "feature/x"}, token="tok-alice")
+        job, token = out["id"], out["token"]
+        the_job[0] = job
+        self.assertEqual(out["sha"], "b" * 40)
+        self.assertTrue(self.q.cancel(job, "alice"))
+        self.assertTrue(send("a", {}, tok=token)[1]["cancel"])
+        self.assertEqual(claim("a", "x", tok=token)[1], {"todo": [], "cancel": True})
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True}, token="tok-alice")[0], 400)
 
     def test_version(self):
         code, _, out = self.request("GET", "/queue/version")

@@ -325,7 +325,9 @@ function instance_table(io, set, sides, rows, logs)
             row = r[case]
             link = s.base ? nothing : get(logs, (s.key[1], set, case, s.key[2]), nothing)
             print(io, "<td class=\"l", solved(row) ? "" : " fail", "\" title=\"", status_name(row.status), "\">", link === nothing ? status_letter(row.status) : "<a href=\"$link\">$(status_letter(row.status))</a>", "</td><td>", row.iters, "</td>")
-            @printf(io, "<td>%.3f</td><td>%.6g</td><td>%.1e</td>", row.t_total, row.obj, row.primal_feas)
+            # where the instance ran, when a run's nodes differ
+            hasproperty(row, :machine) ? @printf(io, "<td title=\"on %s: this run's instances ran on different machines\">%.3f<sup>m</sup></td>", escape_html(row.machine), row.t_total) : @printf(io, "<td>%.3f</td>", row.t_total)
+            @printf(io, "<td>%.6g</td><td>%.1e</td>", row.obj, row.primal_feas)
             foreach(n -> print(io, "<td>", n, "</td>"), (row.n_fact, row.n_backsolve, row.n_obj, row.n_grad, row.n_con, row.n_jac, row.n_hess))
         end
         println(io, "</tr>")
