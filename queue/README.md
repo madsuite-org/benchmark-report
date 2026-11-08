@@ -93,6 +93,33 @@ the same name again replaces your own upload; another person's cannot be replace
 kept apart from the queue's runs (`QUEUE_UPLOADS`, read by the builder with `--uploads`) and are
 never used as master's results for comparisons.
 
+## Jobs run on machines of one's own
+
+A job can run outside the app's machines, on any number of machines its creator can use (cluster
+nodes, say), with this server coordinating them. MadNLPBenchmark.jl's `runner/publish.sh` (`new`,
+then `run` on each machine) does all of the below; its README has the steps for agents.
+
+- `POST /queue/api/jobs` with `{"external": true, "master": true | "pr": N | "branch": name | "commit": sha,
+  "config", "options", "devices", "sets"}` and a GitHub token with write access creates the job,
+  `running` at once, and its empty report `run-x<id>-<target>`. The answer carries the job's own
+  `token`, shown only then (stored as a hash), which can do nothing but what follows, for this job.
+- `GET /queue/api/jobs/<id>/spec` (job token): what a node runs, all fixed at creation.
+- `POST /queue/api/jobs/<id>/claim` (job token), `{"node", "device", "set", "case", "configs"}`:
+  the configurations of that instance the node should solve, `[]` if the job has its rows already or
+  another node that is still alive holds it. A node silent for 10 minutes loses its claims; one that
+  comes back keeps its own. Claims are kept in memory: after a restart of the app an instance in
+  flight may be solved twice, which costs time only.
+- `POST /queue/api/jobs/<id>/files?node=&state=&host=` (job token), a .tar.gz of what changed. Result
+  rows are merged into the job's files, one row per instance; a machine's `summary.md` is kept per
+  node, and the machine's `summary.md` combines them for the workers page; a top-level `.log` is the
+  job's log. Files are checked as an upload's are. `state` is `running`, `interrupted` (stopped,
+  will carry on), `finished`, `failed` or `cancelled`; the job ends when every node still alive has
+  finished. The answer says `"cancel": true` once the job is cancelled.
+
+Their reports are read from `QUEUE_UPLOADS` and never count as master's results. Nodes of different
+hardware put their rows in folders of their own; the report merges them per device and marks the
+times of each instance with the machine it ran on.
+
 ## Deploying
 
 `GET /queue/version` gives the commit the app runs. While the file `QUEUE_DRAIN` exists, no machine
