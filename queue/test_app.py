@@ -187,6 +187,8 @@ class TestQueue(Base):
         self.assertIsNone(self.q.add_pr(7, "alice", settings={"devices": "cpu"}))
         cpu = [j for j in self.q.jobs("waiting") if j.get("pr") == 7 and j.get("devices") == "cpu"][0]
         self.assertEqual(app.folder({**cpu, "sha": "a" * 40}), "pr-7-aaaaaaaa")
+        self.assertFalse(self.q.add_master_now("alice", keep=False)["keep"])     # starting over is kept as asked
+        self.q.cancel(self.q.jobs("waiting")[-1]["id"], "alice")
         mc = self.q.add_master_now("alice", {"devices": "cuda"})
         self.assertEqual((mc["kind"], mc["devices"]), ("master", "cuda"))
         m = self.q.add_master_now("alice", {"config": "ipopt", "devices": "cpu"})

@@ -310,9 +310,10 @@ class Queue:
             self.save()
         return job, None
 
-    def add_master_now(self, by, settings=None):
+    def add_master_now(self, by, settings=None, keep=True):
         """A run of master at its latest commit, asked for by someone. With other settings than the
-        standard ones it is a run of that commit, so that it is never taken for master's results."""
+        standard ones it is a run of that commit, so that it is never taken for master's results.
+        With `keep` false it starts over, throwing away the results an earlier run of the commit left."""
         sha = self.gh.api("GET", f"/repos/{self.cfg.repo}/commits/master")["sha"]
         if settings and variant({**DEFAULTS, **settings}):
             settings = {**DEFAULTS, **settings}
@@ -321,17 +322,18 @@ class Queue:
                 raise ValueError(problem)
             with self.changed:
                 job = {"id": self.data["next"], "kind": "commit", "pr": None, "ref": sha, "sha": sha, "title": "master " + sha[:8], "by": by,
-                       "state": "waiting", "queued": int(time.time()), "keep": True, **settings}
+                       "state": "waiting", "queued": int(time.time()), "keep": keep, **settings}
                 self.data["jobs"].append(job)
                 self.data["next"] += 1
                 self.save()
             return job
         self.add_master(sha, by)
         job = next(j for j in self.jobs("waiting") if j["kind"] == "master")
-        if settings and settings.get("devices") in ("cpu", "cuda"):
-            with self.changed:
+        with self.changed:
+            if settings and settings.get("devices") in ("cpu", "cuda"):
                 job["devices"] = settings["devices"]
-                self.save()
+            job["keep"] = keep
+            self.save()
         return job
 
     def add_master(self, sha, by="push"):
@@ -1345,7 +1347,7 @@ def handler(cfg, q):
                     return reply(400, {"error": "Unknown machine; it is one of " + ", ".join(n["name"] for n in cfg.nodes) + "."})
                 if data.get("master"):
                     try:
-                        return reply(201, public(cfg, q.place(q.add_master_now(login, settings), node)))
+                        return reply(201, public(cfg, q.place(q.add_master_now(login, settings, keep), node)))
                     except ValueError as err:
                         return reply(400, {"error": str(err)})
                 if isinstance(data.get("branch") or data.get("commit"), str):
@@ -1557,7 +1559,7 @@ def handler(cfg, q):
                     return self.send(400, new_page(cfg, q, login, problem))
                 if what == "master":
                     try:
-                        q.place(q.add_master_now(login, settings), node)
+                        q.place(q.add_master_now(login, settings, keep), node)
                     except ValueError as err:
                         return self.send(400, new_page(cfg, q, login, str(err)))
                     return self.redirect(cfg.base + "/")
