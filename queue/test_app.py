@@ -730,7 +730,7 @@ class TestServer(Base):
         send("a", {"H200/acopf_default.csv": head + "x,1,11\nz,2,30\n"})
         root = os.path.join(self.cfg.uploads, folder)
         self.assertEqual(open(os.path.join(root, "H200", "acopf_default.csv")).read(), head + "x,1,11\nz,2,30\n")
-        self.assertIn("node a:", open(os.path.join(root, "H200", "summary.md")).read())
+        self.assertIn("node n1 (a):", open(os.path.join(root, "H200", "summary.md")).read())
         self.assertEqual(open(os.path.join(root, "job.log")).read(), "a's log")
         doc = json.load(open(os.path.join(root, "run.json")))
         self.assertEqual((doc["state"], doc["commit"], doc["job"]), ("running", "9" * 40, job))

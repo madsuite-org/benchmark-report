@@ -1025,7 +1025,9 @@ def receive_job_files(cfg, q, j, node, archive_path, state):
         for f in sorted(os.listdir(wdir)):
             m = re.match(r"^```\n(.*?)\n```", open(os.path.join(wdir, f)).read(), re.S)
             if m:
-                lines.append(f"node {f[:-3]}:")
+                nid = f[:-3]
+                host = j.get("nodes", {}).get(nid, {}).get("host", "")
+                lines.append(f"node {host} ({nid[:4]}):" if host else f"node {nid}:")
                 lines.extend(m[1].split("\n"))
         tmp = os.path.join(target, machine, ".summary.md")
         with open(tmp, "w") as out:
@@ -1332,15 +1334,21 @@ def workers_page(cfg, login, name):
         if not m:
             continue
         age = int(time.time() - os.stat(os.path.join(root, machine, "summary.md")).st_mtime)
-        rows, notes = [], []
+        # a job run on several machines has the status of each, under `node <name>:` lines
+        rows, notes, node, nodes = [], [], "", "\nnode " in "\n" + m[1]
         for line in m[1].split("\n"):
+            n = re.fullmatch(r"node (.+):", line)
+            if n:
+                node = n[1]
+                continue
             w = WORKER.search(line)
             if w:
-                rows.append("<tr>" + "".join(f'<td{" class=l" if i in (1, 2) else ""}>{e(x)}</td>' for i, x in enumerate(w.groups())) + "</tr>")
+                rows.append("<tr>" + (f'<td class="l">{e(node)}</td>' if nodes else "")
+                            + "".join(f'<td{" class=l" if i in (1, 2) else ""}>{e(x)}</td>' for i, x in enumerate(w.groups())) + "</tr>")
             elif line.strip():
-                notes.append(f'<p class="m">{e(line.strip())}</p>')
+                notes.append(f'<p class="m">{e(node + ": ") if node else ""}{e(line.strip())}</p>')
         body += (f'<h2>{e(machine.replace("_", " "))}</h2><p class="m">updated {age} s ago</p>' + "".join(notes)
-                 + ('<div class="wide"><table class="table table-sm"><thead><tr><th>worker</th><th class="l">state</th><th class="l">instance</th>'
+                 + ('<div class="wide"><table class="table table-sm"><thead><tr>' + ('<th class="l">node</th>' if nodes else "") + '<th>worker</th><th class="l">state</th><th class="l">instance</th>'
                     '<th>for (s)</th><th>memory (GB)</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>" if rows else ""))
     # the log written to last: the job's during setup, run.jl's once it runs. An empty one, or one left
     # by an earlier job in the same folder, is passed over

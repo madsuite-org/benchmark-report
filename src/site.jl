@@ -351,16 +351,19 @@ function workers_page(site, root, bar, assets)
         m = match(r"^```\n(.*?)\n```"s, read(file, String))
         m === nothing && continue
         println(io, "<h2>", escape_html(basename(dir)), "</h2>")
-        workers = String[]
+        # a job run on several machines has the status of each, under `node <name>:` lines
+        workers, node, nodes = String[], "", false
         for line in split(m[1], '\n')
+            n = match(r"^node (.+):$", line)
+            n === nothing || (node = n[1]; nodes = true; continue)
             w = match(r"worker (\d+): (\S+) (\S*) for (\d+) s, ([\d.]+) GB", line)
             if w === nothing
-                println(io, "<p class=\"m\">", escape_html(strip(line)), "</p>")
+                println(io, "<p class=\"m\">", isempty(node) ? "" : escape_html(node) * ": ", escape_html(strip(line)), "</p>")
             else
-                push!(workers, "<tr><td>$(w[1])</td><td class=\"l\">$(escape_html(w[2]))</td><td class=\"l\">$(escape_html(w[3]))</td><td>$(w[4])</td><td>$(w[5])</td></tr>")
+                push!(workers, "<tr>" * (nodes ? "<td class=\"l\">$(escape_html(node))</td>" : "") * "<td>$(w[1])</td><td class=\"l\">$(escape_html(w[2]))</td><td class=\"l\">$(escape_html(w[3]))</td><td>$(w[4])</td><td>$(w[5])</td></tr>")
             end
         end
-        isempty(workers) || println(io, "<div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>worker</th><th class=\"l\">state</th><th class=\"l\">instance</th><th>for (s)</th><th>memory (GB)</th></tr></thead><tbody>", join(workers), "</tbody></table></div>")
+        isempty(workers) || println(io, "<div class=\"wide\"><table class=\"table table-sm\"><thead><tr>", nodes ? "<th class=\"l\">node</th>" : "", "<th>worker</th><th class=\"l\">state</th><th class=\"l\">instance</th><th>for (s)</th><th>memory (GB)</th></tr></thead><tbody>", join(workers), "</tbody></table></div>")
     end
     page(joinpath(site, "workers.html"), "Workers", String(take!(io)), bar; refresh = true, assets)
     return

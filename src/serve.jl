@@ -172,6 +172,8 @@ function build_archive(site)
     return
 end
 
+const REBUILD_EVERY = 5.0
+
 function watch_run(live, site, name; repository = DEFAULT_REPOSITORY)
     while true
         try
@@ -184,7 +186,13 @@ function watch_run(live, site, name; repository = DEFAULT_REPOSITORY)
         end
         # the copy is complete when run.json has been replaced
         try
+            built = time()
             while first(watch_folder(joinpath(live, name))) != "run.json"
+            end
+            # at most one rebuild every REBUILD_EVERY seconds: a job of many nodes replaces run.json
+            # with each of their uploads, and what arrives meanwhile goes into the next rebuild
+            sleep(max(0.0, REBUILD_EVERY - (time() - built)))
+            while !isempty(first(watch_folder(joinpath(live, name), 0.05)))
             end
         catch err
             # a folder nobody watches would go stale with the service still up: restart instead
