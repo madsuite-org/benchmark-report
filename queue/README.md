@@ -78,7 +78,9 @@ curl -H "Authorization: Bearer $(gh auth token)" --data-binary @results.tar.gz \
      "https://benchmark.madsuite.org/queue/api/results?name=shifted-ldl-a100"
 ```
 
-The answer gives the report's address, `/madnlp/run-up-<name>/`. Only regular files of the kinds a
+The answer gives the report's address, `/madnlp/run-up-<name>/`. A run still going can upload as it
+goes with `&state=running`, which keeps the report live; its last upload says `finished` (the
+default) or `failed`. Only regular files of the kinds a
 run writes (`.csv`, `.toml`, `.md`, `.txt`, `.log`) are taken, under safe names and within
 limits, and there must be at least one `<machine>/<set>_<config>.csv` with its `.meta.toml`. Sending
 the same name again replaces your own upload; another person's cannot be replaced. Uploads are

@@ -566,7 +566,7 @@ UPLOAD_FILE = re.compile(r"[A-Za-z0-9_.+-]{1,100}(/[A-Za-z0-9_.+-]{1,100}){0,3}"
 UPLOAD_KINDS = (".csv", ".toml", ".md", ".txt", ".log")
 
 
-def receive_results(cfg, archive_path, name, login, repository):
+def receive_results(cfg, archive_path, name, login, repository, state="finished"):
     """Unpack an uploaded results root into a report folder `run-up-<name>`, or say why not.
     Everything in it is untrusted: only regular files of the kinds a run writes, under safe names,
     within limits, and at least one result file with its metadata."""
@@ -615,7 +615,7 @@ def receive_results(cfg, archive_path, name, login, repository):
             commits.add(m[1] if m else "")
         commit = commits.pop() if len(commits) == 1 else ""
         doc = {"repository": repository, "pr": "", "commit": commit, "title": f"{name} (uploaded by {login})",
-               "state": "finished", "uploaded_by": login, "uploaded_at": int(time.time())}
+               "state": state, "uploaded_by": login, "uploaded_at": int(time.time())}
         with open(os.path.join(work, ".run.json"), "w") as f:
             json.dump(doc, f)
         os.chmod(work, 0o755)
@@ -991,7 +991,12 @@ def handler(cfg, q):
                 return reply(403, {"error": f"{login} has no write access to {cfg.repo}."})
             if not cfg.uploads:
                 return reply(503, {"error": "Uploads are not set up on this server."})
-            name = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("name", [""])[0]
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            name = query.get("name", [""])[0]
+            # a run still going can upload as it goes: running until its last upload says otherwise
+            state = query.get("state", ["finished"])[0]
+            if state not in ("running", "finished", "failed"):
+                return reply(400, {"error": "state is running, finished or failed."})
             fd, path = tempfile.mkstemp(dir=cfg.uploads, prefix=".up-", suffix=".tar.gz")
             try:
                 with os.fdopen(fd, "wb") as out:
@@ -1005,7 +1010,7 @@ def handler(cfg, q):
                             break
                         out.write(chunk)
                         left -= len(chunk)
-                folder, problem = receive_results(cfg, path, name, login, cfg.repo)
+                folder, problem = receive_results(cfg, path, name, login, cfg.repo, state)
             finally:
                 os.remove(path)
             if problem:

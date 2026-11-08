@@ -524,6 +524,9 @@ class TestServer(Base):
         doc = json.load(open(os.path.join(folder, "run.json")))
         self.assertEqual((doc["commit"], doc["uploaded_by"], doc["state"]), ("a" * 40, "alice", "finished"))
         self.assertTrue(os.path.exists(os.path.join(folder, "Some_CPU", "logs", "acopf", "x__default.txt")))
+        self.assertEqual(self.post_upload(self.make_tar(good), "try-1&state=running")[0], 201)
+        self.assertEqual(json.load(open(os.path.join(folder, "run.json")))["state"], "running")
+        self.assertEqual(self.post_upload(self.make_tar(good), "try-1&state=bogus")[0], 400)
         self.assertEqual([f for f in os.listdir(self.cfg.uploads) if f.startswith(".")], [])          # nothing left behind
         for bad, why in ((self.make_tar({**good, "../x.csv": "a"}), "Not allowed"), (self.make_tar({**good, "run.sh": "rm -rf /"}), "Not allowed"),
                          (self.make_tar(good, links=[("Some_CPU/l.txt", "/etc/passwd")]), "Not allowed"),
