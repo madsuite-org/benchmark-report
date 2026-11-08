@@ -65,3 +65,22 @@ report`; `state` is `waiting`, `running`, `finished`, `failed`, `cancelled` or `
 curl -H "Authorization: Bearer $(gh auth token)" -H "Content-Type: application/json" \
      -d '{"pr": 705}' https://benchmark.madsuite.org/queue/api/jobs
 ```
+
+## Uploading results
+
+Results run anywhere, with the harness's `run.jl`, can be shown on the site: pack the results root
+(the directory with one folder per machine) and send it, with a GitHub token of someone with
+write access to the repository and a name for the report:
+
+```sh
+tar czf results.tar.gz -C results .
+curl -H "Authorization: Bearer $(gh auth token)" --data-binary @results.tar.gz \
+     "https://benchmark.madsuite.org/queue/api/results?name=shifted-ldl-a100"
+```
+
+The answer gives the report's address, `/madnlp/run-up-<name>/`. Only regular files of the kinds a
+run writes (`.csv`, `.toml`, `.md`, `.txt`, `.log`) are taken, under safe names and within
+limits, and there must be at least one `<machine>/<set>_<config>.csv` with its `.meta.toml`. Sending
+the same name again replaces your own upload; another person's cannot be replaced. Uploads are
+kept apart from the queue's runs (`QUEUE_UPLOADS`, read by the builder with `--uploads`) and are
+never used as master's results for comparisons.

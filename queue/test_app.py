@@ -478,6 +478,48 @@ class TestServer(Base):
         code, _, out = self.request("GET", "/queue/api/me", headers=headers)
         self.assertEqual(json.loads(out)["login"], "alice")
 
+    def make_tar(self, files, links=()):
+        import io, tarfile
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for name, data in files.items():
+                info = tarfile.TarInfo(name); data = data.encode(); info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            for name, target in links:
+                info = tarfile.TarInfo(name); info.type = tarfile.SYMTYPE; info.linkname = target
+                tar.addfile(info)
+        return buf.getvalue()
+
+    def post_upload(self, body, name, token="tok-alice"):
+        code, _, out = self.request("POST", f"/queue/api/results?name={name}", body,
+                                    {"Authorization": "Bearer " + token, "Content-Length": str(len(body)), "Content-Type": "application/gzip"})
+        return code, json.loads(out)
+
+    def test_upload(self):
+        self.cfg.uploads = os.path.join(self.dir, "live"); os.makedirs(self.cfg.uploads)
+        good = {"Some_CPU/acopf_default.csv": "case,status\nx,1\n",
+                "Some_CPU/acopf_default.csv.meta.toml": f'device = "cpu"\nmadnlp_commit = "{"a" * 40}"\n',
+                "Some_CPU/logs/acopf/x__default.txt": "log", "Some_CPU/summary.md": "ok"}
+        self.assertEqual(self.post_upload(self.make_tar(good), "try-1", token="tok-eve")[0], 403)
+        code, out = self.post_upload(self.make_tar(good), "try-1")
+        self.assertEqual((code, out["folder"]), (201, "run-up-try-1"), out)
+        folder = os.path.join(self.cfg.uploads, "run-up-try-1")
+        doc = json.load(open(os.path.join(folder, "run.json")))
+        self.assertEqual((doc["commit"], doc["uploaded_by"], doc["state"]), ("a" * 40, "alice", "finished"))
+        self.assertTrue(os.path.exists(os.path.join(folder, "Some_CPU", "logs", "acopf", "x__default.txt")))
+        self.assertEqual([f for f in os.listdir(self.cfg.uploads) if f.startswith(".")], [])          # nothing left behind
+        for bad, why in ((self.make_tar({**good, "../x.csv": "a"}), "Not allowed"), (self.make_tar({**good, "run.sh": "rm -rf /"}), "Not allowed"),
+                         (self.make_tar(good, links=[("Some_CPU/l.txt", "/etc/passwd")]), "Not allowed"),
+                         (self.make_tar({"Some_CPU/acopf_default.csv": "case,status\n"}), "No result files"), (b"not a tar", "not a .tar.gz")):
+            code, out = self.post_upload(bad, "try-2")
+            self.assertEqual(code, 400); self.assertIn(why, out["error"])
+        self.assertFalse(os.path.exists(os.path.join(self.cfg.uploads, "run-up-try-2")))
+        self.assertIn("lowercase", self.post_upload(self.make_tar(good), "Bad_Name")[1]["error"])
+        self.gh.perms["carol"] = "write"
+        self.gh_tokens = None
+        self.cfg.upload_limit = 10
+        self.assertEqual(self.post_upload(self.make_tar(good), "try-3")[0], 413)
+
     def test_login(self):
         code, headers, _ = self.request("GET", "/queue/login")
         self.assertEqual(code, 303)

@@ -289,6 +289,31 @@ end
     end
 end
 
+@testset "uploaded results, from a root of their own" begin
+    mktempdir() do root
+        _, clone, _ = archive_clone(root)
+        BenchmarkReport.REPOSITORY[] = clone
+        BenchmarkReport.FETCH[] = false
+        live, uploads, site = mkpath(joinpath(root, "live")), mkpath(joinpath(root, "uploads")), mkpath(joinpath(root, "site"))
+        for (dir, name) in ((uploads, "run-up-try"), (uploads, "pr-9"), (live, "run-up-fake"))
+            d = mkpath(joinpath(dir, name))
+            hostile_results(d)
+            write(joinpath(d, "run.json"), """{"repository":"o/r","pr":"","title":"try (uploaded by alice)","commit":"","state":"finished"}""")
+        end
+        BenchmarkReport.UPLOADS[] = uploads
+        try
+            reset_runs()
+            BenchmarkReport.build_all(live, site)
+            @test isfile(joinpath(site, "run-up-try", "index.html"))
+            @test !isdir(joinpath(site, "pr-9"))          # only run-up-* from the uploads
+            @test !isdir(joinpath(site, "run-up-fake"))   # and no run-up-* from the live root
+            @test occursin("try (uploaded by alice)", read(joinpath(site, "index.html"), String))
+        finally
+            BenchmarkReport.UPLOADS[] = ""
+        end
+    end
+end
+
 @testset "no pull requests" begin
     mktempdir() do root
         _, clone, _ = archive_clone(root)

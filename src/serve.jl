@@ -29,6 +29,17 @@ function code_commit()
 end
 
 is_folder(name) = occursin(r"^(pr-\d+|run-[a-z0-9-]+|master-[0-9a-f]{8})$", name)
+
+# Uploaded results, in a root of their own: only their run-up-* folders are read there, and no
+# run-up-* folder is read from the live root, so neither can stand in for the other.
+const UPLOADS = Ref("")
+function folders(live)
+    out = [(live, n) for n in readdir(live) if is_folder(n) && !startswith(n, "run-up-")]
+    if !isempty(UPLOADS[]) && isdir(UPLOADS[])
+        append!(out, [(UPLOADS[], n) for n in readdir(UPLOADS[]) if startswith(n, "run-up-") && is_folder(n)])
+    end
+    return out
+end
 is_run(live, name) = is_folder(name) && isfile(joinpath(live, name, "run.json"))
 stale(live, name) = !haskey(RUNS, name) || RUNS[name].mtime != mtime(joinpath(live, name, "run.json"))
 
@@ -66,10 +77,10 @@ end
 # waits for it. A folder that cannot be built must not stop the site, but code that can build
 # no folder at all is broken, and then `version.json` keeps the previous commit.
 function build_all(live, site; repository = DEFAULT_REPOSITORY)
-    names = filter(name -> is_run(live, name), readdir(live))
-    for name in names
+    names = [(root, name) for (root, name) in folders(live) if is_run(root, name)]
+    for (root, name) in names
         try
-            build_run(live, site, name)
+            build_run(root, site, name)
         catch err
             @warn "$name: the report was not updated" exception = err
         end
@@ -137,10 +148,10 @@ function serve(live, site; repository = DEFAULT_REPOSITORY)
     build_all(live, site; repository)
     watching = Set{String}()
     function watch_new()
-        for name in readdir(live)
-            if is_folder(name) && isdir(joinpath(live, name)) && name ∉ watching
+        for (root, name) in folders(live)
+            if isdir(joinpath(root, name)) && name ∉ watching
                 push!(watching, name)
-                errormonitor(@async watch_run(live, site, name; repository))
+                errormonitor(@async watch_run(root, site, name; repository))
             end
         end
         return
@@ -151,6 +162,10 @@ function serve(live, site; repository = DEFAULT_REPOSITORY)
     catch err
         @warn "the archived results were not built" exception = err
     end
+    isempty(UPLOADS[]) || errormonitor(@async while true
+        watch_folder(UPLOADS[])
+        watch_new()
+    end)
     while true
         watch_folder(live)
         watch_new()

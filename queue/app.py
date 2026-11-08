@@ -9,7 +9,7 @@ machine and nothing here polls. Standard library only; the GitHub App's tokens a
     python3 queue/app.py            # configured by the environment, see `Config`
 """
 
-import base64, email.utils, hashlib, hmac, html, http.server, json, mimetypes, os, re, secrets, shlex, subprocess, threading, time
+import base64, email.utils, hashlib, hmac, html, http.server, json, mimetypes, os, re, secrets, shlex, shutil, subprocess, tarfile, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
 WRITE = ("admin", "maintain", "write")
@@ -46,7 +46,10 @@ class Config:
         self.auto_master = env.get("QUEUE_AUTO_MASTER", "") == "1"
         self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")
         # the harness's list of configurations and options (configs.toml), to check a job's before it runs
-        self.harness_configs = env.get("QUEUE_HARNESS_CONFIGS", "")   # the live folder on the remote
+        self.harness_configs = env.get("QUEUE_HARNESS_CONFIGS", "")
+        # where uploaded results become reports: a directory whose run-up-* folders the builder sees
+        self.uploads = env.get("QUEUE_UPLOADS", "")
+        self.upload_limit = int(env.get("QUEUE_UPLOAD_LIMIT", str(512 << 20)))   # the live folder on the remote
         # The reports: the site the builder writes, served by this app with the rest, and the
         # command that runs the builder (bin/serve.jl), which this app starts and restarts.
         self.site = env.get("QUEUE_SITE", "")
@@ -549,6 +552,78 @@ def site_file(cfg, path):
     return target if os.path.isfile(target) else None
 
 
+UPLOAD_FILE = re.compile(r"[A-Za-z0-9_.+-]{1,100}(/[A-Za-z0-9_.+-]{1,100}){0,3}")
+UPLOAD_KINDS = (".csv", ".toml", ".md", ".txt", ".log")
+
+
+def receive_results(cfg, archive_path, name, login, repository):
+    """Unpack an uploaded results root into a report folder `run-up-<name>`, or say why not.
+    Everything in it is untrusted: only regular files of the kinds a run writes, under safe names,
+    within limits, and at least one result file with its metadata."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,37}", name):
+        return None, "Give a name of lowercase letters, digits and -, up to 38 characters."
+    folder = f"run-up-{name}"
+    target = os.path.join(cfg.uploads, folder)
+    if os.path.exists(target):
+        try:
+            owner = json.load(open(os.path.join(target, "run.json"))).get("uploaded_by", "")
+        except (OSError, ValueError):
+            owner = ""
+        if owner.lower() != login.lower():
+            return None, f"{folder} exists, uploaded by someone else; choose another name."
+    work = tempfile.mkdtemp(dir=cfg.uploads, prefix=".up-")
+    try:
+        total, count, results = 0, 0, set()
+        try:
+            tar = tarfile.open(archive_path, "r:gz")
+        except (tarfile.TarError, OSError):
+            return None, "The upload is not a .tar.gz archive."
+        with tar:
+            for m in tar:
+                path = m.name.removeprefix("./").strip("/")
+                if m.isdir() or not path:
+                    continue
+                if not m.isreg() or not UPLOAD_FILE.fullmatch(path) or ".." in path.split("/") or not path.endswith(UPLOAD_KINDS):
+                    return None, f"Not allowed in an upload: {path[:80]}."
+                count, total = count + 1, total + m.size
+                if count > 20000 or total > cfg.upload_limit:
+                    return None, "The upload is too large."
+                dest = os.path.join(work, path)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with tar.extractfile(m) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                os.chmod(dest, 0o644)
+                if re.fullmatch(r"[A-Za-z0-9_.+-]+/[a-z]+_[A-Za-z0-9_.+-]+\.csv", path):
+                    results.add(path)
+        good = [r for r in results if os.path.exists(os.path.join(work, r + ".meta.toml"))
+                and open(os.path.join(work, r)).readline().startswith("case,status")]
+        if not good:
+            return None, "No result files: expected <machine>/<set>_<config>.csv with its .meta.toml, as run.jl writes them."
+        commits = set()
+        for r in good:
+            m = re.search(r'^madnlp_commit\s*=\s*"([0-9a-f]{40})"', open(os.path.join(work, r + ".meta.toml")).read(), re.M)
+            commits.add(m[1] if m else "")
+        commit = commits.pop() if len(commits) == 1 else ""
+        doc = {"repository": repository, "pr": "", "commit": commit, "title": f"{name} (uploaded by {login})",
+               "state": "finished", "uploaded_by": login, "uploaded_at": int(time.time())}
+        with open(os.path.join(work, ".run.json"), "w") as f:
+            json.dump(doc, f)
+        os.chmod(work, 0o755)
+        old = None
+        if os.path.exists(target):
+            old = target + f".old-{secrets.token_hex(4)}"
+            os.rename(target, old)
+        os.rename(work, target)
+        # run.json last, by rename: that is what makes the builder take it
+        os.rename(os.path.join(target, ".run.json"), os.path.join(target, "run.json"))
+        if old:
+            shutil.rmtree(old, ignore_errors=True)
+        return folder, None
+    finally:
+        if os.path.isdir(work):
+            shutil.rmtree(work, ignore_errors=True)
+
+
 def sign(cfg, value):
     return hmac.new(cfg.session_key, value.encode(), hashlib.sha256).hexdigest()
 
@@ -896,6 +971,37 @@ def handler(cfg, q):
                 return login
             return session(cfg, self.cookie("s"))
 
+        def upload(self, first):
+            """POST /queue/api/results?name=<slug>, the body a .tar.gz of a results root."""
+            reply = lambda code, data: self.send(code, json.dumps(data), kind="application/json")
+            login = self.api_login()
+            if not login:
+                return reply(401, {"error": "Send a GitHub token as Authorization: Bearer <token>."})
+            if q.permission(login) not in WRITE:
+                return reply(403, {"error": f"{login} has no write access to {cfg.repo}."})
+            if not cfg.uploads:
+                return reply(503, {"error": "Uploads are not set up on this server."})
+            name = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("name", [""])[0]
+            fd, path = tempfile.mkstemp(dir=cfg.uploads, prefix=".up-", suffix=".tar.gz")
+            try:
+                with os.fdopen(fd, "wb") as out:
+                    out.write(first)
+                    left = int(self.headers.get("Content-Length", 0)) - len(first)
+                    if left + len(first) > cfg.upload_limit:
+                        return reply(413, {"error": "The upload is too large."})
+                    while left > 0:
+                        chunk = self.rfile.read(min(left, 1 << 20))
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                        left -= len(chunk)
+                folder, problem = receive_results(cfg, path, name, login, cfg.repo)
+            finally:
+                os.remove(path)
+            if problem:
+                return reply(400, {"error": problem})
+            return reply(201, {"report": f"{cfg.reports}/{folder}/", "folder": folder})
+
         def api(self, method, path, body):
             reply = lambda code, data: self.send(code, json.dumps(data), kind="application/json")
             login = self.api_login()
@@ -1063,6 +1169,8 @@ def handler(cfg, q):
 
         def do_POST(self):
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))
+            if self.path.startswith("/queue/api/results"):
+                return self.upload(body)
             if self.path.startswith("/queue/api/"):
                 return self.api("POST", self.path.partition("?")[0], body)
             if self.path == "/queue/hook":

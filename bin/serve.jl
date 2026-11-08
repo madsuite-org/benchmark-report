@@ -1,6 +1,6 @@
 # Build the reports of running benchmarks, on a server outside CI.
 #
-#     julia --project bin/serve.jl LIVE SITE --repo=CLONE [--archive=CLONE --archive-url=URL]
+#     julia --project bin/serve.jl LIVE SITE --repo=CLONE [--archive=CLONE --archive-url=URL] [--uploads=DIR]
 #
 # LIVE holds a folder `pr-<N>` per pull request, kept up to date by the benchmark job, which
 # replaces `run.json` in it after every copy. Each new `run.json` rebuilds `SITE/pr-<N>`.
@@ -16,9 +16,10 @@ function main(args)
     options = filter(startswith("--"), args)
     live, site = filter(!startswith("--"), args)
     for option in options
-        m = match(r"^--(repo|archive|archive-url)=(.*)$", option)
+        m = match(r"^--(repo|archive|archive-url|uploads)=(.*)$", option)
         m === nothing && error("unknown option $option")
-        ref = Dict("repo" => BenchmarkReport.REPOSITORY, "archive" => BenchmarkReport.ARCHIVE, "archive-url" => BenchmarkReport.ARCHIVE_URL)[m[1]]
+        ref = Dict("repo" => BenchmarkReport.REPOSITORY, "archive" => BenchmarkReport.ARCHIVE, "archive-url" => BenchmarkReport.ARCHIVE_URL,
+                   "uploads" => BenchmarkReport.UPLOADS)[m[1]]
         ref[] = m[2]
     end
     return serve(live, site)
