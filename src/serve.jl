@@ -81,6 +81,19 @@ host_of(rs) = (m = match(r"shin-compute-(\d+)", join(Iterators.flatten(values(rs
 # top of those of comparisons.toml in this repository
 app_comparisons() = isempty(UPLOADS[]) ? "" : joinpath(UPLOADS[], "comparisons.toml")
 
+# The app's comparisons as last read, to tell which reports a change of them concerns.
+const APP_CHOSEN = Ref(Dict{String, Any}())
+function read_app_comparisons()
+    file = app_comparisons()
+    isfile(file) || return Dict{String, Any}()
+    try
+        return TOML.parsefile(file)
+    catch err
+        @warn "$file: not read" exception = err
+        return Dict{String, Any}()
+    end
+end
+
 function comparisons_of(name)
     entry = Dict{String, Any}()
     for file in (COMPARISONS[], app_comparisons())
@@ -211,6 +224,7 @@ Build every report, then rebuild a report whenever its `run.json` is replaced. D
 function serve(live, site; repository = DEFAULT_REPOSITORY)
     FETCH[] = false
     mkpath(site)
+    APP_CHOSEN[] = read_app_comparisons()
     build_all(live, site; repository)
     watching = Set{String}()
     function watch_new()
@@ -231,8 +245,12 @@ function serve(live, site; repository = DEFAULT_REPOSITORY)
     isempty(UPLOADS[]) || errormonitor(@async while true
         file, _ = watch_folder(UPLOADS[])
         if file == "comparisons.toml"
-            # chosen in the app: rebuild every report, since any may have gained or lost a column
+            # chosen in the app: rebuild the reports whose columns changed, at once
+            now_chosen = read_app_comparisons()
+            changed = Set(n for n in union(keys(now_chosen), keys(APP_CHOSEN[])) if get(now_chosen, n, nothing) != get(APP_CHOSEN[], n, nothing))
+            APP_CHOSEN[] = now_chosen
             for (root, name) in folders(live)
+                name in changed || continue
                 try
                     is_run(root, name) && build_run(root, site, name)
                 catch err

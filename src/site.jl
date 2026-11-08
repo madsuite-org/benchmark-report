@@ -439,7 +439,8 @@ const MAX_FILE_SIZE = 64 * 2^20
 # Bring `data/` up to date with the result directories, and index the solver logs.
 function sync_data(site, root)
     logs = Dict{Tuple{String, String, String, String}, String}()
-    chosen = current_machines(root)
+    # a job run on several machines shows all of their results, so links all of their logs
+    chosen = startswith(basename(normpath(root)), "run-x") ? Dict{String, String}() : current_machines(root)
     for dir in sort!(readdir(root))
         source = joinpath(root, dir)
         isdir(source) || continue

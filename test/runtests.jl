@@ -150,12 +150,18 @@ end
         row[1] = "another_case"
         write(joinpath(other, "smoke_default.csv"), lines[1] * "\n" * join(row, ",") * "\n")
         cp(joinpath(machine, "smoke_default.csv.meta.toml"), joinpath(other, "smoke_default.csv.meta.toml"))
+        # each machine's solver logs
+        for (m, case) in (("other-gpu", "another_case"),)
+            mkpath(joinpath(results, m, "logs", "smoke"))
+            write(joinpath(results, m, "logs", "smoke", "$(case)__default.txt"), "log of $case")
+        end
         rs = BenchmarkReport.from_directory(results, "job")
         rows = rs.rows[("cuda", "smoke", "default")]
         @test length(rows) == 2
         @test Set(r.machine for r in values(rows)) == Set(["machine", "other-gpu"])
         write_report(site, results; wall = 7200.0, finished = true)
         @test occursin("<sup>m</sup>", read(joinpath(site, "cuda-smoke.html"), String))
+        @test occursin("data/other-gpu/logs/smoke/another_case__default.txt", read(joinpath(site, "cuda-smoke.html"), String))   # every machine's logs
         # one kind of node: nothing to mark
         rm(other; recursive = true)
         write_report(site, results; wall = 7200.0, finished = true)
