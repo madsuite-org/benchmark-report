@@ -252,12 +252,20 @@ function latest_merged(live, name; depth = 200)
 end
 
 # The Ipopt reference of a version of this benchmark, `ipopt/<version>/` on the archive branch:
-# one run for all the machines and commits that are compared under that version. `nothing` if
-# it has not been archived.
+# one run for all the machines and commits that are compared under that version. A version with
+# no reference yet takes the newest earlier one, so that Ipopt is always shown; its version is in
+# the report. `nothing` if no version has one.
 function ipopt_reference(version)
     archive = archive_revision()
     archive === nothing && return nothing
     show(path) = read(archive_command("show", "$archive:$path"), String)
+    have = [String(m[1]) for m in (match(r"^ipopt/([^/]+)/", p) for p in split(archive_git("ls-tree", "-r", "--name-only", archive, "ipopt/"), '\n'; keepempty = false)) if m !== nothing]
+    versions = sort!(unique!([v for v in have if tryparse(VersionNumber, v) !== nothing]); by = VersionNumber)
+    if !(version in have)
+        earlier = filter(v -> tryparse(VersionNumber, version) === nothing || VersionNumber(v) <= VersionNumber(version), versions)
+        isempty(earlier) && return nothing
+        version = last(earlier)
+    end
     rs = ResultSet("Ipopt reference")
     for path in split(archive_git("ls-tree", "-r", "--name-only", archive, "ipopt/$version/"), '\n'; keepempty = false)
         m = match(r"/([a-z]+)_ipopt\.csv$", path)

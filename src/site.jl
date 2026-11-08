@@ -506,6 +506,12 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
         isempty(machines) || println(io, "<p class=\"m\">", uppercase(device), ": ", escape_html(join(machines, "; ")), "</p>")
     end
     versions = filter(!=("–"), unique!(collect(values(cand.harness))))
+    ipopt_versions = unique!([v for (k, v) in cand.harness if k[2] == "ipopt"])
+    own_versions = unique!([v for (k, v) in cand.harness if k[2] != "ipopt"])
+    if !isempty(ipopt_versions) && !isempty(own_versions) && ipopt_versions != own_versions
+        println(io, "<p class=\"m fail\">The Ipopt reference is from benchmark ", escape_html(join(ipopt_versions, ", ")),
+                ", as benchmark ", escape_html(join(own_versions, ", ")), " has none yet: compare with care.</p>")
+    end
     println(io, "<p class=\"m\">Benchmark ", escape_html(join(versions, ", ")), ": the version fixes the instances, the options, Ipopt and HSL.</p>")
     base === nothing || println(io, "<p class=\"m\">Base: ", escape_html(base.label), "</p>")
     println(io, "<p class=\"m\">SGM: shifted geometric mean of the solve time, with a shift of 10 s and a failure counting as the time limit of a solve (CPU ", round(Int, walls["cpu"]), " s, GPU ", round(Int, walls["cuda"]), " s, for every solver on those pages), over the problems that all solvers shown have run. SSGM: the SGM scaled so that Ipopt, or the best solver where Ipopt has not run, is 1.</p>")
