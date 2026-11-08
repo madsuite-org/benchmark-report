@@ -716,6 +716,7 @@ class TestSite(Base):
         self.assertNotIn("Recent jobs", public)                 # jobs are for members only
         mine = self.get("/madnlp/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
         self.assertLess(mine.index("Recent jobs"), mine.index("<h2>Reports</h2>"))
+        self.assertIn('<th class="l">machine</th>', mine)
         self.assertIn("Seven", mine)
         code, headers, _ = self.get("/queue/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})
         self.assertEqual((code, headers["Location"]), (303, "/madnlp/"))

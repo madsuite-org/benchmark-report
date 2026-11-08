@@ -830,7 +830,8 @@ def job_panel(cfg, q, login, name):
     e = html.escape
     times = ", ".join(x for x in (f"queued {when(j['queued'])}", j.get("started") and f"started {when(j['started'])}",
                                   j.get("ended") and f"ended {when(j['ended'])}") if x)
-    return (f'<div class="container mt-2"><div class="jobbar">Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)} '
+    where = f" on {e(j['node'])}" if j.get("node") else ""
+    return (f'<div class="container mt-2"><div class="jobbar">Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)}{where} '
             f'<span class="m">by {e(j["by"])}, {times} UTC</span> {actions(cfg, q, login, j)}</div></div>')
 
 
@@ -940,11 +941,12 @@ def jobs_section(cfg, q, login=None):
     def row(j):
         report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
         return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{e(name(cfg, j))}</a></td><td class="l">{e(j.get("title", ""))}</td>'
-                f'<td class="l">{badge(j, cfg)}</td><td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
+                f'<td class="l">{badge(j, cfg)}</td><td class="l">{e(j.get("node") or ("any" if j["state"] == "waiting" else ""))}</td>'
+                f'<td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
                 f'<td class="l">{report}</td><td class="l">{cancel_button(cfg, q, login, j)}</td></tr>')
     def table(title, jobs, empty):
         head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">title</th><th class="l">state</th>'
-                '<th class="l">by</th><th>time (UTC)</th><th class="l"></th><th class="l"></th></tr></thead><tbody>')
+                '<th class="l">machine</th><th class="l">by</th><th>time (UTC)</th><th class="l"></th><th class="l"></th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
     bot = e(cfg.bots[0]) if cfg.bots else ""
