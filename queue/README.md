@@ -116,7 +116,9 @@ then `run` on each machine) does all of the below; its README has the steps for 
   will carry on), `finished`, `failed` or `cancelled`; the job ends when every node still alive has
   finished. The answer says `"cancel": true` once the job is cancelled.
 
-Their reports are read from `QUEUE_UPLOADS` and never count as master's results. Nodes of different
+Their reports are read from `QUEUE_UPLOADS`. A job of a commit on master counts as master's results
+in other reports' comparisons: per device, the newest master commit with results is used, a job's or
+the archive's, its default configuration only (results uploaded by hand, `run-up-*`, never count). Nodes of different
 hardware put their rows in folders of their own; the report merges them per device and marks the
 times of each instance with the machine it ran on.
 

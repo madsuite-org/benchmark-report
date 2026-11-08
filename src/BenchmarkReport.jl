@@ -258,8 +258,11 @@ function latest_merged(live, name; depth = 200)
     files = [m for m in (match(r"^([^/]+)/([0-9a-f]{40})/([a-z]+)_(.+)\.csv$", p) for p in paths) if m !== nothing]
     root = joinpath(live, name)
     machines = filter(d -> isdir(joinpath(root, d)), readdir(root))
-    rs, used, done = ResultSet(""), String[], Set{Tuple{String, String}}()
-    for line in split(git("log", "--first-parent", "-n", string(depth), "--format=%H %s", "origin/master"), '\n'; keepempty = false)
+    rs, done = ResultSet(""), Set{Tuple{String, String}}()
+    used = Dict{String, Vector{String}}()     # device => where its rows came from
+    best = Dict{String, Int}()                # device => position on master of its newest commit
+    history = split(git("log", "--first-parent", "-n", string(depth), "--format=%H %s", "origin/master"), '\n'; keepempty = false)
+    for (position, line) in enumerate(history)
         sha, subject = split(line, ' '; limit = 2)
         merged = match(r"\(#(\d+)\)$", subject)
         own(n) = n == "pr-$(merged[1])" || startswith(n, "pr-$(merged[1])-")
@@ -275,13 +278,20 @@ function latest_merged(live, name; depth = 200)
         for commit in commits, machine in machines
             mine = [m for m in files if m[1] == machine && m[2] == commit && (machine, String(m[3])) ∉ done]
             isempty(mine) && continue
+            devices = Set{String}()
             for m in mine
                 path = String(m.match)
-                add!(rs, m[3], m[4], TOML.parse(show(path * ".meta.toml")), read_results(IOBuffer(show(path))))
+                meta = TOML.parse(show(path * ".meta.toml"))
+                add!(rs, m[3], m[4], meta, read_results(IOBuffer(show(path))))
+                device = string(get(meta, "device", ""))
+                push!(devices, device)
+                best[device] = min(get(best, device, typemax(Int)), position)
             end
             sets = unique!([String(m[3]) for m in mine])
             union!(done, [(machine, set) for set in sets])
-            push!(used, "`$(commit[1:8])`" * (merged === nothing ? "" : ", from #$(merged[1])") * ", on " * replace(machine, "_" => " ") * " (" * join(sort(sets), ", ") * ")")
+            for device in devices
+                push!(get!(used, device, String[]), "`$(commit[1:8])`" * (merged === nothing ? "" : ", from #$(merged[1])") * ", on " * replace(machine, "_" => " ") * " (" * join(sort(sets), ", ") * ")")
+            end
         end
     end
     # A device of this run with no master results on its machines (a cluster's, say) takes the
@@ -289,6 +299,42 @@ function latest_merged(live, name; depth = 200)
     mine = Set{String}()
     for (dir, _, _) in walkdir(root), path in values(result_files(dir))
         isfile(path * ".meta.toml") && push!(mine, string(get(read_meta(path), "device", "")))
+    end
+    # Jobs run on clusters (run-x*, in the uploads root) of a commit on master count as master's
+    # results too (Sungho): per device, the newest commit wins, theirs or the archive's. Only their
+    # default configuration; their rows from other machines than this run's say so.
+    position_of = Dict(String(first(split(line, ' '; limit = 2))) => i for (i, line) in enumerate(history))
+    external = Tuple{Int, String, String}[]
+    if !isempty(UPLOADS[]) && isdir(UPLOADS[])
+        for n in readdir(UPLOADS[])
+            (startswith(n, "run-x") && n != name) || continue
+            text = try
+                read(joinpath(UPLOADS[], n, "run.json"), String)
+            catch
+                continue
+            end
+            c = match(r"\"commit\"\s*:\s*\"([0-9a-f]{40})\"", text)
+            (c === nothing || !haskey(position_of, c[1])) && continue
+            push!(external, (position_of[c[1]], n, String(c[1])))
+        end
+    end
+    for (position, n, commit) in sort!(external)
+        dir = joinpath(UPLOADS[], n)
+        found = Dict{String, Vector{Tuple{String, String, Dict{String, Any}, String}}}()   # device => (machine, set, meta, path)
+        for machine in filter(d -> isdir(joinpath(dir, d)), readdir(dir)), ((set, config), path) in result_files(joinpath(dir, machine))
+            (config == "default" && isfile(path * ".meta.toml")) || continue
+            meta = read_meta(path)
+            push!(get!(found, string(get(meta, "device", "")), []), (machine, set, meta, path))
+        end
+        for (device, entries) in found
+            position < get(best, device, typemax(Int)) || continue
+            foreach(k -> k[1] == device && delete!(rs.rows, k), collect(keys(rs.rows)))
+            for (machine, set, meta, path) in entries
+                add!(rs, set, "default", meta, read_results(path); machine = machine in machines ? "" : machine)
+            end
+            best[device] = position
+            used[device] = ["`$(commit[1:8])` from $(n) ($device, cluster nodes)"]
+        end
     end
     missing_devices = setdiff(mine, Set(k[1] for k in keys(rs.rows)))
     for device in sort!(collect(missing_devices)), line in split(git("log", "--first-parent", "-n", string(depth), "--format=%H %s", "origin/master"), '\n'; keepempty = false)
@@ -302,14 +348,14 @@ function latest_merged(live, name; depth = 200)
                 get(meta, "device", "") == device || continue
                 add!(rs, m[3], m[4], meta, read_results(IOBuffer(show(String(m.match)))); machine)
             end
-            push!(used, "`$(sha[1:8])` on " * replace(machine, "_" => " ") * " ($device, another machine)")
+            used[device] = ["`$(sha[1:8])` on " * replace(machine, "_" => " ") * " ($device, another machine)"]
             found = true
             break
         end
         found && break
     end
-    isempty(used) && return nothing
-    return ResultSet(join(used, "; "), rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
+    isempty(rs.rows) && return nothing
+    return ResultSet(join(reduce(vcat, [used[d] for d in sort!(collect(keys(used)))]; init = String[]), "; "), rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
 end
 
 # The Ipopt reference of a version of this benchmark, `ipopt/<version>/` on the archive branch:

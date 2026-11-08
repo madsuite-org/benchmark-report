@@ -304,6 +304,25 @@ end
         @test !occursin("elsewhere", rs.label)
         # a pull request is not its own master
         @test !occursin("#7", BenchmarkReport.latest_merged(live, "pr-7").label)
+        # a cluster job (run-x*, uploaded) of a newer master commit is master's results for its device
+        git("checkout", "-q", "master")
+        git("commit", "-q", "--allow-empty", "-m", "Newest change (#8)")
+        newest = readchomp(`git -C $origin rev-parse HEAD`)
+        git("checkout", "-q", "benchmark-results")
+        run(`git -C $clone fetch -q origin`)
+        uploads = mkpath(joinpath(root, "uploads"))
+        job = mkpath(joinpath(uploads, "run-x5-newest"))
+        hostile_results(job)
+        mv(joinpath(job, "machine"), joinpath(job, "cluster-gpu"))
+        write(joinpath(job, "run.json"), """{"repository":"o/r","pr":"","commit":"$newest","state":"running"}""")
+        BenchmarkReport.UPLOADS[] = uploads
+        rs = BenchmarkReport.latest_merged(live, "pr-1")
+        @test occursin("`$(first(newest, 8))` from run-x5-newest (cuda, cluster nodes)", rs.label)
+        @test !occursin("from #7", rs.label)
+        @test all(r -> r.machine == "cluster-gpu", values(rs.rows[("cuda", "smoke", "default")]))   # other hardware, marked
+        @test !occursin("run-x5-newest", BenchmarkReport.latest_merged(uploads, "run-x5-newest").label)   # never its own
+        BenchmarkReport.UPLOADS[] = ""
+        rm(job; recursive = true)
         # a run on a machine master has no results for takes the latest master's from another, marked
         live_run(live, "run-x9-cluster", "running")
         mv(joinpath(live, "run-x9-cluster", "machine"), joinpath(live, "run-x9-cluster", "cluster"))
