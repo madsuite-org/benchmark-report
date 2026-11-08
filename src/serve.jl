@@ -55,7 +55,7 @@ function build_run(live, site, name)
     state, commit = json_field(text, "state"), json_field(text, "commit")
     named = json_field(text, "title")
     at = match(r"^pr-\d+-([0-9a-f]{8})$", name)
-    title = manual ? "Manual run: " * (isempty(named) ? name[5:end] : named) : "Pull request #$pr" * (at === nothing ? "" : " at $(at[1])")
+    title = manual ? (isempty(named) ? name[5:end] : named) : "Pull request #$pr" * (at === nothing ? "" : " at $(at[1])")
     link = manual ? (occursin(r"^[0-9a-f]{40}$", commit) ? "https://github.com/$repository/commit/$commit" : nothing) : "https://github.com/$repository/pull/$pr"
     # the latest master and the Ipopt reference are shown unless taken away in the app
     hide = get(comparisons_of(name), "hide", String[])

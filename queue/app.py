@@ -1427,8 +1427,8 @@ def jobs_section(cfg, q, login=None):
             f'<a class="btn btn-primary" href="{e(cfg.base)}/new">New job</a></div>'
             '<p class="m">One job runs at a time: updates first, then master, then in the order queued. Master runs when someone queues it. '
             f'A comment <code>@{bot} benchmark</code> on a pull request also queues it.</p>'
-            + down + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
-            + table("Recent jobs", recent(q), "No jobs yet.").replace("<h2>", "<h3>").replace("</h2>", "</h3>"))
+            # finished runs are in the one list of runs below, with the rest (Sungho)
+            + down + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>"))
 
 
 def jobs_page(cfg, q, login, message=""):

@@ -897,9 +897,10 @@ class TestSite(Base):
         open(os.path.join(self.cfg.site, "madnlp", "index.html"), "w").write('<html><header class="site">' + app.NAV + '</header><main class="container"><h2>Reports</h2></main></html>')
         self.q.add_pr(7, "alice")
         public = self.get("/madnlp/")[2]
-        self.assertNotIn("Recent jobs", public)                 # jobs are for members only
+        self.assertNotIn("Queue", public)                       # jobs are for members only
         mine = self.get("/madnlp/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
-        self.assertLess(mine.index("Recent jobs"), mine.index("<h2>Reports</h2>"))
+        self.assertLess(mine.index("Queue"), mine.index("<h2>Reports</h2>"))
+        self.assertNotIn("Recent jobs", mine)                   # finished runs are in the one list of runs
         self.assertIn('<th class="l">machine</th>', mine)
         self.assertIn("Seven", mine)
         code, headers, _ = self.get("/queue/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})

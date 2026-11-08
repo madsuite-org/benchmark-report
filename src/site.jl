@@ -597,38 +597,39 @@ function write_index(site, runs; repository)
     write_assets(site)
     code = "https://github.com/" * repository
     io = IOBuffer()
-    function run_table(title, selected; sorted = true)
-        isempty(selected) && return
-        println(io, "<h2>", title, "</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
-        for r in (sorted ? sort(selected; by = r -> r.updated, rev = true) : selected)
-            commit = occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">$(first(r.commit, 8))</a>" : escape_html(first(r.commit, 8))
-            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(shown_state(r)), shown_state(r) == "running" && get(r, :total, 0) > 0 ? " <span class=\"m\">$(r.done)/$(r.total)</span>" : "", "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
-        end
-        return println(io, "</tbody></table></div>")
-    end
-    prs = [r for r in runs if !isempty(r.pr)]
-    running, finished = [r for r in prs if shown_state(r) == "running"], [r for r in prs if shown_state(r) != "running"]
-    # one list of every report, running ones first; the jobs that make them are on the same page
-    run_table("Reports", vcat(sort(running; by = r -> r.updated, rev = true), sort(finished; by = r -> r.updated, rev = true)); sorted = false)
-    run_table("Manual runs", [r for r in runs if isempty(r.pr)])
+    # One list of every run, however it was started (Sungho): pull requests, master, runs on the
+    # queue's machines or on clusters, the archived results and the Ipopt references. Running first,
+    # then the newest.
+    row(name_html, github, commit, state, updated, files) = "<tr><td>$name_html</td><td class=\"l\">$github</td><td class=\"l\">$commit</td><td class=\"l\">$state</td><td>$updated</td><td class=\"l\">$files</td></tr>"
+    commit_link(c) = occursin(r"^[0-9a-f]{40}$", c) ? "<a href=\"$code/commit/$c\">$(first(c, 8))</a>" : escape_html(first(c, 8))
+    live_row(r) = row(
+        "<a href=\"$(escape_html(r.name))/\">" * (isempty(r.pr) ? escape_html(replace(r.title, r"^Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name)) * "</a>",
+        isempty(r.pr) ? (occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">commit</a>" : "–") : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>",
+        commit_link(r.commit),
+        state_badge(shown_state(r)) * (shown_state(r) == "running" && get(r, :total, 0) > 0 ? " <span class=\"m\">$(r.done)/$(r.total)</span>" : ""),
+        escape_html(replace(first(r.updated, 16), "T" => " ")),
+        "<a href=\"$(escape_html(r.name))/data/\">files</a>",
+    )
+    running = [r for r in runs if shown_state(r) == "running"]
+    finished = [r for r in runs if shown_state(r) != "running"]
+    rows = [live_row(r) for r in vcat(sort(running; by = r -> r.updated, rev = true), sort(finished; by = r -> r.updated, rev = true))]
     paths = split(archive_git("ls-tree", "-r", "--name-only", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
     archived = [match(r"^([^/]+)/([0-9a-f]{40})/summary\.md$", p) for p in paths]
     filter!(!isnothing, archived)
     commits = unique!([String(m[2]) for m in archived])
-    if !isempty(commits)
-        println(io, "<h2>Archived</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>report</th><th class=\"l\">GitHub</th><th class=\"l\">machines</th><th class=\"l\">raw data</th></tr></thead><tbody>")
-        for commit in commits
-            machines = [replace(m[1], "_" => " ") for m in archived if m[2] == commit]
-            println(io, "<tr><td><a href=\"archive/", commit, "/\">", first(commit, 8), "</a></td><td class=\"l\"><a href=\"", code, "/commit/", commit, "\">commit</a></td><td class=\"l\">", escape_html(join(machines, ", ")), "</td><td class=\"l\"><a href=\"archive/", commit, "/data/\">files</a></td></tr>")
-        end
-        println(io, "</tbody></table></div>")
+    for commit in commits
+        machines = [replace(m[1], "_" => " ") for m in archived if m[2] == commit]
+        push!(rows, row("<a href=\"archive/$commit/\">master $(first(commit, 8))</a> <span class=\"m\">$(escape_html(join(machines, ", ")))</span>",
+            "<a href=\"$code/commit/$commit\">commit</a>", commit_link(commit), state_badge("archived"), "", "<a href=\"archive/$commit/data/\">files</a>"))
     end
     versions = unique!([m[1] for m in filter(!isnothing, [match(r"^ipopt/([^/]+)/", p) for p in paths])])
-    if !isempty(versions)
-        println(io, "<h2>Ipopt references</h2><ul>")
-        foreach(v -> println(io, "<li><a href=\"", isempty(ARCHIVE_URL[]) ? code : escape_html(ARCHIVE_URL[]), "/tree/", ARCHIVE_BRANCH, "/ipopt/", escape_html(v), "\">benchmark ", escape_html(v), "</a></li>"), versions)
-        println(io, "</ul>")
+    tree = isempty(ARCHIVE_URL[]) ? code : escape_html(ARCHIVE_URL[])
+    for v in versions
+        push!(rows, row("<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">Ipopt reference, benchmark $(escape_html(v))</a>", "–", "–", state_badge("reference"), "", "<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">files</a>"))
     end
+    println(io, "<h2>Runs</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
+    foreach(r -> println(io, r), rows)
+    println(io, "</tbody></table></div>")
     line = "<span class=\"m\">$(length(running)) running, $(length(finished)) finished, $(length(commits)) archived</span>"
     page(joinpath(site, "index.html"), "MadNLP benchmarks", String(take!(io)), banner("index.html", "", line); refresh = true)
     return

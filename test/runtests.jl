@@ -357,11 +357,12 @@ end
         reset_runs()
         BenchmarkReport.build_all(live, site)
         index = read(joinpath(site, "index.html"), String)
-        @test occursin("Manual runs", index) && occursin("href=\"run-try-this/\"", index)
+        @test occursin("<h2>Runs</h2>", index) && occursin("href=\"run-try-this/\"", index)   # one list of every run
+        @test !occursin("Manual run", index)
         @test !occursin("<b>x", index)
         @test !occursin("Finished", index)
         report = read(joinpath(site, "run-try-this", "index.html"), String)
-        @test occursin("Manual run: &lt;b&gt;x try", report)
+        @test occursin("&lt;b&gt;x try", report) && !occursin("Manual run", report)
         @test occursin("o/r/commit/" * "b"^40, report)
         @test !isdir(joinpath(site, "other"))
         # a run of master from the queue, under its commit
@@ -370,7 +371,7 @@ end
         write(joinpath(dir, "run.json"), """{"repository":"o/r","pr":"","title":"master bbbbbbbb","commit":"$("b"^40)","state":"running"}""")
         reset_runs()
         BenchmarkReport.build_all(live, site)
-        @test occursin("Manual run: master bbbbbbbb", read(joinpath(site, "master-bbbbbbbb", "index.html"), String))
+        @test occursin("<title>master bbbbbbbb</title>", read(joinpath(site, "master-bbbbbbbb", "index.html"), String))
         @test occursin("run-try-this", read(joinpath(site, "status.json"), String))
     end
 end
