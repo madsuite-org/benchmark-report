@@ -109,6 +109,7 @@ class TestQueue(Base):
         self.assertFalse(self.q.cancel(job["id"], "eve"))
         self.assertTrue(self.q.cancel(job["id"], "boss"))
         self.assertEqual(job["state"], "cancelled")
+        self.assertEqual(job["cancelled_by"], "boss")
         self.q.add_master("d" * 40)
         running = self.q.take()
         self.assertTrue(self.q.cancel(running["id"], "boss"))

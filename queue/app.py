@@ -321,6 +321,8 @@ class Queue:
         with self.changed:
             for j in self.jobs("waiting", "running"):
                 if j["id"] == job_id and (j["by"].lower() == login.lower() or self.permission(login) == "admin"):
+                    # who cancelled, kept with the job, since a cancel is otherwise hard to account for
+                    j["cancelled_by"], j["cancelled_at"] = login, int(time.time())
                     if j["state"] == "waiting":
                         j["state"], j["ended"] = "cancelled", int(time.time())
                     else:
@@ -392,7 +394,7 @@ def order(job):
 
 def public(cfg, j):
     """A job as the API gives it."""
-    out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note")}
+    out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note", "cancelled_by", "cancelled_at")}
     out |= settings_of(j) | {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
             "report": f"{cfg.reports}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
     return out
