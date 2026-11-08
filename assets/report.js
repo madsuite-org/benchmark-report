@@ -18,6 +18,7 @@ const key=r=>{const v=r.cells[i].textContent,n=parseFloat(v);return isNaN(n)?v:n
 [...body.rows].sort((a,b)=>{const x=key(a),y=key(b),c=x<y?-1:x>y?1:0;return up?-c:c}).forEach(r=>body.append(r))})})})
 }
 bind();
+document.querySelectorAll('pre.log').forEach(b=>b.scrollTop=b.scrollHeight);
 // while a run is going, take the page again every two seconds and swap its content in place
 // the browser asks the server whether the page has changed, and downloads it only if so
 let seen;
@@ -26,10 +27,13 @@ const r=await fetch(location.href,{cache:'no-cache'});if(!r.ok)return;
 const v=r.headers.get('etag')||r.headers.get('last-modified');if(v&&v===seen)return;seen=v;
 const d=new DOMParser().parseFromString(await r.text(),'text/html'),q=document.querySelector('#filter')?.value,c=document.querySelector('#failed')?.checked;
 // keep where the reader had scrolled every table to, and any open menu, across the swap
-const boxes=()=>[...document.querySelectorAll('#live .wide,#live .scroll')].map(b=>[b.scrollLeft,b.scrollTop]);
-const kept=boxes(),open=[...document.querySelectorAll('#live details[open]')].map(x=>x.querySelector('summary')?.textContent);
+// a log followed at its end keeps following it; anything else stays where it was
+const SCROLLS='#live .wide,#live .scroll,#live pre.log';
+const kept=[...document.querySelectorAll(SCROLLS)].map(b=>[b.scrollLeft,b.scrollTop,b.scrollHeight-b.scrollTop-b.clientHeight<4]);
+const open=[...document.querySelectorAll('#live details[open]')].map(x=>x.querySelector('summary')?.textContent);
 document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();
-document.querySelectorAll('#live .wide,#live .scroll').forEach((b,i)=>{if(kept[i]){b.scrollLeft=kept[i][0];b.scrollTop=kept[i][1]}});
+document.querySelectorAll(SCROLLS).forEach((b,i)=>{if(!kept[i])return;b.scrollLeft=kept[i][0];
+b.scrollTop=b.matches('pre.log')&&kept[i][2]?b.scrollHeight:kept[i][1]});
 document.querySelectorAll('#live details').forEach(x=>{if(open.includes(x.querySelector('summary')?.textContent))x.open=true});
 if(q||c){const f=document.querySelector('#filter');f.value=q||'';document.querySelector('#failed').checked=c;f.dispatchEvent(new Event('input'))}},2000);
 // how long ago the shown data was built, so that a live page visibly is one
