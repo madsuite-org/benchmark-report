@@ -557,6 +557,20 @@ def recent(q, n=30):
 WORKER = re.compile(r"worker (\d+): (\S+) (\S*) for (\d+) s, ([\d.]+) GB")
 
 
+def log_tail(path, lines=80, limit=1 << 20):
+    """The end of a job's log as safe text: terminal colours and carriage-return redraws taken out."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - limit))
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return None
+    text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+    text = "\n".join(line.rsplit("\r", 1)[-1] for line in text.split("\n"))
+    return "\n".join(text.rstrip("\n").split("\n")[-lines:])
+
+
 def workers_page(cfg, login, name):
     """What every worker of a run is on, read from its live folder when asked."""
     e = html.escape
@@ -592,6 +606,12 @@ def workers_page(cfg, login, name):
         body += (f'<h2>{e(machine.replace("_", " "))}</h2><p class="m">updated {age} s ago</p>' + "".join(notes)
                  + ('<div class="wide"><table class="table table-sm"><thead><tr><th>worker</th><th class="l">state</th><th class="l">instance</th>'
                     '<th>for (s)</th><th>memory (GB)</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>" if rows else ""))
+    # run.jl's own log once the run has one, else the job's, which also has the setup before it
+    for log, what in (("run.log", "the run's output: precompilation and the workers"), ("job.log", "the job's output: setup and the run")):
+        tail = log_tail(os.path.join(root, log))
+        if tail is not None:
+            body += f'<h2>Log</h2><p class="m">The last lines of {what}.</p><pre class="log">{e(tail)}</pre>'
+            break
     page = shell(cfg, login, f"Workers of {name}", body)
     # the page takes itself again, as the reports do
     return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace("</main></body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)

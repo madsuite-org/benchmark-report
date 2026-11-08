@@ -59,3 +59,4 @@ table.cases td.l,table.cases th.l{border-left:2px solid var(--line2)}
 .menu>div{position:absolute;right:0;top:calc(100% + 6px);z-index:5;min-width:12em;background:var(--card);border:1px solid var(--line2);border-radius:6px;padding:4px 0;box-shadow:0 4px 14px rgba(0,0,0,.15)}
 .menu>div a,.menu>div button{display:block;width:100%;text-align:left;padding:6px 14px;color:var(--ink)!important;background:none;border:0;font:inherit}
 .menu>div a:hover,.menu>div button:hover{background:var(--hover);text-decoration:none}.menu>div form{margin:0}
+pre.log{max-height:60vh;overflow:auto;background:var(--card);border:1px solid var(--line2);border-radius:4px;padding:8px;font-size:12px;white-space:pre-wrap;word-break:break-all}

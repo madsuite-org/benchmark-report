@@ -538,6 +538,12 @@ class TestSite(Base):
         open(summary, "w").write("```\nstatus after 4 min: 6 of 9 instances done\n```\n")
         self.assertIn("6 of 9", self.get("/madnlp/pr-1/workers.html")[2])
         self.assertEqual(self.get("/madnlp/pr-9/workers.html")[0], 404)
+        open(os.path.join(live, "pr-1", "job.log"), "w").write("old\n" * 200 + "\x1b[32mPrecompiling\x1b[0m 3/9\r  9/9 <script>x</script>\n")
+        page = self.get("/madnlp/pr-1/workers.html")[2]
+        self.assertIn("9/9 &lt;script&gt;", page)
+        self.assertNotIn("3/9", page)          # the line as the terminal last showed it
+        self.assertNotIn("\x1b", page)
+        self.assertNotIn("<script>x", page)
         open(os.path.join(live, "pr-1", "run.json"), "w").write('{"state":"failed"}')
         self.assertIn("not running: it failed", self.get("/madnlp/pr-1/workers.html")[2])
 
