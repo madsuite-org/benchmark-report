@@ -960,7 +960,9 @@ def write_run_json(cfg, j):
     target = os.path.join(cfg.uploads, folder(j))
     os.makedirs(target, mode=0o755, exist_ok=True)
     hosts = sorted({v.get("host", "") for v in j.get("nodes", {}).values()} - {""})
-    title = (j.get("title") or folder(j)) + (f" ({', '.join(hosts)[:80]})" if hosts else "")
+    st = settings_of(j)
+    what = ", ".join(x for x in (st["devices"].replace("cuda", "GPU").replace("cpu", "CPU"), st["config"] if st["config"] != "default" else "", st["options"]) if x)
+    title = f"Job {j['id']}: {j.get('title') or folder(j)}, {what}" + (f" ({', '.join(hosts)[:80]})" if hosts else "")
     doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
     tmp = os.path.join(target, ".run.json")
     with open(tmp, "w") as f:

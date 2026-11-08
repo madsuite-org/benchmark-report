@@ -735,6 +735,7 @@ class TestServer(Base):
         doc = json.load(open(os.path.join(root, "run.json")))
         self.assertEqual((doc["state"], doc["commit"], doc["job"]), ("running", "9" * 40, job))
         self.assertIn("n1, n2", doc["title"])
+        self.assertTrue(doc["title"].startswith(f"Job {job}: master 99999999, GPU, tol=1e-6"), doc["title"])
         # a node gone silent (preempted) loses its claims
         self.assertEqual(claim("b", "w")[1]["todo"], ["default"])
         self.assertEqual(claim("a", "w")[1]["todo"], [])
