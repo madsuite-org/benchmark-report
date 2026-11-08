@@ -837,6 +837,17 @@ class TestSite(Base):
         import shutil; shutil.rmtree(os.path.join(self.cfg.site, "madnlp", "pr-7"))
         self.assertEqual(self.get("/madnlp/pr-7/")[1]["Location"], "/madnlp/pr-7-aaaaaaaa/")
 
+    def test_one_line_run_script(self):
+        code, headers, body = self.get("/queue/run.sh")
+        self.assertEqual(code, 200)
+        self.assertIn("runner/publish.sh", body)
+        self.assertIn("git clone -q https://github.com/madsuite-org/MadNLPBenchmark.jl", body)
+        path = os.path.join(self.dir, "run.sh"); open(path, "w").write(body)
+        self.assertEqual(subprocess.run(["bash", "-n", path]).returncode, 0)
+        page = self.get("/queue/new", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
+        self.assertIn("Run it on your own machine", page)
+        self.assertIn("/run.sh | bash -s --", page)
+
     def test_columns_from_the_app(self):
         import tomllib
         self.cfg.uploads = os.path.join(self.dir, "uploads"); os.makedirs(self.cfg.uploads)

@@ -1189,6 +1189,40 @@ def node_select(cfg):
     return f'<label class="form-label" for="node">Machine</label><select class="form-select mb-3" id="node" name="node">{options}</select>'
 
 
+def run_script(cfg):
+    """The script behind the one-line command that runs a benchmark on one's own machine: it gets
+    the harness and runs its runner/publish.sh, which uploads the results here as they come."""
+    site = cfg.base.rsplit("/queue", 1)[0]
+    return f"""#!/bin/bash
+# Benchmark MadNLP.jl on this machine and publish the results at {cfg.reports}/run-up-NAME/.
+#
+#     curl -fsSL {cfg.base}/run.sh | bash -s -- NAME [REV] [--devices=cpu|cuda|cpu,cuda] [--hsl=PATH] ...
+#
+# Needs julia, git, curl and tar, and a GitHub token of someone with write access to MadNLP.jl
+# (BENCHMARK_TOKEN, or `gh auth token`). The harness, MadNLPBenchmark.jl, goes to ./MadNLPBenchmark.jl
+# (BENCHMARK_HARNESS_DIR); its runner/publish.sh lists every option.
+set -eu
+dir=${{BENCHMARK_HARNESS_DIR:-$PWD/MadNLPBenchmark.jl}}
+if [ -d "$dir/.git" ]; then
+    git -C "$dir" pull -q --ff-only
+else
+    git clone -q https://github.com/madsuite-org/MadNLPBenchmark.jl "$dir"
+fi
+cd "$dir"
+exec env BENCHMARK_SITE={shlex.quote(site)} runner/publish.sh "$@"
+"""
+
+
+def run_card(cfg):
+    e = html.escape
+    return ('<div class="card mt-4"><div class="card-body"><h2 class="h5">Run it on your own machine</h2>'
+            '<p class="m">On any machine you can use, a cluster node included: it runs the benchmark there and publishes '
+            'the results here as they come, as a report of its own. It needs julia, git and a GitHub token with write access '
+            '(<code>gh auth login</code>, or <code>BENCHMARK_TOKEN</code>). Run CPU and GPU as two runs with their own names.</p>'
+            f'<pre class="log">curl -fsSL {e(cfg.base)}/run.sh | bash -s -- my-run master --devices=cuda</pre>'
+            f'<p class="m">The report: <code>{e(cfg.reports)}/run-up-my-run/</code>. <a href="{e(cfg.base)}/run.sh">The script</a>.</p></div></div>')
+
+
 def new_page(cfg, q, login, message=""):
     e = html.escape
     csrf = sign(cfg, "csrf|" + login)
@@ -1219,7 +1253,7 @@ def new_page(cfg, q, login, message=""):
             '<p class="m">A pull request or branch runs its latest commit when the job starts, with the sets, configurations and limits '
             'of the benchmark. Only pull requests and branches of the repository can run, never a fork.</p>'
             '<button class="btn btn-primary">Queue the job</button></div></form>')
-    return shell(cfg, login, "New job", body, message)
+    return shell(cfg, login, "New job", body + run_card(cfg), message)
 
 
 def handler(cfg, q):
@@ -1455,6 +1489,8 @@ def handler(cfg, q):
                 return self.api("GET", path, b"")
             login = session(cfg, self.cookie("s"))
             member = bool(login) and q.permission(login) in WRITE
+            if path == "/queue/run.sh":
+                return self.send(200, run_script(cfg), kind="text/x-shellscript; charset=utf-8")
             if path == "/queue/version":
                 # which code this app runs, to tell when a deploy has reached it
                 return self.send(200, json.dumps({"commit": CODE_COMMIT}), kind="application/json")
