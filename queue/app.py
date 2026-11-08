@@ -946,9 +946,12 @@ def solved_already(cfg, j, device, set_name, case, configs):
                 continue
             if not re.search(rf'^device\s*=\s*"{re.escape(device)}"', meta, re.M):
                 continue
-            with open(path) as f:
-                if any(line.split(",", 1)[0] == case for line in f):
-                    done.add(c)
+            try:
+                with open(path) as f:       # the metadata can come before the first row
+                    if any(line.split(",", 1)[0] == case for line in f):
+                        done.add(c)
+            except OSError:
+                continue
     return done
 
 

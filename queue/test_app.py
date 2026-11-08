@@ -710,7 +710,10 @@ class TestServer(Base):
                                          {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})
             return code, json.loads(data)
         self.assertEqual(claim("a", "x", tok="nope")[0], 401)
+        # a node's metadata before its first row
+        send("c", {"Other/acopf_default.csv.meta.toml": 'device = "cuda"\n'})
         self.assertEqual(claim("a", "x")[1]["todo"], ["default"])
+        self.assertEqual(claim("b", "x")[1]["todo"], [])
         self.assertEqual(claim("b", "x")[1]["todo"], [])          # node a holds it
         self.assertEqual(claim("a", "x")[1]["todo"], ["default"])  # a, back after preemption, keeps it
         meta = 'device = "cuda"\n'
@@ -737,7 +740,8 @@ class TestServer(Base):
         self.assertEqual(claim("a", "w")[1]["todo"], [])
         self.q.beats[(job, "b")] = 0
         self.assertEqual(claim("a", "w")[1]["todo"], ["default"])
-        # the job ends when every node still there has finished
+        # the job ends when every node still there has finished (c went quiet)
+        self.q.beats[(job, "c")] = 0
         send("a", {}, state="finished")
         self.assertEqual(self.q.data["jobs"][-1]["state"], "finished")
         self.assertIn("external: n1, n2", app.machine_of(self.q.data["jobs"][-1]))
