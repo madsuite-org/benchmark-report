@@ -24,6 +24,11 @@ its own sandboxed process instead, and the app only reads its directory.
 
 ## Where jobs run
 
+Each machine in `QUEUE_NODES` (a JSON list of `{"name", "remote", "live"}`) has its own lane: one
+job at a time on each, all at once across them. A job may name its machine (`node` in the API, or
+the form's Machine); otherwise the first free machine takes it. Two jobs never write the same report
+folder at once. Results are kept per machine, so comparisons only ever use the same machine.
+
 With `QUEUE_REMOTE` set, the app runs the jobs itself: one at a time, it starts each on that host
 over SSH (`local` for the machine it runs on), with `QUEUE_REMOTE_START` and `QUEUE_REMOTE_STOP`
 (by default the sudo wrappers of the benchmark machine) and the live folder under `QUEUE_LIVE`.
@@ -49,6 +54,7 @@ with `Content-Type: application/json`.
 | `POST /queue/api/jobs` `{"master": true}` | queue master at its latest commit |
 | `POST /queue/api/jobs` `{"branch": "name"}` | queue a branch of the repository, at its head when it starts |
 | `POST /queue/api/jobs` `{"commit": "sha"}` | queue a commit in master's history |
+| any of these with `"node": "001"` | run it on that machine only |
 | `POST /queue/api/jobs/<id>/cancel` | cancel a job you queued, or any as an admin |
 | `GET /queue/api/pulls` | the open pull requests that can be benchmarked |
 | `POST /queue/api/pulls/<n>/update` `{"keep": true}` | run a pull request again at its latest commit, first |

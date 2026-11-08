@@ -45,6 +45,12 @@ class Config:
         # whether a push to master queues a run of it; off: master runs only when someone queues it
         self.auto_master = env.get("QUEUE_AUTO_MASTER", "") == "1"
         self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")
+        # The machines that run jobs, each with its own lane: a JSON list of {"name", "remote", "live"}.
+        # Without it, the one machine of QUEUE_REMOTE, named QUEUE_NODE_NAME.
+        nodes = json.loads(env.get("QUEUE_NODES", "") or "[]")
+        if not nodes and self.remote:
+            nodes = [{"name": env.get("QUEUE_NODE_NAME", "005"), "remote": self.remote, "live": self.live}]
+        self.nodes = [{"name": str(n["name"]), "remote": str(n["remote"]), "live": str(n.get("live", self.live))} for n in nodes]
         # the harness's list of configurations and options (configs.toml), to check a job's before it runs
         self.harness_configs = env.get("QUEUE_HARNESS_CONFIGS", "")
         # where uploaded results become reports: a directory whose run-up-* folders the builder sees
@@ -307,6 +313,13 @@ class Queue:
                 self.data["next"] += 1
             self.save()
 
+    def place(self, job, node):
+        """Ask for a machine for a waiting job, or any machine with an empty name."""
+        with self.changed:
+            job["node"] = node or None
+            self.save()
+        return job
+
     def update(self, pr, login, keep):
         """Run pull request `pr` again at its head: in place of its waiting or running job, keeping
         the results so far or starting over. A running job is stopped, and the new one goes first."""
@@ -350,14 +363,20 @@ class Queue:
             except urllib.error.HTTPError:
                 pass
 
-    def take(self):
-        """The job the runner should work on: the running one, else the next waiting one, master first."""
+    def take(self, node=None):
+        """The job a machine should work on: its running one, else the next waiting one it may take,
+        master first. A job asked for on one machine waits for that machine; and a job never starts
+        while another job writes the same report folder."""
+        first = self.cfg.nodes[0]["name"] if self.cfg.nodes else None
+        mine = lambda j: node is None or (j.get("node") or first) == node
         with self.changed:
-            running = self.jobs("running")
+            running = [j for j in self.jobs("running") if mine(j)]
             if running:
                 return running[0]
             while True:
-                waiting = sorted(self.jobs("waiting"), key=order)
+                busy = {folder({**j, "sha": j.get("sha") or "0" * 40}) for j in self.jobs("running")}
+                waiting = [j for j in sorted(self.jobs("waiting"), key=order)
+                           if (node is None or j.get("node") in (None, "", node)) and folder({**j, "sha": j.get("sha") or "0" * 40}) not in busy]
                 if not waiting:
                     return None
                 job = waiting[0]
@@ -377,6 +396,8 @@ class Queue:
                         self.save()
                         continue
                 job["state"], job["started"] = "running", int(time.time())
+                if node is not None:
+                    job["node"] = node
                 self.save()
                 break
         self.status(job, "pending", "Benchmark running")
@@ -404,7 +425,7 @@ def order(job):
 
 def public(cfg, j):
     """A job as the API gives it."""
-    out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note", "cancelled_by", "cancelled_at")}
+    out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note", "cancelled_by", "cancelled_at", "node")}
     out |= settings_of(j) | {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
             "report": f"{cfg.reports}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
     return out
@@ -426,20 +447,21 @@ def folder(job):
 
 
 class Dispatcher:
-    """Runs the queue's jobs on `cfg.remote`, one at a time, as the runner of the machine would."""
+    """Runs the queue's jobs on one machine, one at a time, as the runner of the machine would."""
 
-    def __init__(self, cfg, q):
+    def __init__(self, cfg, q, node=None):
         self.cfg, self.q = cfg, q
+        self.node = node or {"name": None, "remote": cfg.remote, "live": cfg.live}
 
     def command(self, words):
-        if self.cfg.remote == "local":
+        if self.node["remote"] == "local":
             return words
         # ssh joins its arguments into one line for the remote shell, so each is quoted
-        return ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60", self.cfg.remote, shlex.join(words)]
+        return ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60", self.node["remote"], shlex.join(words)]
 
     def run(self, job):
         unit = f"benchjob-{job['id']}"
-        live = os.path.join(self.cfg.live, folder(job))
+        live = os.path.join(self.node["live"], folder(job))
         # the machine's own start command takes care of everything around the job there, its
         # preemption of other work included
         # stdin stays open for the whole job: the machine stops the job when it closes, so a lost
@@ -490,8 +512,12 @@ class Dispatcher:
     def serve(self):
         while True:
             self.q.wait(lambda: self.q.jobs("running") or self.q.jobs("waiting"), 3600)
-            job = self.q.take()
-            if job and self.run(job) == "busy":
+            job = self.q.take(self.node["name"])
+            if job is None:
+                # nothing this machine may take now: wait for the queue to change
+                self.q.wait(lambda: False, 30)
+                continue
+            if self.run(job) == "busy":
                 time.sleep(60)
 
 
@@ -888,7 +914,7 @@ def job_page(cfg, q, login, j):
             f'https://github.com/{cfg.repo}/pull/{j["pr"]}' if j["kind"] == "pr" else f'https://github.com/{cfg.repo}/commits/master')
     rows = [("Run", f'<a href="{link}">{e(name(cfg, j))}</a> {e(j.get("title", ""))}'), ("State", badge(j, cfg) + (f' {e(j["note"])}' if j.get("note") else "")),
             ("Commit", f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}"><code>{j["sha"][:8]}</code></a>' if j.get("sha") else "resolved when it starts"),
-            ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
+            ("Machine", e(j.get("node") or "any free")), ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
             ("Results", "keep the results so far" if j.get("keep", True) else "start over")]
     st = settings_of(j)
     if st != DEFAULTS:
@@ -912,6 +938,13 @@ def configs_list(cfg):
     return '<datalist id="configs">' + "".join(f'<option value="{html.escape(n)}">' for n in names) + "</datalist>"
 
 
+def node_select(cfg):
+    if len(cfg.nodes) < 2:
+        return ""
+    options = '<option value="">Any free machine</option>' + "".join(f'<option value="{html.escape(n["name"])}">{html.escape(n["name"])}</option>' for n in cfg.nodes)
+    return f'<label class="form-label" for="node">Machine</label><select class="form-select mb-3" id="node" name="node">{options}</select>'
+
+
 def new_page(cfg, q, login, message=""):
     e = html.escape
     csrf = sign(cfg, "csrf|" + login)
@@ -923,7 +956,7 @@ def new_page(cfg, q, login, message=""):
             f'<label class="form-label" for="what">What to benchmark</label><select class="form-select mb-2" id="what" name="what">{options}</select>'
             '<input class="form-control mb-3" name="ref" placeholder="Branch name, or a commit in master\'s history" '
             'aria-label="Branch or commit, if chosen above">'
-            '<label class="form-label" for="devices">Run on</label><select class="form-select mb-3" id="devices" name="devices">'
+            f'{node_select(cfg)}<label class="form-label" for="devices">Run on</label><select class="form-select mb-3" id="devices" name="devices">'
             '<option value="cpu,cuda">CPU and GPU</option><option value="cpu">CPU only</option><option value="cuda">GPU only</option></select>'
             '<details class="mb-3"><summary>More settings: configuration, options, harness</summary><div class="mt-2">'
             '<label class="form-label" for="config">Configuration</label>'
@@ -975,7 +1008,7 @@ def handler(cfg, q):
             self.send(303, "", [("Location", to), *headers])
 
         def runner(self):
-            if cfg.remote:
+            if cfg.nodes:
                 return False   # this app runs the jobs itself, so no runner may take one
             got = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
             return bool(cfg.runner_hash) and hmac.compare_digest(hashlib.sha256(got.encode()).hexdigest(), cfg.runner_hash)
@@ -1056,7 +1089,7 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
-                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", *DEFAULTS})
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", *DEFAULTS})
                 if unknown:
                     # a field this app does not know would otherwise be ignored without a word
                     return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
@@ -1065,21 +1098,24 @@ def handler(cfg, q):
                 problem = settings_problem(cfg, settings)
                 if problem:
                     return reply(400, {"error": problem})
+                node = str(data.get("node") or "")
+                if node and node not in [n["name"] for n in cfg.nodes]:
+                    return reply(400, {"error": "Unknown machine; it is one of " + ", ".join(n["name"] for n in cfg.nodes) + "."})
                 if data.get("master"):
                     try:
-                        return reply(201, public(cfg, q.add_master_now(login, settings)))
+                        return reply(201, public(cfg, q.place(q.add_master_now(login, settings), node)))
                     except ValueError as err:
                         return reply(400, {"error": str(err)})
                 if isinstance(data.get("branch") or data.get("commit"), str):
                     job, problem = q.add_ref(data.get("branch") or data.get("commit"), login, keep, settings)
-                    return reply(400, {"error": problem}) if problem else reply(201, public(cfg, job))
+                    return reply(400, {"error": problem}) if problem else reply(201, public(cfg, q.place(job, node)))
                 pr = data.get("pr")
                 if not isinstance(pr, int) or pr <= 0:
                     return reply(400, {"error": 'Give {"pr": <number>}, {"branch": "<name>"}, {"commit": "<sha>"} or {"master": true}.'})
                 problem = q.add_pr(pr, login, keep, settings)
                 if problem:
                     return reply(400, {"error": problem})
-                return reply(201, public(cfg, [j for j in q.jobs("waiting") if j.get("pr") == pr][-1]))
+                return reply(201, public(cfg, q.place([j for j in q.jobs("waiting") if j.get("pr") == pr][-1], node)))
             if len(parts) == 2 and parts[0] == "jobs" and method == "GET":
                 j = find(parts[1])
                 return reply(200, public(cfg, j)) if j else reply(404, {"error": "There is no such job."})
@@ -1242,22 +1278,29 @@ def handler(cfg, q):
                 return self.send(400, jobs_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
             if self.path == "/queue/new":
                 what, keep = get("what"), get("keep") != "0"
+                node = get("node")
+                if node and node not in [n["name"] for n in cfg.nodes]:
+                    return self.send(400, new_page(cfg, q, login, "Unknown machine."))
                 settings = {k: get(k).strip() or DEFAULTS[k] for k in DEFAULTS}
                 problem = settings_problem(cfg, settings)
                 if problem:
                     return self.send(400, new_page(cfg, q, login, problem))
                 if what == "master":
                     try:
-                        q.add_master_now(login, settings)
+                        q.place(q.add_master_now(login, settings), node)
                     except ValueError as err:
                         return self.send(400, new_page(cfg, q, login, str(err)))
                     return self.redirect(cfg.base + "/")
                 if what == "ref":
-                    _, problem = q.add_ref(get("ref"), login, keep, settings)
+                    job, problem = q.add_ref(get("ref"), login, keep, settings)
+                    if job:
+                        q.place(job, node)
                     return self.send(400, new_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
                 if not what.isdigit():
                     return self.send(400, new_page(cfg, q, login, "Choose what to benchmark."))
                 problem = q.add_pr(int(what), login, keep, settings)
+                if not problem:
+                    q.place([j for j in q.jobs("waiting") if j.get("pr") == int(what)][-1], node)
                 return self.send(400, new_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
             if self.path == "/queue/update":
                 pr = get("pr")
@@ -1278,8 +1321,8 @@ def handler(cfg, q):
 if __name__ == "__main__":
     cfg = Config()
     q = Queue(cfg, GitHub(cfg))
-    if cfg.remote:
-        threading.Thread(target=Dispatcher(cfg, q).serve, daemon=True).start()
+    for node in cfg.nodes:
+        threading.Thread(target=Dispatcher(cfg, q, node).serve, daemon=True).start()
     if cfg.builder:
         threading.Thread(target=Builder(cfg).serve, daemon=True).start()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port), handler(cfg, q))

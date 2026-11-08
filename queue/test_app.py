@@ -194,6 +194,23 @@ class TestQueue(Base):
         with self.assertRaises(ValueError):
             self.q.add_master_now("alice", {"config": "a;b"})
 
+    def test_machines_have_lanes(self):
+        self.cfg.nodes = [{"name": "005", "remote": "local", "live": "/l"}, {"name": "001", "remote": "local", "live": "/l"}]
+        self.gh.pulls[8] = ("open", REPO, "b" * 40, "Eight")
+        self.q.add_pr(7, "alice"); self.q.place(self.q.jobs("waiting")[-1], "001")
+        self.q.add_pr(8, "alice")
+        a = self.q.take("005")
+        self.assertEqual((a["pr"], a["node"]), (8, "005"))          # 7 waits for 001
+        b = self.q.take("001")
+        self.assertEqual((b["pr"], b["node"]), (7, "001"))
+        self.assertIs(self.q.take("005"), a)                        # each machine's own running job
+        # a job never starts while another writes the same report folder
+        self.q.add_pr(8, "alice", settings={"devices": "cpu"})
+        self.q.report(b["id"], "finished")
+        self.assertIsNone(self.q.take("001"))
+        self.q.report(a["id"], "finished")
+        self.assertEqual(self.q.take("001")["pr"], 8)
+
     def test_state_survives_a_restart(self):
         self.q.add_pr(7, "alice")
         again = app.Queue(self.cfg, self.gh)
@@ -340,7 +357,7 @@ class TestDispatcher(Base):
         self.assertEqual(self.d.run(self.q.take()), "finished")
 
     def test_ssh_quotes_each_word(self):
-        self.cfg.remote = "node"
+        self.d.node["remote"] = "node"
         cmd = self.d.command(["sudo", "-n", "x", "a b", "$(rm -rf /)"])
         self.assertEqual(cmd[:-1], ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=60", "node"])
         import shlex
@@ -490,6 +507,7 @@ class TestServer(Base):
         self.assertEqual((code, job["pr"], job["state"], job["keep"], job["by"]), (201, 7, "waiting", False, "alice"))
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": 8}, token="tok-alice")[0], 400)   # a fork
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": "7"}, token="tok-alice")[0], 400)
+        self.assertIn("Unknown machine", self.call_api("POST", "/queue/api/jobs", {"pr": 7, "node": "999"}, token="tok-alice")[1]["error"])
         self.assertIn("Unknown fields: harnes", self.call_api("POST", "/queue/api/jobs", {"pr": 7, "harnes": "x"}, token="tok-alice")[1]["error"])
         code, master = self.call_api("POST", "/queue/api/jobs", {"master": True}, token="tok-alice")
         self.assertEqual((code, master["sha"]), (201, "9" * 40))
