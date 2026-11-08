@@ -169,6 +169,11 @@ function banner(home, trail, line = "", menus = "")
 end
 state_badge(state) = "<span class=\"state $(state == "running" ? "on" : "off")\">$(escape_html(state))</span>"
 
+# A run that says it is running but has not written for an hour has stopped without saying so (its
+# job was killed): the list says stalled rather than running.
+const STALLED_AFTER = 3600.0
+shown_state(r) = r.state == "running" && hasproperty(r, :mtime) && time() - r.mtime > STALLED_AFTER ? "stalled" : r.state
+
 # Every page has the same shell, and shares `style.css` and `report.js` at `assets`.
 function page(path, title, content, bar; refresh = false, assets = ".")
     tmp = path * ".tmp"
@@ -562,12 +567,12 @@ function write_index(site, runs; repository)
         println(io, "<h2>", title, "</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
         for r in (sorted ? sort(selected; by = r -> r.updated, rev = true) : selected)
             commit = occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">$(first(r.commit, 8))</a>" : escape_html(first(r.commit, 8))
-            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(r.state), "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
+            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(shown_state(r)), "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
         end
         return println(io, "</tbody></table></div>")
     end
     prs = [r for r in runs if !isempty(r.pr)]
-    running, finished = [r for r in prs if r.state == "running"], [r for r in prs if r.state != "running"]
+    running, finished = [r for r in prs if shown_state(r) == "running"], [r for r in prs if shown_state(r) != "running"]
     # one list of every report, running ones first; the jobs that make them are on the same page
     run_table("Reports", vcat(sort(running; by = r -> r.updated, rev = true), sort(finished; by = r -> r.updated, rev = true)); sorted = false)
     run_table("Manual runs", [r for r in runs if isempty(r.pr)])

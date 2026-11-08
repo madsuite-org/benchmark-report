@@ -158,6 +158,12 @@ end
     end
 end
 
+@testset "a run that stopped writing long ago is listed as stalled" begin
+    @test BenchmarkReport.shown_state((; state = "running", mtime = time() - 7200)) == "stalled"
+    @test BenchmarkReport.shown_state((; state = "running", mtime = time() - 60)) == "running"
+    @test BenchmarkReport.shown_state((; state = "finished", mtime = time() - 7200)) == "finished"
+end
+
 @testset "a device that has not run a set counts none of it" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
