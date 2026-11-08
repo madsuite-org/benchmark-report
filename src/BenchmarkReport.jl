@@ -273,6 +273,8 @@ function ipopt_reference(version)
         log = match(r"/logs/([a-z]+)/(.*)__ipopt\.txt$", path)
         log === nothing || (rs.logs[("cpu", log[1], log[2], "ipopt")] = String(path))
     end
+    # an older reference may not record its version: it is the one it is filed under
+    foreach(k -> rs.harness[k] == "–" && (rs.harness[k] = version), collect(keys(rs.harness)))
     return isempty(rs.rows) ? nothing : rs
 end
 

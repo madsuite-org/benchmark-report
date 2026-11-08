@@ -277,14 +277,14 @@ end
         origin, clone, _ = archive_clone(root)
         to = mkpath(joinpath(origin, "ipopt", "0.1.0"))
         cp(joinpath(root, "machine", "smoke_default.csv"), joinpath(to, "smoke_ipopt.csv"))
-        write(joinpath(to, "smoke_ipopt.csv.meta.toml"), replace(read(joinpath(root, "machine", "smoke_default.csv.meta.toml"), String), "device = \"cuda\"" => "device = \"cpu\"") * "benchmark_version = \"0.1.0\"\n")
+        write(joinpath(to, "smoke_ipopt.csv.meta.toml"), replace(read(joinpath(root, "machine", "smoke_default.csv.meta.toml"), String), "device = \"cuda\"" => "device = \"cpu\"") * "")
         run(`git -C $origin add -A`)
         run(`git -C $origin -c user.name=x -c user.email=x@x commit -q -m ipopt`)
         run(`git -C $clone fetch -q origin`)
         BenchmarkReport.REPOSITORY[] = clone
         BenchmarkReport.FETCH[] = false
         @test BenchmarkReport.ipopt_reference("0.1.0") !== nothing
-        @test BenchmarkReport.ipopt_reference("0.2.0") !== nothing      # the newest earlier one
+        @test only(values(BenchmarkReport.ipopt_reference("0.2.0").harness)) == "0.1.0"   # the newest earlier one, named
         @test BenchmarkReport.ipopt_reference("0.0.9") === nothing      # never a later one
     end
 end
