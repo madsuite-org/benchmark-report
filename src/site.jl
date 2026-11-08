@@ -144,10 +144,11 @@ function set_titles!(sides, cand, base, code)
     for s in sides
         rev = get((s.base ? base : cand).revs, s.key, "")
         short = something(match(r"([0-9a-f]{8})[0-9a-f]*$", rev), match(r"^(.*)$", rev))[1]
-        isempty(short) && continue
+        name = haskey(COLUMN_REPORTS, s.label) ? "<a href=\"../$(escape_html(COLUMN_REPORTS[s.label]))/\">$(escape_html(s.label))</a>" : escape_html(s.label)
+        isempty(short) && (TITLES[s.label] = name; continue)
         link = occursin(r"^[0-9a-f]{8}$", short) && code !== nothing ? "<a href=\"$code/commit/$short\">$short</a>" : escape_html(short)
         # one name across devices: a label whose devices ran different things lists them
-        TITLES[s.label] = haskey(TITLES, s.label) && !occursin(link, TITLES[s.label]) ? TITLES[s.label] * ", " * link : escape_html(s.label) * " " * link
+        TITLES[s.label] = haskey(TITLES, s.label) && !occursin(link, TITLES[s.label]) ? TITLES[s.label] * ", " * link : name * " " * link
     end
     return
 end
@@ -167,15 +168,15 @@ function device_profile(io, set, device, sides, cand, base, wall)
     n > 0 || return
     println(io, "<div class=\"profiles\">")
     for (name, value) in PROFILE_METRICS
-        # a run on another machine shows in the iterations, never in the times
-        use = name == "Wall time" ? [i for i in kept if !untimed(sides[i].label)] : kept
+        # a run on another machine is shown in the times too, marked (Sungho)
+        use = kept
         length(use) < 2 && continue
         _, ratios = profile(rows[use], value)
         println(io, "<div class=\"prof\"><p><b>", name, "</b></p>")
         profile_svg(io, "$name profile of $set on $device", sides[use], n, ratios)
         println(io, "</div>")
     end
-    any(i -> untimed(sides[i].label), kept) && println(io, "<p class=\"m\">† ran on another machine: its solves and iterations compare, its times do not.</p>")
+    any(i -> untimed(sides[i].label), kept) && println(io, "<p class=\"m\">† ran on another machine: its times are of different hardware.</p>")
     println(io, "</div>")
     return
 end
@@ -276,11 +277,11 @@ function summary_table(io, blocks, sides, cand, base, wall)
         isempty(cases) && continue
         means = Dict(l => sgm([score_time(here[l][c], device_wall(device, wall)) for c in cases]) + 10 for l in have)
         # Ipopt is the reference where it has run, else the best solver
-        scale = haskey(means, "Ipopt") ? means["Ipopt"] : minimum(v for (l, v) in means if !untimed(l); init = minimum(values(means)))
+        scale = haskey(means, "Ipopt") ? means["Ipopt"] : minimum(values(means))
         print(io, "<tr><td><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a></td><td class=\"l\">$(device_tag(device))</td><td>$(all(==("Ipopt"), have) ? 0 : length(cases))/$(set_size(cand, base, set))</td>")
         for l in labels
             if l in have
-                untimed(l) ? @printf(io, "<td class=\"g\">%d</td><td>–</td><td>–</td>", count(c -> solved(here[l][c]), cases)) :
+                # a column of other hardware (†) is computed all the same; its name says so
                 @printf(io, "<td class=\"g\">%d</td><td>%.2f</td><td>%.3g</td>", count(c -> solved(here[l][c]), cases), means[l] - 10, means[l] / scale)
             else
                 print(io, "<td class=\"g\"></td><td></td><td></td>")
@@ -566,7 +567,8 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
                 ", as benchmark ", escape_html(join(own_versions, ", ")), " has none yet: compare with care.</p>")
     end
     println(io, "<p class=\"m\">Benchmark ", escape_html(join(versions, ", ")), ": the version fixes the instances, the options, Ipopt and HSL.</p>")
-    base === nothing || println(io, "<p class=\"m\">Base: ", escape_html(base.label), "</p>")
+    # the runs the base names link to their reports
+    base === nothing || isempty(base.label) || println(io, "<p class=\"m\">Base: ", replace(escape_html(base.label), r"\b(run-[a-z0-9-]+|pr-\d+(?:-[0-9a-f]{8})?|master-[0-9a-f]{8})\b" => m -> "<a href=\"../$m/\">$m</a>"), "</p>")
     println(io, "<p class=\"m\">SGM: shifted geometric mean of the solve time, with a shift of 10 s and a failure counting as the time limit of a solve (CPU ", round(Int, walls["cpu"]), " s, GPU ", round(Int, walls["cuda"]), " s, for every solver on those pages), over the problems that all solvers shown have run. SSGM: the SGM scaled so that Ipopt, or the best solver where Ipopt has not run, is 1.</p>")
     page(joinpath(site, "index.html"), title, String(take!(io)), bar; refresh = live, assets)
     # for a check outside this machine that the report is alive

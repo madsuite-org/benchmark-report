@@ -482,8 +482,11 @@ end
             reset_runs()
             BenchmarkReport.build_all(live, site)
             page = read(joinpath(site, "run-new", "cuda-smoke.html"), String)
-            @test occursin("run-old (005) †", page)
-            @test occursin("its times do not", page)
+            @test occursin("<a href=\"../run-old/\">run-old (005) †</a>", page)   # linked to its report
+            @test occursin("its times are of different hardware", page)
+            # its SGM and SSGM are shown all the same
+            summary = read(joinpath(site, "run-new", "index.html"), String)
+            @test !occursin("<td>–</td><td>–</td>", summary)
             @test !occursin("run-old (005) †", read(joinpath(site, "run-old", "index.html"), String))   # only where asked
             # columns chosen in the app, in the uploads root, come on top
             uploads = mkpath(joinpath(root, "uploads"))

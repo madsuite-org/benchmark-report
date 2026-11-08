@@ -107,7 +107,11 @@ function comparisons_of(name)
     return entry
 end
 
+# The report of each column that is another run, by the column's label, for links.
+const COLUMN_REPORTS = Dict{String, String}()
+
 function with_comparisons(base, live, name)
+    empty!(COLUMN_REPORTS)
     entry = comparisons_of(name)
     others, names = get(entry, "with", String[]), get(entry, "names", String[])
     isempty(others) && return base
@@ -126,6 +130,7 @@ function with_comparisons(base, live, name)
         # the same machine only if its hardware is the same as this run's
         same = host == host_of(own) && Set(Iterators.flatten(values(rs.machines))) == Set(Iterators.flatten(values(own.machines)))
         label = label * (isempty(host) ? "" : " ($host)") * (same ? "" : " †")
+        COLUMN_REPORTS[label] = other          # the column's name links to its report
         base === nothing && (base = ResultSet(""))
         for ((device, set, config), rows) in rs.rows
             base.rows[(device, set, "cmp:$label:$config")] = rows
