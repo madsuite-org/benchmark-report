@@ -604,8 +604,24 @@ def badge(j, cfg=None):
     return f'<span class="badge text-bg-{STATE_BADGE.get(j["state"], "secondary")}">{html.escape(state)}</span>'
 
 
+def describe(j):
+    """What a job runs besides its commit: its harness, configuration, options and devices."""
+    st, out = settings_of(j), []
+    if st["harness"]:
+        out.append(f"harness {st['harness']}")
+    if st["config"] != "default":
+        out.append(st["config"])
+    if st["options"]:
+        out.append(st["options"])
+    if st["devices"] != DEFAULTS["devices"]:
+        out.append({"cpu": "CPU only", "cuda": "GPU only"}[st["devices"]])
+    return ", ".join(out)
+
+
 def name(cfg, j):
-    return {"pr": f'#{j["pr"]}', "branch": j.get("ref", ""), "commit": (j.get("sha") or j.get("ref", ""))[:8]}.get(j["kind"], "master")
+    base = {"pr": f'#{j["pr"]}', "branch": j.get("ref", ""), "commit": (j.get("sha") or j.get("ref", ""))[:8]}.get(j["kind"], "master")
+    # an experiment is named by what it tries, then what it runs on
+    return f"{describe(j)} on {base}" if describe(j) else base
 
 
 def when(t):

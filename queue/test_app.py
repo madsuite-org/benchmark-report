@@ -181,6 +181,7 @@ class TestQueue(Base):
         self.assertTrue(re.fullmatch(r"run-custom-[0-9a-f]{6}-pr7", f), f)
         job, problem = self.q.add_ref("feature/x", "alice", settings={"harness": "shifted-cholmod-experiment", "devices": "cpu"})
         self.assertTrue(re.fullmatch(r"run-shifted-cholmod-[0-9a-f]{6}-feature-x", app.folder(job)), app.folder(job))
+        self.assertEqual(app.name(self.cfg, job), "harness shifted-cholmod-experiment, CPU only on feature/x")
         m = self.q.add_master_now("alice", {"config": "ipopt", "devices": "cpu"})
         self.assertEqual((m["kind"], app.folder(m)[:4]), ("commit", "run-"))    # never taken for master's results
         with self.assertRaises(ValueError):
