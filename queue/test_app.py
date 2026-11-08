@@ -3,7 +3,7 @@
     python3 -m unittest discover -s queue
 """
 
-import hashlib, hmac, http.client, http.server, json, os, subprocess, sys, tempfile, threading, time, unittest, urllib.error, urllib.parse
+import hashlib, hmac, http.client, http.server, json, os, re, subprocess, sys, tempfile, threading, time, unittest, urllib.error, urllib.parse
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -157,6 +157,35 @@ class TestQueue(Base):
         started = self.q.take()
         self.assertEqual((started["kind"], started["sha"]), ("branch", "e" * 40))
 
+    def test_settings(self):
+        bad = [{"config": "a;b"}, {"devices": "gpu"}, {"harness": "../x"}, {"harness": "-x"}, {"options": "tol='1'"},
+               {"options": "tol=1,tol=2"}, {"options": "tol"}, {"options": "x" * 301}]
+        for b in bad:
+            self.assertIsNotNone(app.settings_problem(self.cfg, {**app.DEFAULTS, **b}), b)
+        self.assertIsNone(app.settings_problem(self.cfg, {**app.DEFAULTS, "options": "tol=1e-6,max_iter=5", "harness": "exp/x", "devices": "cpu"}))
+        # with the harness's list: names checked, unless a harness branch may bring its own
+        path = os.path.join(self.dir, "configs.toml")
+        open(path, "w").write('[configurations.cpu]\nnames = ["default", "ipopt"]\n[options]\nmadnlp = ["tol"]\n[options.linear_solver]\nMumpsSolver = ["mumps_pivtol"]\n')
+        self.cfg.harness_configs = path
+        self.assertIsNone(app.settings_problem(self.cfg, {**app.DEFAULTS, "config": "ipopt", "options": "tol=1e-6,mumps_pivtol=0.1"}))
+        self.assertIn("no configuration", app.settings_problem(self.cfg, {**app.DEFAULTS, "config": "nope"}))
+        self.assertIn("Unknown options: linear_solver", app.settings_problem(self.cfg, {**app.DEFAULTS, "options": "linear_solver=X"}))
+        self.assertIsNone(app.settings_problem(self.cfg, {**app.DEFAULTS, "options": "linear_solver=X", "harness": "exp"}))
+
+    def test_jobs_with_settings_get_reports_of_their_own(self):
+        self.q.add_pr(7, "alice")
+        self.assertIsNone(self.q.add_pr(7, "alice", settings={"options": "tol=1e-6"}))   # another job, not a duplicate
+        plain, custom = self.q.jobs("waiting")
+        self.assertEqual(app.folder({**plain, "sha": "a" * 40}), "pr-7")
+        f = app.folder({**custom, "sha": "a" * 40})
+        self.assertTrue(re.fullmatch(r"run-custom-[0-9a-f]{6}-pr7", f), f)
+        job, problem = self.q.add_ref("feature/x", "alice", settings={"harness": "shifted-cholmod-experiment", "devices": "cpu"})
+        self.assertTrue(re.fullmatch(r"run-shifted-cholmod-[0-9a-f]{6}-feature-x", app.folder(job)), app.folder(job))
+        m = self.q.add_master_now("alice", {"config": "ipopt", "devices": "cpu"})
+        self.assertEqual((m["kind"], app.folder(m)[:4]), ("commit", "run-"))    # never taken for master's results
+        with self.assertRaises(ValueError):
+            self.q.add_master_now("alice", {"config": "a;b"})
+
     def test_state_survives_a_restart(self):
         self.q.add_pr(7, "alice")
         again = app.Queue(self.cfg, self.gh)
@@ -271,6 +300,14 @@ class TestDispatcher(Base):
         self.assertEqual(self.d.run(job), "finished")
         starts = [l for l in open(self.log).read().splitlines() if l.startswith("start")]
         self.assertEqual([l.rsplit(" ", 1)[1] for l in starts], ["fresh", "keep"])   # fresh the first time only
+
+    def test_a_job_with_settings_runs_as_its_branch(self):
+        self.q.add_pr(7, "alice", settings={"options": "tol=1e-6", "devices": "cpu"})
+        job = self.q.take()
+        self.d.run(job)
+        start = [l for l in open(self.log).read().splitlines() if l.startswith("start")][0]
+        self.assertEqual(start, f"start benchjob-{job['id']} /live/{app.folder(job)} {'a' * 40} branch  keep default tol=1e-6  cpu")
+        self.assertTrue(app.folder(job).startswith("run-custom-"))
 
     def test_ssh_quotes_each_word(self):
         self.cfg.remote = "node"

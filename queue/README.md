@@ -53,7 +53,12 @@ with `Content-Type: application/json`.
 | `GET /queue/api/pulls` | the open pull requests that can be benchmarked |
 | `POST /queue/api/pulls/<n>/update` `{"keep": true}` | run a pull request again at its latest commit, first |
 
-A job has `id, kind, pr, ref, sha, title, by, state, queued, started, ended, keep, cancelling, url,
+Each of these may also give `config` (a configuration of the harness, `default`), `options`
+(`name=value,...`, extra MadNLP options), `harness` (a branch of MadNLPBenchmark.jl, for an
+experiment) and `devices` (`cpu`, `cuda` or `cpu,cuda`). A job with other settings than these
+defaults gets a report of its own, never mixed with the standard runs.
+
+A job has `config, options, harness, devices, id, kind, pr, ref, sha, title, by, state, queued, started, ended, keep, cancelling, url,
 report`; `state` is `waiting`, `running`, `finished`, `failed`, `cancelled` or `skipped`.
 
 ```sh

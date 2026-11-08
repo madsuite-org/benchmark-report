@@ -44,7 +44,9 @@ class Config:
         self.remote_stop = shlex.split(env.get("QUEUE_REMOTE_STOP", "sudo -n /usr/local/sbin/benchjob-stop"))
         # whether a push to master queues a run of it; off: master runs only when someone queues it
         self.auto_master = env.get("QUEUE_AUTO_MASTER", "") == "1"
-        self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")   # the live folder on the remote
+        self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")
+        # the harness's list of configurations and options (configs.toml), to check a job's before it runs
+        self.harness_configs = env.get("QUEUE_HARNESS_CONFIGS", "")   # the live folder on the remote
         # The reports: the site the builder writes, served by this app with the rest, and the
         # command that runs the builder (bin/serve.jl), which this app starts and restarts.
         self.site = env.get("QUEUE_SITE", "")
@@ -103,6 +105,58 @@ class GitHub:
         return tok and self.call("GET", "/user", token=tok).get("login")
 
 
+DEFAULTS = {"config": "default", "options": "", "harness": "", "devices": "cpu,cuda"}
+
+
+def settings_of(job):
+    return {k: job.get(k) or v for k, v in DEFAULTS.items()}
+
+
+def settings_problem(cfg, settings):
+    """Why the settings of a job cannot run, or None. Checked as the machine's wrapper and run.jl
+    check them; with a harness branch, its own run.jl checks option names it may add."""
+    if not re.fullmatch(r"[a-z0-9_]{1,40}", settings["config"]):
+        return "The configuration is not a name."
+    if settings["devices"] not in ("cpu", "cuda", "cpu,cuda"):
+        return "The devices are cpu, cuda or both."
+    h = settings["harness"]
+    if h and (not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", h) or ".." in h or h.startswith("-")):
+        return "The harness is not a branch name."
+    o = settings["options"]
+    if o:
+        if len(o) > 300 or not re.fullmatch(r"[A-Za-z0-9_.,=+-]+", o):
+            return "Options are name=value pairs separated by commas, with letters, digits and _ . + - only."
+        names = [pair.split("=", 1)[0] for pair in o.split(",")]
+        if any("=" not in pair or not pair.split("=", 1)[1] for pair in o.split(",")) or len(set(names)) != len(names):
+            return "Options are name=value pairs, each name once."
+    if not h and cfg.harness_configs:
+        try:
+            import tomllib
+            known = tomllib.load(open(cfg.harness_configs, "rb"))
+        except (OSError, ValueError):
+            known = None
+        if known:
+            configs = set().union(*(set(c.get("names", [])) for c in known.get("configurations", {}).values()))
+            if settings["config"] not in configs:
+                return f"There is no configuration {settings['config']}."
+            allowed = set(known.get("options", {}).get("madnlp", [])).union(*known.get("options", {}).get("linear_solver", {}).values())
+            unknown = [n for n in (pair.split("=", 1)[0] for pair in o.split(",")) if o and n not in allowed]
+            if unknown:
+                return "Unknown options: " + ", ".join(unknown) + "."
+    return None
+
+
+def variant(job):
+    """For a job with other settings than the standard ones, a short name of them: its results then
+    have a folder of their own, and never mix with the standard runs. Empty for the standard ones."""
+    st = settings_of(job)
+    if st == DEFAULTS:
+        return ""
+    digest = hashlib.sha1(json.dumps(st, sort_keys=True).encode()).hexdigest()[:6]
+    head = re.sub(r"[^a-z0-9]+", "-", st["harness"].lower()).strip("-")[:16].strip("-") if st["harness"] else "custom"
+    return f"{head}-{digest}"
+
+
 class Queue:
     """Jobs in one JSON file: waiting ones in order, at most one running, and the latest finished."""
 
@@ -150,15 +204,19 @@ class Queue:
             return None, "Only pull requests from branches of the repository can be benchmarked."
         return p, None
 
-    def add_pr(self, pr, by, keep=True):
+    def add_pr(self, pr, by, keep=True, settings=None):
+        settings = {**DEFAULTS, **(settings or {})}
+        problem = settings_problem(self.cfg, settings)
+        if problem:
+            return problem
         p, problem = self.pull(pr)
         if problem:
             return problem
         with self.changed:
-            if any(j.get("pr") == pr for j in self.jobs("waiting", "running")):
+            if any(j.get("pr") == pr and settings_of(j) == settings for j in self.jobs("waiting", "running")):
                 return "That pull request is already in the queue."
             self.data["jobs"].append({"id": self.data["next"], "kind": "pr", "pr": pr, "title": p.get("title", ""), "by": by,
-                                      "state": "waiting", "queued": int(time.time()), "keep": keep})
+                                      "state": "waiting", "queued": int(time.time()), "keep": keep, "branch": p["head"].get("ref"), **settings})
             self.data["next"] += 1
             self.save()
         return None
@@ -176,9 +234,13 @@ class Queue:
         self._pulls = (mine, time.time() + 60)
         return mine
 
-    def add_ref(self, ref, by, keep=True):
+    def add_ref(self, ref, by, keep=True, settings=None):
         """A run of a branch of the repository, at its head when the run starts, or of a commit on
         master. Never anything from a fork: a commit must be in master's history."""
+        settings = {**DEFAULTS, **(settings or {})}
+        problem = settings_problem(self.cfg, settings)
+        if problem:
+            return None, problem
         ref = ref.strip()
         if not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", ref) or ".." in ref:
             return None, "Give the name of a branch, or a commit."
@@ -196,18 +258,31 @@ class Queue:
                 return None, "Only commits in master's history can be benchmarked; for others, give their branch."
             kind, sha, title = "commit", found["base_commit"]["sha"], ref[:12]
         with self.changed:
-            if any(j["kind"] == kind and j.get("ref") == ref for j in self.jobs("waiting", "running")):
+            if any(j["kind"] == kind and j.get("ref") == ref and settings_of(j) == settings for j in self.jobs("waiting", "running")):
                 return None, "That is already in the queue."
             job = {"id": self.data["next"], "kind": kind, "pr": None, "ref": ref, "sha": sha, "title": title, "by": by,
-                   "state": "waiting", "queued": int(time.time()), "keep": keep}
+                   "state": "waiting", "queued": int(time.time()), "keep": keep, **settings}
             self.data["jobs"].append(job)
             self.data["next"] += 1
             self.save()
         return job, None
 
-    def add_master_now(self, by):
-        """A run of master at its latest commit, asked for by someone."""
+    def add_master_now(self, by, settings=None):
+        """A run of master at its latest commit, asked for by someone. With other settings than the
+        standard ones it is a run of that commit, so that it is never taken for master's results."""
         sha = self.gh.api("GET", f"/repos/{self.cfg.repo}/commits/master")["sha"]
+        if settings and {**DEFAULTS, **settings} != DEFAULTS:
+            settings = {**DEFAULTS, **settings}
+            problem = settings_problem(self.cfg, settings)
+            if problem:
+                raise ValueError(problem)
+            with self.changed:
+                job = {"id": self.data["next"], "kind": "commit", "pr": None, "ref": sha, "sha": sha, "title": "master " + sha[:8], "by": by,
+                       "state": "waiting", "queued": int(time.time()), "keep": True, **settings}
+                self.data["jobs"].append(job)
+                self.data["next"] += 1
+                self.save()
+            return job
         self.add_master(sha, by)
         return next(j for j in self.jobs("waiting") if j["kind"] == "master")
 
@@ -318,12 +393,17 @@ def order(job):
 def public(cfg, j):
     """A job as the API gives it."""
     out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note")}
-    out |= {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
+    out |= settings_of(j) | {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
             "report": f"{cfg.reports}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
     return out
 
 
 def folder(job):
+    v = variant(job)
+    if v:
+        target = (f"pr{job['pr']}" if job["kind"] == "pr" else
+                  re.sub(r"[^a-z0-9]+", "-", job.get("ref", "").lower()).strip("-")[:12] if job["kind"] == "branch" else (job.get("sha") or "")[:8])
+        return f"run-{v}-{target}"[:48].rstrip("-")
     if job["kind"] == "pr":
         return f"pr-{job['pr']}"
     if job["kind"] == "branch":
@@ -354,8 +434,14 @@ class Dispatcher:
         # connection ends the job rather than leaving it running unseen
         # a job started before, and interrupted here, carries on from what it has
         keep = job.get("keep", True) or job.get("dispatched")
-        proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], job["kind"], str(job.get("pr") or ""),
-                                              "keep" if keep else "fresh"]), stdin=subprocess.PIPE)
+        # a job with other settings runs as a run of its branch or commit, so its results go to a folder
+        # of their own (the machine lets a pull request's run write only pr-<N>)
+        st, kind, pr = settings_of(job), job["kind"], str(job.get("pr") or "")
+        if variant(job):
+            kind, pr = ("branch" if job["kind"] in ("pr", "branch") else "commit"), ""
+        extra = [st["config"], st["options"], st["harness"], st["devices"]] if st != DEFAULTS else []
+        proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], kind, pr,
+                                              "keep" if keep else "fresh", *extra]), stdin=subprocess.PIPE)
         with self.q.changed:
             job["dispatched"] = True
             self.q.save()
@@ -655,12 +741,26 @@ def job_page(cfg, q, login, j):
             ("Commit", f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}"><code>{j["sha"][:8]}</code></a>' if j.get("sha") else "resolved when it starts"),
             ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
             ("Results", "keep the results so far" if j.get("keep", True) else "start over")]
+    st = settings_of(j)
+    if st != DEFAULTS:
+        rows.append(("Settings", e(", ".join(f"{k} {v}" for k, v in st.items() if v != DEFAULTS[k]))))
     if j.get("sha") and j["state"] != "waiting":
         rows.append(("Report", f'<a href="{e(cfg.reports)}/{folder(j)}/">{e(cfg.reports)}/{folder(j)}/</a>'))
     table = "".join(f'<tr><th class="l">{k}</th><td class="l">{v}</td></tr>' for k, v in rows)
     body = (f'<h1>Job {j["id"]}: {e(name(cfg, j))}</h1><div class="wide"><table class="table table-sm"><tbody>{table}</tbody></table></div>'
             f'<div class="mt-2">{actions(cfg, q, login, j)}</div><p class="mt-3"><a href="{e(cfg.base)}/">All jobs</a></p>')
     return shell(cfg, login, f"Job {j['id']}", body)
+
+
+def configs_list(cfg):
+    """The configurations the harness has, as suggestions for the field."""
+    try:
+        import tomllib
+        known = tomllib.load(open(cfg.harness_configs, "rb"))
+        names = sorted(set().union(*(set(c.get("names", [])) for c in known.get("configurations", {}).values())))
+    except (OSError, ValueError, TypeError):
+        names = ["default"]
+    return '<datalist id="configs">' + "".join(f'<option value="{html.escape(n)}">' for n in names) + "</datalist>"
 
 
 def new_page(cfg, q, login, message=""):
@@ -674,6 +774,17 @@ def new_page(cfg, q, login, message=""):
             f'<label class="form-label" for="what">What to benchmark</label><select class="form-select mb-2" id="what" name="what">{options}</select>'
             '<input class="form-control mb-3" name="ref" placeholder="Branch name, or a commit in master\'s history" '
             'aria-label="Branch or commit, if chosen above">'
+            '<details class="mb-3"><summary>Settings: configuration, options, harness, devices</summary><div class="mt-2">'
+            '<label class="form-label" for="config">Configuration</label>'
+            f'<input class="form-control mb-2" id="config" name="config" value="default" list="configs">{configs_list(cfg)}'
+            '<label class="form-label" for="options">MadNLP options, on top of the configuration</label>'
+            '<input class="form-control mb-2" id="options" name="options" placeholder="tol=1e-6,max_iter=500">'
+            '<label class="form-label" for="harness">Harness: a branch of MadNLPBenchmark.jl, for an experiment</label>'
+            '<input class="form-control mb-2" id="harness" name="harness" placeholder="main, as deployed">'
+            '<label class="form-label" for="devices">Devices</label><select class="form-select mb-2" id="devices" name="devices">'
+            '<option value="cpu,cuda">CPU and GPU</option><option value="cpu">CPU only</option><option value="cuda">GPU only</option></select>'
+            '<p class="m">A job with other settings than these defaults gets a report of its own, never mixed with the standard runs. '
+            'A run of master with other settings runs as a run of its commit.</p></div></details>'
             '<fieldset class="mb-3"><legend class="form-label fs-6">If a report of this pull request exists</legend>'
             '<div class="form-check"><input class="form-check-input" type="radio" name="keep" id="keep1" value="1" checked>'
             '<label class="form-check-label" for="keep1">Keep its results, and solve only what is missing</label></div>'
@@ -761,18 +872,25 @@ def handler(cfg, q):
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
                 keep = bool(data.get("keep", True))
+                settings = {k: str(data.get(k) or DEFAULTS[k]) for k in DEFAULTS}
+                problem = settings_problem(cfg, settings)
+                if problem:
+                    return reply(400, {"error": problem})
                 if data.get("master"):
-                    return reply(201, public(cfg, q.add_master_now(login)))
+                    try:
+                        return reply(201, public(cfg, q.add_master_now(login, settings)))
+                    except ValueError as err:
+                        return reply(400, {"error": str(err)})
                 if isinstance(data.get("branch") or data.get("commit"), str):
-                    job, problem = q.add_ref(data.get("branch") or data.get("commit"), login, keep)
+                    job, problem = q.add_ref(data.get("branch") or data.get("commit"), login, keep, settings)
                     return reply(400, {"error": problem}) if problem else reply(201, public(cfg, job))
                 pr = data.get("pr")
                 if not isinstance(pr, int) or pr <= 0:
                     return reply(400, {"error": 'Give {"pr": <number>}, {"branch": "<name>"}, {"commit": "<sha>"} or {"master": true}.'})
-                problem = q.add_pr(pr, login, keep)
+                problem = q.add_pr(pr, login, keep, settings)
                 if problem:
                     return reply(400, {"error": problem})
-                return reply(201, public(cfg, next(j for j in q.jobs("waiting") if j.get("pr") == pr)))
+                return reply(201, public(cfg, [j for j in q.jobs("waiting") if j.get("pr") == pr][-1]))
             if len(parts) == 2 and parts[0] == "jobs" and method == "GET":
                 j = find(parts[1])
                 return reply(200, public(cfg, j)) if j else reply(404, {"error": "There is no such job."})
@@ -928,15 +1046,22 @@ def handler(cfg, q):
                 return self.send(400, jobs_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
             if self.path == "/queue/new":
                 what, keep = get("what"), get("keep") != "0"
+                settings = {k: get(k).strip() or DEFAULTS[k] for k in DEFAULTS}
+                problem = settings_problem(cfg, settings)
+                if problem:
+                    return self.send(400, new_page(cfg, q, login, problem))
                 if what == "master":
-                    q.add_master_now(login)
+                    try:
+                        q.add_master_now(login, settings)
+                    except ValueError as err:
+                        return self.send(400, new_page(cfg, q, login, str(err)))
                     return self.redirect(cfg.base + "/")
                 if what == "ref":
-                    _, problem = q.add_ref(get("ref"), login, keep)
+                    _, problem = q.add_ref(get("ref"), login, keep, settings)
                     return self.send(400, new_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
                 if not what.isdigit():
                     return self.send(400, new_page(cfg, q, login, "Choose what to benchmark."))
-                problem = q.add_pr(int(what), login, keep)
+                problem = q.add_pr(int(what), login, keep, settings)
                 return self.send(400, new_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
             if self.path == "/queue/update":
                 pr = get("pr")
