@@ -735,12 +735,19 @@ def workers_page(cfg, login, name):
         body += (f'<h2>{e(machine.replace("_", " "))}</h2><p class="m">updated {age} s ago</p>' + "".join(notes)
                  + ('<div class="wide"><table class="table table-sm"><thead><tr><th>worker</th><th class="l">state</th><th class="l">instance</th>'
                     '<th>for (s)</th><th>memory (GB)</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>" if rows else ""))
-    # run.jl's own log once the run has one, else the job's, which also has the setup before it
+    # the log written to last: the job's during setup, run.jl's once it runs. An empty one, or one left
+    # by an earlier job in the same folder, is passed over
+    logs = []
     for log, what in (("run.log", "the run's output: precompilation and the workers"), ("job.log", "the job's output: setup and the run")):
-        tail = log_tail(os.path.join(root, log))
-        if tail is not None:
-            body += f'<h2>Log</h2><p class="m">The last lines of {what}.</p><pre class="log">{e(tail)}</pre>'
-            break
+        try:
+            st = os.stat(os.path.join(root, log))
+        except OSError:
+            continue
+        if st.st_size:
+            logs.append((st.st_mtime, log, what))
+    if logs:
+        _, log, what = max(logs)
+        body += f'<h2>Log</h2><p class="m">The last lines of {what} ({log}).</p><pre class="log">{e(log_tail(os.path.join(root, log)) or "")}</pre>'
     page = shell(cfg, login, f"Workers of {name}", body)
     # the page takes itself again, as the reports do
     return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace("</main></body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)

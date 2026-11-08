@@ -587,6 +587,14 @@ class TestSite(Base):
         self.assertNotIn("3/9", page)          # the line as the terminal last showed it
         self.assertNotIn("\x1b", page)
         self.assertNotIn("<script>x", page)
+        # an empty run.log, or an older one, does not hide the job's log
+        open(os.path.join(live, "pr-1", "run.log"), "w").write("")
+        self.assertIn("9/9 &lt;script&gt;", self.get("/madnlp/pr-1/workers.html")[2])
+        open(os.path.join(live, "pr-1", "run.log"), "w").write("from the run\n")
+        self.assertIn("from the run", self.get("/madnlp/pr-1/workers.html")[2])
+        old = time.time() - 600
+        os.utime(os.path.join(live, "pr-1", "run.log"), (old, old))
+        self.assertIn("9/9 &lt;script&gt;", self.get("/madnlp/pr-1/workers.html")[2])
         open(os.path.join(live, "pr-1", "run.json"), "w").write('{"state":"failed"}')
         self.assertIn("not running: it failed", self.get("/madnlp/pr-1/workers.html")[2])
 
