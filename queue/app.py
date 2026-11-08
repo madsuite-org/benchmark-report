@@ -1373,6 +1373,24 @@ def workers_page(cfg, login, name):
     return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace("</main></body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)
 
 
+_STATUS = {"mtime": 0, "data": {}}
+
+
+def progress_of(cfg, j):
+    """`done/total` instances of a running job's report, from the builder's status.json; "" if unknown."""
+    if j["state"] != "running" or not cfg.site or not (j.get("sha") or j.get("folder")):
+        return ""
+    path = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"), "status.json")
+    try:
+        m = (path, os.stat(path).st_mtime_ns)
+        if m != _STATUS["mtime"]:
+            _STATUS["data"], _STATUS["mtime"] = json.load(open(path)), m
+    except (OSError, ValueError):
+        return ""
+    entry = _STATUS["data"].get(folder(j), {})
+    return f"{entry['done']}/{entry['total']}" if isinstance(entry, dict) and entry.get("total") else ""
+
+
 def machine_of(j):
     """Where a job runs: its machine, or the hosts of an external job's nodes."""
     if j.get("external"):
@@ -1387,7 +1405,7 @@ def jobs_section(cfg, q, login=None):
     def row(j):
         report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
         return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{e(name(cfg, j))}</a></td><td class="l">{e(j.get("title", ""))}</td>'
-                f'<td class="l">{badge(j, cfg)}</td><td class="l">{e(machine_of(j))}</td>'
+                f'<td class="l">{badge(j, cfg)} <span class="m">{e(progress_of(cfg, j))}</span></td><td class="l">{e(machine_of(j))}</td>'
                 f'<td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
                 f'<td class="l">{report}</td><td class="l">{cancel_button(cfg, q, login, j)}</td></tr>')
     def table(title, jobs, empty):

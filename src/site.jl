@@ -135,7 +135,23 @@ end
 # the host and a solver on a device are never compared.
 on_device(sides, device) = [s for s in sides if s.key[1] == device || s.key[2] == "ipopt"]
 
-key(s) = "<span class=\"key\"><i style=\"background:$(s.color)\"></i>$(escape_html(s.label))</span>"
+# What a column shows as its name: its label with what it ran, `master 31576532`, `current
+# 1b00be2e`, `Ipopt 3.14.19`, a commit linked; set for each report by `set_titles!`.
+const TITLES = Dict{String, String}()
+title(label) = get(TITLES, label, escape_html(label))
+function set_titles!(sides, cand, base, code)
+    empty!(TITLES)
+    for s in sides
+        rev = get((s.base ? base : cand).revs, s.key, "")
+        short = something(match(r"([0-9a-f]{8})[0-9a-f]*$", rev), match(r"^(.*)$", rev))[1]
+        isempty(short) && continue
+        link = occursin(r"^[0-9a-f]{8}$", short) && code !== nothing ? "<a href=\"$code/commit/$short\">$short</a>" : escape_html(short)
+        # one name across devices: a label whose devices ran different things lists them
+        TITLES[s.label] = haskey(TITLES, s.label) && !occursin(link, TITLES[s.label]) ? TITLES[s.label] * ", " * link : escape_html(s.label) * " " * link
+    end
+    return
+end
+key(s) = "<span class=\"key\"><i style=\"background:$(s.color)\"></i>$(title(s.label))</span>"
 
 function device_profile(io, set, device, sides, cand, base, wall)
     rows = [page_rows(s, cand, base, set, device, wall) for s in sides]
@@ -217,6 +233,7 @@ end
 
 # One bar per device: how much of its sets has been run.
 function progress(io, devices, sets, sides, cand, base, wall)
+    counts = Tuple{Int, Int}[]
     println(io, "<div class=\"tiles\">")
     for device in devices
         candidates = [s for s in sides if s.key[1] == device && s.key[2] != "ipopt"]
@@ -232,12 +249,13 @@ function progress(io, devices, sets, sides, cand, base, wall)
             solved_count += count(solved, values(rows))
             total += set_size(cand, base, set)
         end
+        push!(counts, (done, total))
         share = total == 0 ? 0 : round(Int, 100 * done / total)
         println(io, "<div class=\"tile\"><div class=\"m\">", device_tag(device), " ", escape_html(mine.label), "</div><div class=\"big\">", done, "<small>/", total, "</small></div>")
         println(io, "<div class=\"meter\"><i style=\"width:", share, "%;background:", device_color(device), "\"></i></div><div class=\"m\">", solved_count, " solved</div></div>")
     end
     println(io, "</div>")
-    return
+    return counts
 end
 
 function summary_table(io, blocks, sides, cand, base, wall)
@@ -246,7 +264,7 @@ function summary_table(io, blocks, sides, cand, base, wall)
     rank(l) = l == "Ipopt" ? 1 : l == "current" ? 3 : any(s -> s.base && s.label == l, sides) ? 2 : 4
     sort!(labels; by = rank)
     println(io, "<div class=\"wide\"><table class=\"table table-sm summary\"><thead><tr><th rowspan=\"2\">set</th><th rowspan=\"2\" class=\"l\">device</th><th rowspan=\"2\" title=\"compared out of the whole set\">problems</th>")
-    foreach(l -> print(io, "<th colspan=\"3\" class=\"g\">", escape_html(l), "</th>"), labels)
+    foreach(l -> print(io, "<th colspan=\"3\" class=\"g\">", title(l), "</th>"), labels)
     print(io, "</tr><tr>")
     foreach(_ -> print(io, "<th class=\"g\">solved</th><th>SGM (s)</th><th>SSGM</th>"), labels)
     println(io, "</tr></thead><tbody>")
@@ -320,7 +338,7 @@ end
 
 function instance_table(io, set, sides, rows, logs)
     println(io, "<div class=\"scroll\"><table class=\"table table-sm table-hover cases\"><thead><tr><th class=\"s\" rowspan=\"2\">instance</th><th class=\"s\" rowspan=\"2\">nv</th><th class=\"s\" rowspan=\"2\">nc</th>")
-    foreach(s -> print(io, "<th colspan=\"12\" class=\"l\">", escape_html(s.label), "</th>"), sides)
+    foreach(s -> print(io, "<th colspan=\"12\" class=\"l\">", title(s.label), "</th>"), sides)
     print(io, "</tr><tr>")
     foreach(_ -> print(io, "<th class=\"s l\">st</th><th class=\"s\">it</th><th class=\"s\">t (s)</th><th class=\"s\">obj</th><th class=\"s\">inf</th><th class=\"s\">nfac</th><th class=\"s\">nsol</th><th class=\"s\">nf</th><th class=\"s\">ng</th><th class=\"s\">nc</th><th class=\"s\">nj</th><th class=\"s\">nh</th>"), sides)
     println(io, "</tr></thead><tbody>")
@@ -512,6 +530,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
         mergewith!((mine, _) -> mine, cand.harness, reference.harness)
     end
     sides = report_sides(cand, base)
+    set_titles!(sides, cand, base, repository === nothing ? nothing : repository[1])
     walls = device_walls(root, wall)
     sets = sort!(unique!([k[2] for k in keys(cand.rows)]))
     stamp = Dates.format(now(UTC), "yyyy-mm-dd HH:MM:SS")
@@ -530,7 +549,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     finished || workers_page(site, root, bar, assets)
     io = IOBuffer()
     println(io, "<h1>Summary</h1>")
-    progress(io, devices, sets, sides, cand, base, walls)
+    counts = progress(io, devices, sets, sides, cand, base, walls)
     summary_table(io, [(set, device) for device in devices for set in sets], sides, cand, base, walls)
     println(io, "<h2>Solvers</h2>")
     solver_table(io, sides, cand, base, repository === nothing ? nothing : repository[1])
@@ -551,7 +570,8 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     page(joinpath(site, "index.html"), title, String(take!(io)), bar; refresh = live, assets)
     # for a check outside this machine that the report is alive
     write_atomic(joinpath(site, "status.json"), "{\"state\":\"$(finished ? "finished" : "running")\",\"updated\":\"$stamp\"}\n")
-    return
+    # how much of the run is done, over every device: instances with a result, of all
+    return (; done = sum(first, counts; init = 0), total = sum(last, counts; init = 0))
 end
 
 # The theme of every page: Bootstrap, this site's stylesheet and its script, all served locally.
@@ -581,7 +601,7 @@ function write_index(site, runs; repository)
         println(io, "<h2>", title, "</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
         for r in (sorted ? sort(selected; by = r -> r.updated, rev = true) : selected)
             commit = occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">$(first(r.commit, 8))</a>" : escape_html(first(r.commit, 8))
-            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(shown_state(r)), "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
+            println(io, "<tr><td><a href=\"", escape_html(r.name), "/\">", isempty(r.pr) ? escape_html(replace(r.title, "Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name), "</a></td><td class=\"l\">", isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>", "</td><td class=\"l\">", commit, "</td><td class=\"l\">", state_badge(shown_state(r)), shown_state(r) == "running" && get(r, :total, 0) > 0 ? " <span class=\"m\">$(r.done)/$(r.total)</span>" : "", "</td><td>", escape_html(replace(first(r.updated, 16), "T" => " ")), "</td><td class=\"l\"><a href=\"", escape_html(r.name), "/data/\">files</a></td></tr>")
         end
         return println(io, "</tbody></table></div>")
     end

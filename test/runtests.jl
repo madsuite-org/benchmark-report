@@ -313,7 +313,8 @@ end
         reset_runs()
         BenchmarkReport.build_all(live, site)
         report = read(joinpath(site, "pr-1", "index.html"), String)
-        @test occursin(">master<", report)
+        @test occursin(">master &lt;script&gt;", report)   # the column names what master ran, escaped
+        @test !occursin("<script>alert", report)
         @test occursin("from #7", report)
     end
 end

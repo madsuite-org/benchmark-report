@@ -745,6 +745,11 @@ class TestServer(Base):
         self.q.beats[(job, "c")] = 0
         send("a", {}, state="finished")
         self.assertEqual(self.q.data["jobs"][-1]["state"], "finished")
+        self.cfg.site = os.path.join(self.dir, "site")
+        os.makedirs(os.path.join(self.cfg.site, "madnlp"), exist_ok=True)
+        json.dump({folder: {"state": "running", "done": 123, "total": 1582}}, open(os.path.join(self.cfg.site, "madnlp", "status.json"), "w"))
+        self.assertEqual(app.progress_of(self.cfg, {**self.q.data["jobs"][-1], "state": "running"}), "123/1582")
+        self.assertEqual(app.progress_of(self.cfg, self.q.data["jobs"][-1]), "")       # only while running
         self.assertIn("external: n1, n2", app.machine_of(self.q.data["jobs"][-1]))
         # a second job of the same commit, another report: both listed among recent jobs
         code, out = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu"}, token="tok-alice")

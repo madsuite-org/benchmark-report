@@ -60,7 +60,7 @@ function build_run(live, site, name)
     # the latest master and the Ipopt reference are shown unless taken away in the app
     hide = get(comparisons_of(name), "hide", String[])
     base = with_comparisons("master" in hide ? nothing : latest_merged(live, name), live, name)
-    write_report(
+    counts = write_report(
         joinpath(site, name), joinpath(live, name);
         base,
         reference = "ipopt" in hide ? nothing : ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
@@ -68,7 +68,7 @@ function build_run(live, site, name)
         finished = state != "running", assets = "..", live = true,
     )
     updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
-    RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed)
+    RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed, counts.done, counts.total)
     return
 end
 
@@ -126,7 +126,7 @@ end
 # The list of benchmarks, and `status.json` for the check that watches running benchmarks.
 function publish(site; repository = DEFAULT_REPOSITORY)
     write_index(site, collect(values(RUNS)); repository)
-    entries = ["\"$(r.name)\":{\"state\":\"$(r.state)\",\"updated\":\"$(r.updated)\"}" for r in sort!(collect(values(RUNS)); by = r -> r.name)]
+    entries = ["\"$(r.name)\":{\"state\":\"$(r.state)\",\"updated\":\"$(r.updated)\",\"done\":$(get(r, :done, 0)),\"total\":$(get(r, :total, 0))}" for r in sort!(collect(values(RUNS)); by = r -> r.name)]
     write_atomic(joinpath(site, "status.json"), "{", join(entries, ","), "}\n")
     return
 end
