@@ -746,8 +746,9 @@ class TestServer(Base):
         send("a", {}, state="finished")
         self.assertEqual(self.q.data["jobs"][-1]["state"], "finished")
         self.cfg.site = os.path.join(self.dir, "site")
-        os.makedirs(os.path.join(self.cfg.site, "madnlp"), exist_ok=True)
-        json.dump({folder: {"state": "running", "done": 123, "total": 1582}}, open(os.path.join(self.cfg.site, "madnlp", "status.json"), "w"))
+        reports = os.path.join(self.cfg.site, urllib.parse.urlsplit(self.cfg.reports).path.strip("/"))
+        os.makedirs(reports, exist_ok=True)
+        json.dump({folder: {"state": "running", "done": 123, "total": 1582}}, open(os.path.join(reports, "status.json"), "w"))
         self.assertEqual(app.progress_of(self.cfg, {**self.q.data["jobs"][-1], "state": "running"}), "123/1582")
         self.assertEqual(app.progress_of(self.cfg, self.q.data["jobs"][-1]), "")       # only while running
         self.assertIn("external: n1, n2", app.machine_of(self.q.data["jobs"][-1]))
