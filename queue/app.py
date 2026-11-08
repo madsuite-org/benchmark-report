@@ -871,6 +871,10 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", *DEFAULTS})
+                if unknown:
+                    # a field this app does not know would otherwise be ignored without a word
+                    return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
                 keep = bool(data.get("keep", True))
                 settings = {k: str(data.get(k) or DEFAULTS[k]) for k in DEFAULTS}
                 problem = settings_problem(cfg, settings)

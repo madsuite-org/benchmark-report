@@ -460,6 +460,7 @@ class TestServer(Base):
         self.assertEqual((code, job["pr"], job["state"], job["keep"], job["by"]), (201, 7, "waiting", False, "alice"))
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": 8}, token="tok-alice")[0], 400)   # a fork
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": "7"}, token="tok-alice")[0], 400)
+        self.assertIn("Unknown fields: harnes", self.call_api("POST", "/queue/api/jobs", {"pr": 7, "harnes": "x"}, token="tok-alice")[1]["error"])
         code, master = self.call_api("POST", "/queue/api/jobs", {"master": True}, token="tok-alice")
         self.assertEqual((code, master["sha"]), (201, "9" * 40))
         code, listed = self.call_api("GET", "/queue/api/jobs", token="tok-alice")
