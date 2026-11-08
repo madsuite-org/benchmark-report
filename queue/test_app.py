@@ -367,6 +367,33 @@ class TestDispatcher(Base):
         self.assertEqual(job["state"], "running")
         self.assertEqual(self.d.run(self.q.take()), "finished")
 
+    def test_jobs_outlive_the_app_with_a_wait_command(self):
+        state = os.path.join(self.dir, "machine")
+        os.makedirs(state)
+        def script(name, body):
+            path = os.path.join(self.dir, name)
+            open(path, "w").write("#!/bin/bash\n" + body)
+            os.chmod(path, 0o755)
+            return [path]
+        # start returns at once; the job "runs" until a file says it ended; wait blocks until then
+        self.cfg.remote_start = script("start2", f'echo "start $@" >> {self.log}; touch {state}/$1.running\n')
+        self.cfg.remote_wait = script("wait2", f'while [ ! -e {state}/$1.done ]; do sleep 0.2; done; exit $(cat {state}/$1.done)\n')
+        self.q.add_pr(7, "alice")
+        job = self.q.take()
+        t = threading.Thread(target=lambda: setattr(self, "state", self.d.run(job)))
+        t.start()
+        deadline = time.time() + 10
+        while time.time() < deadline and not os.path.exists(f"{state}/benchjob-{job['id']}.running"):
+            time.sleep(0.1)
+        time.sleep(0.5)
+        subprocess.run(["pkill", "-TERM", "-f", f"{self.dir}/wait2"])        # the app goes away; the job does not
+        t.join(10)
+        self.assertEqual(self.state, "interrupted")
+        self.assertTrue(job["started_on_machine"])
+        open(f"{state}/benchjob-{job['id']}.done", "w").write("0")
+        self.assertEqual(self.d.run(self.q.take()), "finished")              # waited on again, not started again
+        self.assertEqual(sum(l.startswith("start") for l in open(self.log).read().splitlines()), 1)
+
     def test_ssh_quotes_each_word(self):
         self.d.node["remote"] = "node"
         cmd = self.d.command(["sudo", "-n", "x", "a b", "$(rm -rf /)"])

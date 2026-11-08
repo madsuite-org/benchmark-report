@@ -42,6 +42,10 @@ class Config:
         self.remote = env.get("QUEUE_REMOTE", "")
         self.remote_start = shlex.split(env.get("QUEUE_REMOTE_START", "sudo -n /usr/local/sbin/benchjob-run"))
         self.remote_stop = shlex.split(env.get("QUEUE_REMOTE_STOP", "sudo -n /usr/local/sbin/benchjob-stop"))
+        # With a wait command, the start command only starts the job on the machine and returns, and
+        # the wait command blocks until it ends, giving its exit status. A job then lives on the
+        # machine on its own, and this app can restart while it runs: it waits on it again after.
+        self.remote_wait = shlex.split(env.get("QUEUE_REMOTE_WAIT", ""))
         # whether a push to master queues a run of it; off: master runs only when someone queues it
         self.auto_master = env.get("QUEUE_AUTO_MASTER", "") == "1"
         self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")
@@ -492,8 +496,6 @@ class Dispatcher:
         live = os.path.join(self.node["live"], job["folder"])
         # the machine's own start command takes care of everything around the job there, its
         # preemption of other work included
-        # stdin stays open for the whole job: the machine stops the job when it closes, so a lost
-        # connection ends the job rather than leaving it running unseen
         # a job started before, and interrupted here, carries on from what it has
         keep = job.get("keep", True) or job.get("dispatched")
         # a job with other settings runs as a run of its branch or commit, so its results go to a folder
@@ -505,12 +507,28 @@ class Dispatcher:
         # the start command's output, of which the end becomes the job's note if it fails: a refusal
         # on the machine then shows on the job's page
         output = tempfile.TemporaryFile()
-        proc = subprocess.Popen(self.command([*self.cfg.remote_start, unit, live, job["sha"], kind, pr,
-                                              "keep" if keep else "fresh", *extra]), stdin=subprocess.PIPE,
-                                stdout=output, stderr=subprocess.STDOUT)
-        with self.q.changed:
-            job["dispatched"] = True
-            self.q.save()
+        start = self.command([*self.cfg.remote_start, unit, live, job["sha"], kind, pr, "keep" if keep else "fresh", *extra])
+        if self.cfg.remote_wait:
+            # the job lives on the machine: start it once, then wait on it, again after a restart
+            if not job.get("started_on_machine"):
+                rc = subprocess.run(start, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT).returncode
+                if rc == 75:
+                    output.close()
+                    return "busy"
+                if rc != 0:
+                    output.seek(0)
+                    return self.finish(job, "failed", rc, output.read().decode(errors="replace"), False)
+                with self.q.changed:
+                    job["dispatched"] = job["started_on_machine"] = True
+                    self.q.save()
+            proc = subprocess.Popen(self.command([*self.cfg.remote_wait, unit]), stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+        else:
+            # stdin stays open for the whole job: the machine stops the job when it closes, so a lost
+            # connection ends the job rather than leaving it running unseen
+            proc = subprocess.Popen(start, stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT)
+            with self.q.changed:
+                job["dispatched"] = True
+                self.q.save()
         stopped = False
         while proc.poll() is None:
             self.q.wait(lambda: any(j["id"] == job["id"] and j.get("cancel") for j in self.q.jobs("running")), 5)
@@ -518,7 +536,8 @@ class Dispatcher:
                 subprocess.run(self.command([*self.cfg.remote_stop, unit]))
                 stopped = True
         rc = proc.wait()
-        proc.stdin.close()
+        if proc.stdin:
+            proc.stdin.close()
         output.seek(max(0, output.seek(0, os.SEEK_END) - 2000))
         tail = output.read().decode(errors="replace")
         output.close()
@@ -527,9 +546,11 @@ class Dispatcher:
             return "busy"
         if rc < 0 and not stopped:
             # the connection was killed on this side, e.g. the app is being stopped: not the job's
-            # doing, so it stays running, and is started again, keeping what it has
+            # doing, so it stays running, and is waited on (or started) again
             return "interrupted"
-        state = "cancelled" if stopped else "finished" if rc == 0 else "failed"
+        return self.finish(job, "cancelled" if stopped else "finished" if rc == 0 else "failed", rc, tail, stopped)
+
+    def finish(self, job, state, rc, tail, stopped):
         if state == "failed":
             lines = [l for l in re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", tail).splitlines() if l.strip()]
             with self.q.changed:
