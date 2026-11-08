@@ -600,6 +600,20 @@ class TestSite(Base):
         code, headers, _ = self.get("/queue/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})
         self.assertEqual((code, headers["Location"]), (303, "/madnlp/"))
 
+    def test_report_and_job_are_one_page(self):
+        self.q.add_pr(7, "alice")
+        job = self.q.take()
+        alice = {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"}
+        self.assertNotIn("jobbar", self.get("/madnlp/pr-1/")[2])         # another report
+        os.makedirs(os.path.join(self.cfg.site, "madnlp", "pr-7"))
+        open(os.path.join(self.cfg.site, "madnlp", "pr-7", "index.html"), "w").write('<html><header class="site">' + app.NAV + '</header><main class="container"></main></html>')
+        self.assertNotIn("jobbar", self.get("/madnlp/pr-7/")[2])         # not to the public
+        page = self.get("/madnlp/pr-7/", alice)[2]
+        self.assertIn(f'Job <a href="https://x/queue/job/{job["id"]}">{job["id"]}</a>', page)
+        self.assertIn(">Cancel</button>", page)
+        code, headers, _ = self.get(f"/queue/job/{job['id']}", alice)
+        self.assertEqual((code, headers["Location"]), (303, "/madnlp/pr-7/"))
+
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")
         self.cfg.builder = ["sh", "-c", f"echo x >> {mark}; sleep 30"]

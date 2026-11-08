@@ -612,6 +612,29 @@ def when(t):
     return time.strftime("%Y-%m-%d %H:%M", time.gmtime(t)) if t else ""
 
 
+def cancel_button(cfg, q, login, j):
+    """Cancel, for a waiting or running job, to whoever queued it and to admins."""
+    if not login or j["state"] not in ("waiting", "running") or j.get("cancel"):
+        return ""
+    if j["by"].lower() != login.lower() and q.permission(login) != "admin":
+        return ""
+    return (f'<form method="post" action="{html.escape(cfg.base)}/cancel" class="d-inline"><input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}">'
+            f'<input type="hidden" name="id" value="{j["id"]}"><button class="btn btn-sm btn-outline-danger">Cancel</button></form>')
+
+
+def job_panel(cfg, q, login, name):
+    """On a report, for members, the job that makes it: its state and its actions."""
+    jobs = [j for j in q.data["jobs"] if (j.get("sha") or j["kind"] == "pr") and folder({**j, "sha": j.get("sha") or "0" * 40}) == name]
+    if not jobs:
+        return ""
+    j = max(jobs, key=lambda j: j["id"])
+    e = html.escape
+    times = ", ".join(x for x in (f"queued {when(j['queued'])}", j.get("started") and f"started {when(j['started'])}",
+                                  j.get("ended") and f"ended {when(j['ended'])}") if x)
+    return (f'<div class="container mt-2"><div class="jobbar">Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)} '
+            f'<span class="m">by {e(j["by"])}, {times} UTC</span> {actions(cfg, q, login, j)}</div></div>')
+
+
 def actions(cfg, q, login, j):
     """The buttons a signed-in user has on a job: update a pull request, cancel what they may."""
     e, csrf = html.escape, sign(cfg, "csrf|" + login)
@@ -705,17 +728,17 @@ def workers_page(cfg, login, name):
     return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace("</main></body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)
 
 
-def jobs_section(cfg, q):
+def jobs_section(cfg, q, login=None):
     """The jobs: what runs and waits, and what ran lately. On the dashboard, above the reports."""
     e = html.escape
     def row(j):
         report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
         return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{e(name(cfg, j))}</a></td><td class="l">{e(j.get("title", ""))}</td>'
                 f'<td class="l">{badge(j, cfg)}</td><td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
-                f'<td class="l">{report}</td></tr>')
+                f'<td class="l">{report}</td><td class="l">{cancel_button(cfg, q, login, j)}</td></tr>')
     def table(title, jobs, empty):
         head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">title</th><th class="l">state</th>'
-                '<th class="l">by</th><th>time (UTC)</th><th class="l"></th></tr></thead><tbody>')
+                '<th class="l">by</th><th>time (UTC)</th><th class="l"></th><th class="l"></th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
     bot = e(cfg.bots[0]) if cfg.bots else ""
@@ -940,12 +963,15 @@ def handler(cfg, q):
                 data = data.replace(NAV.encode(), app_nav(cfg, login).encode(), 1)
                 if member_of(login) and os.path.realpath(target) == os.path.realpath(os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"), "index.html")):
                     # one dashboard: the jobs above the reports
-                    data = data.replace(b'<main class="container">', b'<main class="container">' + jobs_section(cfg, q).encode(), 1)
+                    data = data.replace(b'<main class="container">', b'<main class="container">' + jobs_section(cfg, q, login).encode(), 1)
                 parts = path.strip("/").split("/")
                 age = stalled(cfg, parts[1]) if len(parts) > 1 else None
                 if age is not None:
                     member = bool(login) and q.permission(login) in WRITE
                     data = data.replace(b"</header>", b"</header>" + stall_note(cfg, login if member else None, parts[1], age).encode(), 1)
+                if len(parts) > 1 and member_of(login):
+                    # the report and its job are one page: the job's state and actions, for members
+                    data = data.replace(b"</header>", b"</header>" + job_panel(cfg, q, login, parts[1]).encode(), 1)
             self.send_response(200)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(data)))
@@ -973,6 +999,8 @@ def handler(cfg, q):
                 if path.startswith("/queue/job/"):
                     job_id = path[len("/queue/job/"):]
                     j = next((j for j in q.data["jobs"] if job_id.isdigit() and j["id"] == int(job_id)), None)
+                    if j and j.get("sha") and site_file(cfg, f"{urllib.parse.urlsplit(cfg.reports).path}/{folder(j)}/"):
+                        return self.redirect(f"{cfg.reports}/{folder(j)}/")
                     return self.send(200, job_page(cfg, q, login, j)) if j else self.send(404, jobs_page(cfg, q, login, "There is no such job."))
                 return self.redirect(cfg.reports + "/") if cfg.site else self.send(200, jobs_page(cfg, q, login))
             if path == "/queue/login":
