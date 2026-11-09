@@ -711,6 +711,17 @@ class TestServer(Base):
                                          {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})
             return code, json.loads(data)
         self.assertEqual(claim("a", "x", tok="nope")[0], 401)
+        # a node says it is setting up before it solves anything: the job's health shows it
+        self.assertEqual(send("s", {"job.log": "precompiling"}, state="setup", host="n9")[0], 200)
+        nodes = self.call_api("GET", f"/queue/api/jobs/{job}", token="tok-alice")[1]["nodes"]
+        self.assertEqual((nodes["s"]["host"], nodes["s"]["state"]), ("n9", "setup"))
+        self.assertLess(nodes["s"]["quiet"], 5)
+        table = app.nodes_table(self.q.data["jobs"][-1])
+        self.assertIn("setting up", table); self.assertIn("n9", table)
+        self.q.data["jobs"][-1]["nodes"]["s"]["seen"] -= 3600
+        self.assertIn("gone (setup)", app.nodes_table(self.q.data["jobs"][-1]))
+        self.assertEqual(send("s", {}, state="bogus")[0], 400)
+        self.q.beats[(job, "s")] = 0; self.q.data["jobs"][-1]["nodes"].pop("s")
         # a node's metadata before its first row
         send("c", {"Other/acopf_default.csv.meta.toml": 'device = "cuda"\n'})
         self.assertEqual(claim("a", "x")[1]["todo"], ["default"])

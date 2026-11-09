@@ -276,9 +276,11 @@ class Queue:
         """Record that `node` of external job `j` is alive; the first time, on the job too."""
         beats = self.__dict__.setdefault("beats", {})
         beats[(j["id"], node)] = time.time()
+        if node in j["nodes"]:
+            j["nodes"][node]["seen"] = int(time.time())   # served from memory; saved with the next change
         if node not in j["nodes"] or (host and j["nodes"][node].get("host") != host[:80]):
             with self.changed:
-                n = j["nodes"].setdefault(node, {"host": "", "state": "running", "joined": int(time.time())})
+                n = j["nodes"].setdefault(node, {"host": "", "state": "running", "joined": int(time.time()), "seen": int(time.time())})
                 n["host"] = host[:80] or n["host"]
                 self.save()
 
@@ -576,7 +578,9 @@ def public(cfg, j):
     out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note", "cancelled_by", "cancelled_at", "node")}
     out["purpose"] = j.get("purpose", "")
     if j.get("external"):
-        out["nodes"] = {k: {"host": v.get("host", ""), "state": v.get("state", "")} for k, v in j.get("nodes", {}).items()}
+        now = int(time.time())
+        out["nodes"] = {k: {"host": v.get("host", ""), "state": v.get("state", ""), "joined": v.get("joined"),
+                            "quiet": now - v.get("seen", v.get("joined", now))} for k, v in j.get("nodes", {}).items()}
         out["external"] = True
     if j.get("only"):
         out["subset"], out["instances"] = j.get("subset", ""), len(j["only"])
@@ -1497,7 +1501,28 @@ def log_tail(path, lines=80, limit=1 << 20):
     return "\n".join(text.rstrip("\n").split("\n")[-lines:])
 
 
-def workers_page(cfg, login, name):
+NODE_STATES = ("setup", "running", "interrupted", "finished", "failed", "cancelled")
+NODE_SAY = {"setup": "setting up: cloning, installing, precompiling", "running": "solving", "interrupted": "stopped (preempted?)"}
+
+
+def nodes_table(j):
+    """The nodes of an external job: what each said last, and how long ago it was heard from."""
+    if not j or not j.get("nodes"):
+        return ""
+    e, now, rows = html.escape, int(time.time()), []
+    for k, v in sorted(j["nodes"].items(), key=lambda kv: kv[1].get("joined", 0)):
+        quiet = now - v.get("seen", v.get("joined", now))
+        state = v.get("state", "")
+        if quiet >= Queue.NODE_GONE and state not in ("finished", "failed", "cancelled"):
+            state = f"gone ({state})"
+        heard = f"{quiet} s ago" if quiet < 120 else f"{quiet // 60} min ago"
+        rows.append(f'<tr><td class="l">{e(v.get("host", "") or "?")}</td><td class="l"><code>{e(k)}</code></td>'
+                    f'<td class="l">{e(NODE_SAY.get(state, state))}</td><td>{heard}</td></tr>')
+    return ('<h2>Nodes</h2><div class="wide"><table class="table table-sm"><thead><tr><th class="l">host</th><th class="l">node</th>'
+            '<th class="l">state</th><th>last heard</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>")
+
+
+def workers_page(cfg, login, name, q=None):
     """What every worker of a run is on, read from its live folder when asked."""
     e = html.escape
     root = live_dir(cfg, name)
@@ -1513,6 +1538,7 @@ def workers_page(cfg, login, name):
     else:
         note = ""
     body = f'<h1>Workers</h1><p class="m">Read live from the run, every few seconds. <a href="./">Back to the report</a></p>{note}'
+    body += nodes_table(job_of(q, name)) if q is not None and name.startswith("run-x") else ""
     for machine in sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))):
         try:
             text = open(os.path.join(root, machine, "summary.md")).read()
@@ -1857,8 +1883,8 @@ def handler(cfg, q):
                 return reply(200, {"todo": todo, "cancel": False})
             node, state = query.get("node", [""])[0], query.get("state", ["running"])[0]
             host = query.get("host", [""])[0]
-            if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", node) or state not in ("running", "interrupted", "finished", "failed", "cancelled"):
-                return reply(400, {"error": "Give node, and a state of running, interrupted, finished, failed or cancelled."})
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", node) or state not in NODE_STATES:
+                return reply(400, {"error": "Give node, and a state of " + ", ".join(NODE_STATES) + "."})
             if not cfg.uploads:
                 return reply(503, {"error": "Uploads are not set up on this server."})
             fd, path = tempfile.mkstemp(dir=cfg.uploads, prefix=".up-", suffix=".tar.gz")
@@ -2033,7 +2059,7 @@ def handler(cfg, q):
                 return self.send(200 if not login else 403, signin(cfg, "" if not login else f"{login} has no write access to {cfg.repo}."))
             m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/(pr-\d+|master-[0-9a-f]{8}|run-[a-z0-9-]+)/workers\.html", path)
             if m and live_dir(cfg, m[1]) and os.path.isdir(live_dir(cfg, m[1])):
-                return self.send(200, workers_page(cfg, login, m[1]))
+                return self.send(200, workers_page(cfg, login, m[1], q))
             target = site_file(cfg, path)
             m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/pr-(\d+)/?", path)
             if target is None and m:
