@@ -804,6 +804,15 @@ class TestServer(Base):
         code, _, data = self.request("GET", f"/queue/api/jobs/{self.q.data['jobs'][-1]['id']}/spec", headers={"Authorization": "Bearer " + token})
         self.assertEqual(json.loads(data)["only"], "B,C")
 
+    def test_a_push_to_master_marks_a_fetch(self):
+        self.cfg.master_pushed = os.path.join(self.dir, "master-pushed")
+        code = self.hook("push", {"repository": {"full_name": REPO}, "ref": "refs/heads/master", "after": "9" * 40})[0]
+        self.assertEqual(code, 204)
+        self.assertTrue(os.path.exists(self.cfg.master_pushed))
+        os.remove(self.cfg.master_pushed)
+        self.hook("push", {"repository": {"full_name": REPO}, "ref": "refs/heads/other", "after": "9" * 40})
+        self.assertFalse(os.path.exists(self.cfg.master_pushed))
+
     def test_version(self):
         code, _, out = self.request("GET", "/queue/version")
         self.assertEqual((code, json.loads(out)["commit"]), (200, app.CODE_COMMIT))

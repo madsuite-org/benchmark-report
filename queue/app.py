@@ -51,6 +51,8 @@ class Config:
         self.live = env.get("QUEUE_LIVE", "/mnt/benchmark-live")
         # while this file exists, no machine takes a new job: a restart can wait for the running ones
         self.drain = env.get("QUEUE_DRAIN", "")
+        # touched when master moves, so that the host fetches the clones the reports read master from
+        self.master_pushed = env.get("QUEUE_MASTER_PUSHED", "/srv/benchmark-queue/master-pushed")
         # The machines that run jobs, each with its own lane: a JSON list of {"name", "remote", "live"}.
         # Without it, the one machine of QUEUE_REMOTE, named QUEUE_NODE_NAME.
         nodes = json.loads(env.get("QUEUE_NODES", "") or "[]")
@@ -2115,8 +2117,15 @@ def handler(cfg, q):
                     login = data["comment"]["user"]["login"]
                     if q.permission(login) in WRITE:
                         q.add_pr(int(data["issue"]["number"]), login)
-                elif event == "push" and cfg.auto_master and data.get("ref") == "refs/heads/master" and not data.get("deleted"):
-                    q.add_master(data["after"])
+                elif event == "push" and data.get("ref") == "refs/heads/master" and not data.get("deleted"):
+                    if cfg.master_pushed:
+                        try:
+                            with open(cfg.master_pushed, "a"):
+                                os.utime(cfg.master_pushed)
+                        except OSError:
+                            pass
+                    if cfg.auto_master:
+                        q.add_master(data["after"])
                 return self.send(204, kind="text/plain")
             if self.path == "/queue/runner/status":
                 if not self.runner():
