@@ -783,6 +783,31 @@ class TestServer(Base):
         self.assertEqual(claim("a", "w")[1]["todo"], [])
         self.q.beats[(job, "b")] = 0
         self.assertEqual(claim("a", "w")[1]["todo"], ["default"])
+        # an instance that failed for a machine reason is tried again, on another node while there is one
+        def retry(node, tok=token):
+            body = json.dumps({"node": node, "device": "cuda"}).encode()
+            code, _, data = self.request("POST", f"/queue/api/jobs/{the_job[0]}/retry", body, {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})
+            return code, json.loads(data)
+        self.assertEqual(retry("a")[1], {"cancel": False})                          # nothing failed yet
+        send("a", {"H200/acopf_default.csv": head + "x,1,11\nz,2,30\nq,-101,0\n"})
+        self.assertEqual(retry("a")[1], {"cancel": False})                          # not to the node it failed on
+        self.assertEqual(retry("b")[1], {"cancel": False, "set": "acopf", "case": "q", "configs": ["default"]})
+        self.assertEqual(retry("c")[1], {"cancel": False})                          # b holds the retry
+        send("b", {"L40S/acopf_default.csv": head + "y,1,12\nq,1,40\n"}, host="n2")
+        self.assertNotIn("q,", open(os.path.join(root, "H200", "acopf_default.csv")).read())   # the failure is replaced
+        self.assertIn("q,1,40", open(os.path.join(root, "L40S", "acopf_default.csv")).read())
+        self.assertEqual(retry("c")[1], {"cancel": False})
+        # one that keeps failing stops after RETRIES more tries
+        send("a", {"H200/acopf_default.csv": head + "x,1,11\nz,2,30\nk,-100,0\n"})
+        for n in range(app.RETRIES):
+            got = retry(f"r{n}")[1]
+            self.assertEqual(got.get("case"), "k", (n, got))
+            send(f"r{n}", {"H200/acopf_default.csv": head + "k,-100,0\n"}, host=f"m{n}")
+        self.assertEqual(retry("r9")[1], {"cancel": False})
+        self.assertIn("k,-100", open(os.path.join(root, "H200", "acopf_default.csv")).read())   # still shown as failed
+        for n in range(app.RETRIES):
+            self.q.beats[(job, f"r{n}")] = 0
+        self.q.data["jobs"][-1]["nodes"] = {k: v for k, v in self.q.data["jobs"][-1]["nodes"].items() if not k.startswith("r")}
         # a node that has finished leaves the workers' status
         send("b", {}, state="finished", host="n2")
         self.assertNotIn("node n2", open(os.path.join(root, "L40S", "summary.md")).read())

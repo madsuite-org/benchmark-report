@@ -287,10 +287,13 @@ class Queue:
     def alive(self, j, node):
         return time.time() - self.__dict__.setdefault("beats", {}).get((j["id"], node), 0) < self.NODE_GONE
 
-    def claim(self, j, node, key):
+    def claim(self, j, node, key, again=False):
         """Whether `node` may solve the instance `key` (device/set/case) of `j`: no other node that is
         still alive holds it. A node that comes back (requeued after preemption) keeps its own claims."""
         claims = self.__dict__.setdefault("claims", {}).setdefault(j["id"], {})
+        if again:
+            # a retry of an instance whose first holder is done with it: only another retry holds it
+            claims = self.__dict__.setdefault("retrying", {}).setdefault(j["id"], {})
         with self.changed:
             holder = claims.get(key)
             if holder and holder != node and self.alive(j, holder):
@@ -1026,6 +1029,95 @@ def merge_rows(path, lines):
     return True
 
 
+# A row with one of these is the machine's failure, not the solver's: killed (a hang, out of memory)
+# or an error (the worker crashed, the model could not be built). Such an instance is tried again,
+# RETRIES more times, on another node where there is one.
+MACHINE_FAILURES = ("-100", "-101")
+RETRIES = 2
+
+
+def note_failures(cfg, q, j, node, target, r, lines):
+    """For rows a node sent: which node a machine failure happened on, and, for an instance that now
+    has a row of another kind, its failure rows from other machines taken away (a retry elsewhere)."""
+    try:
+        device = re.search(r'^device\s*=\s*"([a-z]+)"', open(os.path.join(target, r[0], f"{r[2]}_{r[3]}.csv.meta.toml")).read(), re.M)[1]
+    except (OSError, TypeError):
+        device = j.get("devices", "cpu")
+    failed_on, fixed = j.setdefault("failed_on", {}), set()
+    for line in lines[1:]:
+        f = line.split(",", 2)
+        if len(f) < 2:
+            continue
+        if f[1] in MACHINE_FAILURES:
+            failed_on[f"{device}/{r[2]}/{f[0]}/{r[3]}"] = node
+            # a retry that failed again lets go of the instance, for another node to try
+            retrying = q.__dict__.get("retrying", {}).get(j["id"], {})
+            if retrying.get(f"{device}/{r[2]}/{f[0]}") == node:
+                retrying.pop(f"{device}/{r[2]}/{f[0]}")
+        else:
+            fixed.add(f[0])
+    if not fixed:
+        return
+    for m in os.listdir(target):
+        other = os.path.join(target, m, f"{r[2]}_{r[3]}.csv")
+        if m == r[1] or not os.path.isfile(other):
+            continue
+        rows = open(other).read().splitlines()
+        keep = rows[:1] + [x for x in rows[1:] if not (x.split(",", 1)[0] in fixed and x.split(",", 2)[1:2] and x.split(",", 2)[1] in MACHINE_FAILURES)]
+        if len(keep) != len(rows):
+            tmp = other + ".tmp"
+            with open(tmp, "w") as out:
+                out.write("".join(x + "\n" for x in keep))
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, other)
+
+
+def failure_rows(cfg, j, device):
+    """The instances of `j` on `device` whose last row is a machine failure: (set, case, config)."""
+    root = os.path.join(cfg.uploads, folder(j))
+    found = []
+    try:
+        machines = sorted(m for m in os.listdir(root) if os.path.isdir(os.path.join(root, m)))
+    except OSError:
+        return found
+    for m in machines:
+        for f in sorted(os.listdir(os.path.join(root, m))):
+            r = RESULT_FILE.fullmatch(f"{m}/{f}")
+            if not r:
+                continue
+            try:
+                meta = open(os.path.join(root, m, f) + ".meta.toml").read()
+                lines = open(os.path.join(root, m, f)).read().splitlines()[1:]
+            except OSError:
+                continue
+            if not re.search(rf'^device\s*=\s*"{re.escape(device)}"', meta, re.M):
+                continue
+            found += [(r[2], line.split(",", 2)[0], r[3]) for line in lines if line.split(",", 2)[1:2] and line.split(",", 2)[1] in MACHINE_FAILURES]
+    return found
+
+
+def next_retry(cfg, q, j, node, device):
+    """An instance for `node` to try again, {"set", "case", "configs"}, or None: one whose row is a
+    machine failure, tried fewer than RETRIES more times, held by no node still alive, and not failed
+    on this node, unless no other node is left to take it."""
+    tries, failed_on = j.setdefault("retries", {}), j.setdefault("failed_on", {})
+    others = any(k != node and v.get("state") not in ("finished", "failed", "cancelled") and q.alive(j, k) for k, v in j["nodes"].items())
+    by_case = {}
+    for set_name, case, config in failure_rows(cfg, j, device):
+        key = f"{device}/{set_name}/{case}"
+        if tries.get(f"{key}/{config}", 0) >= RETRIES or (others and failed_on.get(f"{key}/{config}") == node):
+            continue
+        by_case.setdefault((set_name, case), []).append(config)
+    for (set_name, case), configs in by_case.items():
+        if q.claim(j, node, f"{device}/{set_name}/{case}", again=True):
+            with q.changed:
+                for c in configs:
+                    tries[f"{device}/{set_name}/{case}/{c}"] = tries.get(f"{device}/{set_name}/{case}/{c}", 0) + 1
+                q.save()
+            return {"set": set_name, "case": case, "configs": configs}
+    return None
+
+
 def solved_already(cfg, j, device, set_name, case, configs):
     """The configurations of an instance whose rows the job already has, from any node, on that device."""
     root = os.path.join(cfg.uploads, folder(j))
@@ -1158,9 +1250,12 @@ def receive_job_files(cfg, q, j, node, archive_path, state):
         for path, m in members:
             data = tar.extractfile(m).read()
             parts = path.split("/")
-            if RESULT_FILE.fullmatch(path):
+            r = RESULT_FILE.fullmatch(path)
+            if r:
                 os.makedirs(os.path.join(target, parts[0]), mode=0o755, exist_ok=True)
-                merge_rows(os.path.join(target, path), data.decode(errors="replace").splitlines())
+                lines = data.decode(errors="replace").splitlines()
+                merge_rows(os.path.join(target, path), lines)
+                note_failures(cfg, q, j, node, target, r, lines)
                 continue
             if len(parts) == 2 and parts[1] == "summary.md":
                 # each node's workers in a file of its own; summary.md is all of them
@@ -1928,6 +2023,20 @@ def handler(cfg, q):
                                    "sets": j.get("sets", "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
                                    "files": f"{cfg.base}/api/jobs/{j['id']}/files", "claim": f"{cfg.base}/api/jobs/{j['id']}/claim",
                                    "report": f"{cfg.reports}/{folder(j)}/"})
+            if what == "retry":
+                # a node done with its own pass asks for an instance that failed for a machine reason
+                try:
+                    data = json.loads(first or b"{}")
+                except ValueError:
+                    return reply(400, {"error": "The body is not JSON."})
+                node, device = str(data.get("node", "")), str(data.get("device", ""))
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", node) or device not in ("cpu", "cuda"):
+                    return reply(400, {"error": "Give node and device."})
+                if j["state"] != "running":
+                    return reply(200, {"cancel": True})
+                q.seen(j, node)
+                found = next_retry(cfg, q, j, node, device)
+                return reply(200, {"cancel": False, **(found or {})})
             if what == "claim":
                 try:
                     data = json.loads(first or b"{}")
@@ -2276,7 +2385,7 @@ def handler(cfg, q):
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))
             if self.path.startswith("/queue/api/results"):
                 return self.upload(body)
-            m = re.fullmatch(r"/queue/api/jobs/(\d+)/(files|claim|spec)", self.path.partition("?")[0])
+            m = re.fullmatch(r"/queue/api/jobs/(\d+)/(files|claim|retry|spec)", self.path.partition("?")[0])
             if m:
                 return self.from_node(int(m[1]), m[2], body)
             if self.path.startswith("/queue/api/"):
