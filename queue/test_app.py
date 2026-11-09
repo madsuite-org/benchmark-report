@@ -769,6 +769,37 @@ class TestServer(Base):
         self.assertEqual(claim("a", "x", tok=token)[1], {"todo": [], "cancel": True})
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True}, token="tok-alice")[0], 400)
 
+    def test_a_job_over_a_subset(self):
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        self.cfg.site = os.path.join(self.dir, "site")
+        reports = os.path.join(self.cfg.site, urllib.parse.urlsplit(self.cfg.reports).path.strip("/"))
+        os.makedirs(os.path.join(reports, "run-x9-gpu"))
+        entry = lambda cls, con, ok, resto: {"class": cls, "constrained": con, "solved": ok, "iters": 5, "resto": resto}
+        json.dump({"cpu/cutest/A/ipopt": entry("small", True, True, False), "cpu/cutest/B/ipopt": entry("large", True, False, True),
+                   "cpu/cutest/C/ipopt": entry("large", False, True, False), "cpu/acopf/D/ipopt": entry("medium", True, True, True)},
+                  open(os.path.join(reports, "ipopt-instances.json"), "w"))
+        json.dump({"cuda/cutest/A/default": entry("small", True, False, False), "cuda/cutest/C/default": entry("large", False, True, True)},
+                  open(os.path.join(reports, "run-x9-gpu", "instances.json"), "w"))
+        def new(**extra):
+            return self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cuda", "sets": "cutest", **extra}, token="tok-alice")
+        code, out = new(subset="size=large")
+        self.assertEqual((code, out["instances"]), (201, 2), out)                       # B and C; D is another set
+        self.assertEqual(self.q.data["jobs"][-1]["only"], ["B", "C"])
+        self.assertEqual(new(subset="size=large,constrained=yes")[1]["instances"], 1)
+        self.assertEqual(self.q.data["jobs"][-1]["only"], ["B"])
+        self.assertEqual(new(subset="failed=ipopt")[1]["instances"], 1)                # B
+        self.assertEqual(new(subset="failed=run-x9-gpu")[1]["instances"], 1)           # A, on this device
+        self.assertEqual(self.q.data["jobs"][-1]["only"], ["A"])
+        self.assertEqual(new(subset="resto=run-x9-gpu")[1]["instances"], 1)            # C
+        self.assertEqual(new(instances=["A", "Z"])[1]["instances"], 2)                 # a list of one's own
+        self.assertEqual(new(subset="size=small", instances=["A", "B"])[1]["instances"], 1)
+        self.assertEqual(new(subset="size=huge")[0], 400)
+        self.assertEqual(new(subset="failed=run-nope")[0], 400)
+        self.assertEqual(new(subset="size=medium")[0], 400)                            # nothing in these sets
+        token = new(subset="size=large")[1]["token"]
+        code, _, data = self.request("GET", f"/queue/api/jobs/{self.q.data['jobs'][-1]['id']}/spec", headers={"Authorization": "Bearer " + token})
+        self.assertEqual(json.loads(data)["only"], "B,C")
+
     def test_version(self):
         code, _, out = self.request("GET", "/queue/version")
         self.assertEqual((code, json.loads(out)["commit"]), (200, app.CODE_COMMIT))

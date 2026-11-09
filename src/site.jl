@@ -537,7 +537,7 @@ function write_listings(site, assets)
 end
 escape_url(s) = replace(s, r"[^A-Za-z0-9_.~+-]" => c -> join(["%" * uppercase(string(b; base = 16, pad = 2)) for b in codeunits(c)]))
 
-function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished)
+function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished, only = nothing)
     mkpath(site)
     chmod(site, 0o755)
     assets == "." && write_assets(site)
@@ -556,6 +556,15 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     # until the run has results of its own there is nothing to compare: no reference, no base
     if isempty(cand.rows)
         reference, base = nothing, nothing
+    end
+    if only !== nothing
+        # a subset: every column over its instances alone, so that sizes and progress are the subset's
+        for rs in (reference, base)
+            rs === nothing && continue
+            for (k, rows) in rs.rows
+                rs.rows[k] = Dict{String, Any}(c => r for (c, r) in rows if c in only)
+            end
+        end
     end
     if reference !== nothing
         mergewith!((mine, _) -> mine, cand.rows, reference.rows)

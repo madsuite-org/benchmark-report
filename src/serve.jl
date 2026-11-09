@@ -64,6 +64,8 @@ function build_run(live, site, name)
         joinpath(site, name), joinpath(live, name);
         base,
         reference = "ipopt" in hide ? nothing : ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
+        # a job over a subset of the instances is compared over that subset
+        only = (m = match(r"\"only\"\s*:\s*\[([^\]]*)\]", text); m === nothing ? nothing : Set(x[1] for x in eachmatch(r"\"([A-Za-z0-9_.+-]+)\"", m[1]))),
         title, link,
         finished = state != "running", assets = "..", live = true,
     )

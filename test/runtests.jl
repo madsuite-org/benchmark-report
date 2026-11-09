@@ -199,6 +199,22 @@ end
     end
 end
 
+@testset "a job over a subset is compared over the subset" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
+        hostile_results(results)
+        machine = joinpath(results, "machine")
+        case = first(BenchmarkReport.read_results(joinpath(machine, "smoke_default.csv"))).case
+        reference = BenchmarkReport.ResultSet("Ipopt reference")
+        rows = BenchmarkReport.read_results(joinpath(machine, "smoke_default.csv"))
+        more = [rows; [merge(rows[1], (; case = "elsewhere_$i")) for i in 1:5]]
+        meta = BenchmarkReport.read_meta(joinpath(machine, "smoke_default.csv"))
+        BenchmarkReport.add!(reference, "smoke", "ipopt", merge(meta, Dict("device" => "cpu")), more)
+        counts = write_report(site, results; wall = 7200.0, finished = false, reference, only = Set([string(case)]))
+        @test counts.total == 1        # the subset's one instance, not the reference's six
+    end
+end
+
 @testset "a run with no results yet shows no reference" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "empty")), joinpath(root, "site")

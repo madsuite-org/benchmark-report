@@ -552,6 +552,8 @@ def public(cfg, j):
     if j.get("external"):
         out["nodes"] = {k: {"host": v.get("host", ""), "state": v.get("state", "")} for k, v in j.get("nodes", {}).items()}
         out["external"] = True
+    if j.get("only"):
+        out["subset"], out["instances"] = j.get("subset", ""), len(j["only"])
     out |= settings_of(j) | {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
             "report": f"{cfg.reports}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
     return out
@@ -1013,15 +1015,77 @@ def solved_already(cfg, j, device, set_name, case, configs):
     return done
 
 
+SUBSET_TERM = re.compile(r"(size)=((?:small|medium|large)(?:\+(?:small|medium|large))*)|(constrained)=(yes|no)|(failed|solved|resto)=(ipopt|[a-z0-9-]{1,60})")
+
+
+def resolve_subset(cfg, subset, instances, sets, device):
+    """The instances of a job's subset, from what the site knows now (each report's instances.json,
+    the Ipopt reference's ipopt-instances.json): (sorted names, None) or (None, problem). `subset` is
+    terms joined by commas, all of which an instance meets: size=small+medium, constrained=yes|no,
+    failed=<source>, solved=<source>, resto=<source>, a source being ipopt or a report; `instances`
+    a list of names. The list is fixed in the job, as the site's data moves on."""
+    root = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/")) if cfg.site else ""
+    def catalog(source):
+        path = os.path.join(root, "ipopt-instances.json" if source == "ipopt" else os.path.join(source, "instances.json"))
+        if source != "ipopt" and not REPORT.fullmatch(source):
+            return None
+        try:
+            return json.load(open(path))
+        except (OSError, ValueError):
+            return None
+    # every instance of the job's sets, with its size and constraints, from the reference
+    reference = catalog("ipopt") or {}
+    known = {}
+    for key, v in reference.items():
+        _, set_name, case, _ = key.split("/", 3)
+        if set_name in sets:
+            known[case] = v
+    chosen = set(known)
+    for term in [t for t in (subset or "").split(",") if t]:
+        m = SUBSET_TERM.fullmatch(term)
+        if not m:
+            return None, f"Not a subset term: {term[:60]}. Use size=, constrained=, failed=, solved=, resto=."
+        if m[1]:
+            chosen = {c for c in chosen if known[c].get("class") in m[2].split("+")}
+        elif m[3]:
+            chosen = {c for c in chosen if known[c].get("constrained") == (m[4] == "yes")}
+        else:
+            what, source = m[5], m[6]
+            data = catalog(source)
+            if data is None:
+                return None, f"No instances known for {source}."
+            # the source's own results on this device (the reference's on the host), any configuration
+            of = {}
+            for key, v in data.items():
+                dev, set_name, case, _ = key.split("/", 3)
+                if set_name in sets and (source == "ipopt" or dev == device):
+                    of.setdefault(case, []).append(v)
+            test = {"failed": lambda vs: any(not v.get("solved") for v in vs),
+                    "solved": lambda vs: all(v.get("solved") for v in vs),
+                    "resto": lambda vs: any(v.get("resto") for v in vs)}[what]
+            chosen = {c for c in chosen if c in of and test(of[c])}
+    if instances:
+        names = [n for n in instances if re.fullmatch(r"[A-Za-z0-9_.+-]{1,100}", n)]
+        if len(names) != len(instances):
+            return None, "Instance names are letters, digits and _ . + - only."
+        chosen = (chosen & set(names)) if subset else set(names)
+    if not chosen:
+        return None, "The subset has no instances."
+    return sorted(chosen), None
+
+
 def write_run_json(cfg, j):
     """The run.json of an external job's report folder; replacing it is what makes the builder rebuild."""
     target = os.path.join(cfg.uploads, folder(j))
     os.makedirs(target, mode=0o755, exist_ok=True)
     hosts = sorted({v.get("host", "") for v in j.get("nodes", {}).values()} - {""})
     st = settings_of(j)
-    what = ", ".join(x for x in (st["devices"].replace("cuda", "GPU").replace("cpu", "CPU"), st["config"] if st["config"] != "default" else "", st["options"]) if x)
+    what = ", ".join(x for x in (st["devices"].replace("cuda", "GPU").replace("cpu", "CPU"), st["config"] if st["config"] != "default" else "", st["options"],
+                                 f"{len(j['only'])} instances: {j.get('subset', '')}" if j.get("only") else "") if x)
     title = f"Job {j['id']}: {j.get('title') or folder(j)}, {what}" + (f" ({', '.join(hosts)[:80]})" if hosts else "")
     doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
+    if j.get("only"):
+        doc["only"] = j["only"]      # a subset: the report compares over these instances only
     tmp = os.path.join(target, ".run.json")
     with open(tmp, "w") as f:
         json.dump(doc, f)
@@ -1709,7 +1773,7 @@ def handler(cfg, q):
             if what == "spec":
                 # what a node runs: everything about the job is the server's, set when it was created
                 return reply(200, {"id": j["id"], "sha": j["sha"], "repository": cfg.repo, "state": j["state"],
-                                   "sets": j.get("sets", "acopf,cops,mittelmann,cutest"), **settings_of(j),
+                                   "sets": j.get("sets", "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
                                    "files": f"{cfg.base}/api/jobs/{j['id']}/files", "claim": f"{cfg.base}/api/jobs/{j['id']}/claim",
                                    "report": f"{cfg.reports}/{folder(j)}/"})
             if what == "claim":
@@ -1781,7 +1845,7 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
-                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", *DEFAULTS})
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", *DEFAULTS})
                 if unknown:
                     # a field this app does not know would otherwise be ignored without a word
                     return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
@@ -1799,6 +1863,14 @@ def handler(cfg, q):
                     if not re.fullmatch(r"[a-z]+(,[a-z]+){0,9}", sets):
                         return reply(400, {"error": "sets is a comma-separated list of set names."})
                     settings = settings | {"sets": sets}
+                    if data.get("subset") or data.get("instances"):
+                        given = data.get("instances") or []
+                        if not isinstance(given, list) or len(given) > 5000:
+                            return reply(400, {"error": "instances is a list of instance names."})
+                        only, problem = resolve_subset(cfg, str(data.get("subset") or ""), [str(x) for x in given], sets.split(","), settings["devices"])
+                        if problem:
+                            return reply(400, {"error": problem})
+                        settings = settings | {"only": only, "subset": str(data.get("subset") or "") + (" + listed instances" if given else "")}
                     if len(what) != 1 or ("pr" in what and not str(what["pr"]).isdigit()):
                         return reply(400, {"error": "Give one of master, pr, branch or commit."})
                     job, token = q.add_external(login, {k: (int(v) if k == "pr" else v) for k, v in what.items()}, settings)
