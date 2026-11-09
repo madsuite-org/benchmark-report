@@ -986,6 +986,15 @@ class TestSite(Base):
         self.assertEqual(self.get(f"/madnlp/r/{share[2]}")[0], 303)
         code, _, robots = self.get("/robots.txt")
         self.assertEqual((code, robots), (200, "User-agent: *\nDisallow: /\n"))
+        # a report's solver logs and raw data, linked by its long address so that a copied link opens for anyone
+        open(os.path.join(root, "run-new", "cops.html"), "w").write(page.replace("report", '<a href="data/H200/logs/cops/a_default.txt">f</a>'))
+        os.makedirs(os.path.join(root, "run-new", "data", "H200", "logs", "cops"))
+        open(os.path.join(root, "run-new", "data", "H200", "logs", "cops", "a_default.txt"), "w").write("iter objective")
+        body = self.get("/madnlp/run-new/cops.html", member)[2]
+        log = re.search(r'href="([^"]*a_default\.txt)"', body)[1]
+        self.assertTrue(log.startswith(f"/madnlp/r/{share[2]}/data/"), log)
+        self.assertEqual(self.get(log)[2], "iter objective")                     # no sign-in
+        self.assertIn("Sign in", self.get("/madnlp/run-new/data/H200/logs/cops/a_default.txt")[2])
 
     def test_one_dashboard(self):
         os.makedirs(os.path.join(self.cfg.site, "madnlp"), exist_ok=True)

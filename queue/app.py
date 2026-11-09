@@ -851,8 +851,11 @@ class Links:
 
     def __init__(self, cfg):
         self.cfg, self.lock = cfg, threading.Lock()
-        self.path = os.path.join(cfg.uploads, "report-links.json") if cfg.uploads else ""
         self.data = None
+
+    @property
+    def path(self):
+        return os.path.join(self.cfg.uploads, "report-links.json") if self.cfg.uploads else ""
 
     def root(self):
         return os.path.join(self.cfg.site, urllib.parse.urlsplit(self.cfg.reports).path.strip("/")) if self.cfg.site else ""
@@ -2088,6 +2091,12 @@ def handler(cfg, q):
             data = open(target, "rb").read()
             if target.endswith(".html"):
                 data = data.replace(NAV.encode(), app_nav(cfg, login).encode(), 1)
+                if (report and links.path and not links.public(report) and os.path.dirname(os.path.realpath(target))
+                        == os.path.realpath(os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"), report))):
+                    # a report's files (the solver logs, its raw data) by its long address, so that a
+                    # link copied from the page opens for anyone it is given to, as the page does
+                    share = f"{cfg.reports.rstrip('/')}/r/{links.token_of(report)}/"
+                    data = data.replace(b'href="data/', f'href="{html.escape(share)}data/'.encode())
                 if member_of(login) and os.path.realpath(target) == os.path.realpath(os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"), "index.html")):
                     # one dashboard: the jobs above the reports
                     data = data.replace(b'<main class="container">', b'<main class="container">' + jobs_section(cfg, q, login).encode(), 1)
