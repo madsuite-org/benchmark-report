@@ -1375,6 +1375,39 @@ def compare_panel(cfg, login, name):
             '<span class="m">A run on another machine compares in solves and iterations only.</span></div></div>')
 
 
+def job_details(cfg, j):
+    """What a job is, in one line of fields: its note, what it runs and at which commit, its
+    settings, its subset, its harness, who started it and when."""
+    e = html.escape
+    st = settings_of(j)
+    what = (f'pull request <a href="https://github.com/{cfg.repo}/pull/{j["pr"]}">#{j["pr"]}</a>' if j["kind"] == "pr" else
+            f'branch <a href="https://github.com/{cfg.repo}/tree/{urllib.parse.quote(j.get("ref") or "", safe="/")}">{e(j.get("ref") or "")}</a>' if j["kind"] == "branch" else
+            "master" if j["kind"] == "master" or (j.get("title") or "").startswith("master ") else "commit")
+    sha = j.get("sha") or ""
+    fields = [("note", e(j["purpose"])) if j.get("purpose") else None,
+              ("runs", what + (f' at <a href="https://github.com/{cfg.repo}/commit/{sha}"><code>{sha[:8]}</code></a>' if sha else "")),
+              ("device", e(st["devices"].replace("cuda", "GPU").replace("cpu", "CPU"))),
+              ("configuration", e(st["config"])),
+              ("options", f"<code>{e(st['options'])}</code>") if st["options"] else None,
+              ("sets", e(j["sets"])) if j.get("sets") and j["sets"] != "acopf,cops,mittelmann,cutest" else None,
+              ("subset", f'{e(j.get("subset") or "listed")}, {len(j["only"])} instances') if j.get("only") else None,
+              ("harness", e(st["harness"])) if st["harness"] else None,
+              ("started by", f'{e(j["by"])}, {when(j.get("started") or j["queued"])} UTC')]
+    return " · ".join(f'<span class="m">{k}</span> {v}' for k, v in (f for f in fields if f))
+
+
+def job_of(q, name):
+    """The newest job that makes the report folder `name`, or None."""
+    jobs = [j for j in q.data["jobs"] if (j.get("sha") or j["kind"] == "pr") and folder({**j, "sha": j.get("sha") or "0" * 40}) == name]
+    return max(jobs, key=lambda j: j["id"]) if jobs else None
+
+
+def details_panel(cfg, q, name):
+    """On a report, for every reader: what its job runs (see `job_details`)."""
+    j = job_of(q, name)
+    return f'<div class="container mt-2"><div class="jobbar">{job_details(cfg, j)}</div></div>' if j else ""
+
+
 def job_panel(cfg, q, login, name):
     """On a report, for members, the job that makes it: its state and its actions."""
     jobs = [j for j in q.data["jobs"] if (j.get("sha") or j["kind"] == "pr") and folder({**j, "sha": j.get("sha") or "0" * 40}) == name]
@@ -1567,7 +1600,8 @@ def job_page(cfg, q, login, j):
     link = (f'https://github.com/{cfg.repo}/tree/{urllib.parse.quote(j.get("ref", ""))}' if j["kind"] == "branch" else
             f'https://github.com/{cfg.repo}/commit/{j.get("sha") or ""}' if j["kind"] == "commit" else
             f'https://github.com/{cfg.repo}/pull/{j["pr"]}' if j["kind"] == "pr" else f'https://github.com/{cfg.repo}/commits/master')
-    rows = [("Run", f'<a href="{link}">{e(name(cfg, j))}</a> {e(j.get("title", ""))}'), ("State", badge(j, cfg) + (f' {e(j["note"])}' if j.get("note") else "")),
+    rows = [("Run", f'<a href="{link}">{e(name(cfg, j))}</a> {e(j.get("title", ""))}'), ("Details", job_details(cfg, j)),
+            ("State", badge(j, cfg) + (f' {e(j["note"])}' if j.get("note") else "")),
             ("Commit", f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}"><code>{j["sha"][:8]}</code></a>' if j.get("sha") else "resolved when it starts"),
             ("Machine", e(machine_of(j) or "any free")), ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
             ("Results", "keep the results so far" if j.get("keep", True) else "start over")]
@@ -2013,6 +2047,9 @@ def handler(cfg, q):
                     data = data.replace(b"</header>", b"</header>" + stall_note(cfg, login if member else None, parts[1], age).encode(), 1)
                 if len(parts) > 1:
                     data = data.replace(b"</header>", b"</header>" + commits_panel(cfg, q, parts[1]).encode(), 1)
+                    if len(parts) == 2 or parts[2] in ("", "index.html"):
+                        # what the job runs, for anyone reading the report (its long link included)
+                        data = data.replace(b"</header>", b"</header>" + details_panel(cfg, q, parts[1]).encode(), 1)
                 if len(parts) > 1 and member_of(login):
                     # the report and its job are one page: the job's state and actions, for members
                     data = data.replace(b"</header>", b"</header>" + job_panel(cfg, q, login, parts[1]).encode(), 1)

@@ -741,6 +741,9 @@ class TestServer(Base):
         self.assertEqual((code, out["purpose"]), (200, "baseline for the fallback"))
         self.assertIn("(baseline for the fallback)", json.load(open(os.path.join(root, "run.json")))["title"])
         self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{job}/note", {"note": "x" * 201}, token="tok-alice")[0], 400)
+        details = app.job_details(self.cfg, self.q.data["jobs"][-1])
+        for want in ("baseline for the fallback", "<code>99999999</code>", "GPU", "tol=1e-6", "started by"):
+            self.assertIn(want, details)
         # a node gone silent (preempted) loses its claims
         self.assertEqual(claim("b", "w")[1]["todo"], ["default"])
         self.assertEqual(claim("a", "w")[1]["todo"], [])
@@ -987,7 +990,9 @@ class TestSite(Base):
         for n in ("pr-7", "pr-7-aaaaaaaa"):
             os.makedirs(os.path.join(self.cfg.site, "madnlp", n))
             open(os.path.join(self.cfg.site, "madnlp", n, "index.html"), "w").write(page_html)
-        self.assertNotIn("jobbar", self.get("/madnlp/pr-7-aaaaaaaa/")[2])         # not to the public
+        public = self.get("/madnlp/pr-7-aaaaaaaa/")[2]
+        self.assertNotIn("Cancel", public)                                      # no job actions for the public
+        self.assertIn("pull request <a", public)                                # but what the job runs
         # an earlier report of the pull request says a newer run is going, and links the others
         old = self.get("/madnlp/pr-7/")[2]
         self.assertIn("a run of aaaaaaaa is in progress", old)
