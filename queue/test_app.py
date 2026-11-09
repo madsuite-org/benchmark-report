@@ -963,6 +963,8 @@ class TestSite(Base):
         self.assertEqual(code, 200); self.assertIn("report", body)
         self.assertEqual(headers.get("X-Robots-Tag"), "noindex, nofollow")
         self.assertEqual(self.get(f"/madnlp/r/{'x' * 32}/")[0], 404)
+        self.assertEqual(self.get("/madnlp/r/style.css")[2], "body{}")           # ../style.css from a page under a long address
+        self.assertIn("Sign in", self.get("/madnlp/r/run-new/")[2])              # and a report there under the usual rules
         self.assertEqual(self.get(f"/madnlp/r/{share[2]}")[0], 303)
         code, _, robots = self.get("/robots.txt")
         self.assertEqual((code, robots), (200, "User-agent: *\nDisallow: /\n"))

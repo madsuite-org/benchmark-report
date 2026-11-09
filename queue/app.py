@@ -1991,13 +1991,15 @@ def handler(cfg, q):
             # a report by its long address: anyone with it may read it
             m = re.fullmatch(re.escape(base) + r"/r/([A-Za-z0-9_-]{20,64})(/.*)?", path)
             by_link = False
-            if m:
-                name = links.name_of(m[1])
-                if name is None:
-                    return self.send(404, "Not found", kind="text/plain")
+            name = links.name_of(m[1]) if m else None
+            if name is not None:
                 if not m[2]:
                     return self.redirect(path + "/")
                 path, by_link = f"{base}/{name}{m[2]}", True
+            elif path.startswith(base + "/r/"):
+                # what a page under a long address refers to relatively (../style.css, ../<report>/):
+                # the site's own files and reports, under the usual rules
+                path = base + "/" + path[len(base) + 3:]
             rest = path[len(base):].strip("/")
             parts_ = rest.split("/") if rest else []
             # what is not public: the list of runs, and a report opened by its short address that was
