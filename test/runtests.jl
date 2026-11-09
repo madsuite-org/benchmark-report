@@ -82,7 +82,7 @@ end
     end
 end
 
-@testset "a solve past the limit of a GPU counts as stopped there" begin
+@testset "a solve past its run's limit counts as stopped there" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
         hostile_results(results)
@@ -95,23 +95,23 @@ end
         cp(joinpath(machine, "smoke_default.csv"), joinpath(other, "smoke_default.csv"))
         meta = read(joinpath(machine, "smoke_default.csv.meta.toml"), String)
         write(joinpath(other, "smoke_default.csv.meta.toml"), replace(meta, "device = \"cuda\"" => "device = \"cpu\""))
+        # a GPU run from when a GPU solve had 600 s
+        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 600.0\n")
         write_report(site, results; wall = 7200.0, finished = true)
-        # one page with both: the GPU solve past 600 s failed, the same time on the host did not
+        # one page with both: the GPU solve past its 600 s failed, the same time on the host did not
         page = read(joinpath(site, "smoke.html"), String)
         @test count("<td class=\"l fail\"", page) == 1
         @test occursin("current (GPU)", page) && occursin("current (CPU)", page)
         @test occursin("url=smoke.html", read(joinpath(site, "cuda-smoke.html"), String))   # the old address
         # the result files are left as they were
         @test occursin(",900,", read(joinpath(site, "data", "machine", "smoke_default.csv"), String))
-        # a run with a longer limit of its own is still held to the benchmark's
-        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 1000.0\n")
-        write_report(site, results; wall = 7200.0, finished = true)
-        @test occursin("<td class=\"l fail\"", read(joinpath(site, "smoke.html"), String))
-        # and one with a shorter limit to that
-        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 950.0\n")
+        # the benchmark's limit, 1800 s on a GPU and on the host, and a run's lower one
         @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 600.0
-        # on the host, 1800 s, also for a run made with 7200 s
         @test BenchmarkReport.device_walls(results, 7200.0)["cpu"] == 1800.0
+        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 7200.0\n")
+        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 1800.0
+        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta)
+        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 1800.0
     end
 end
 
@@ -124,7 +124,7 @@ end
         later = mkpath(joinpath(results, "a-later-machine"))   # sorts first
         lines = readlines(joinpath(machine, "smoke_default.csv"))
         row = split(lines[2], ",")
-        row[findfirst(==("t_total"), split(lines[1], ","))] = "900"
+        row[findfirst(==("t_total"), split(lines[1], ","))] = "2000"
         write(joinpath(later, "smoke_default.csv"), lines[1] * "\n" * join(row, ",") * "\n")
         cp(joinpath(machine, "smoke_default.csv.meta.toml"), joinpath(later, "smoke_default.csv.meta.toml"))
         mkpath(joinpath(later, "logs", "smoke"))
