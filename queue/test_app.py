@@ -741,6 +741,9 @@ class TestServer(Base):
         self.q.data["jobs"][-1]["nodes"]["s"]["seen"] -= 3600
         self.assertIn("gone (setup)", app.nodes_table(self.q.data["jobs"][-1]))
         self.assertEqual(send("s", {}, state="bogus")[0], 400)
+        self.q.data["jobs"][-1]["nodes"]["s"]["state"] = "finished"
+        table = app.nodes_table(self.q.data["jobs"][-1])
+        self.assertNotIn("n9", table); self.assertIn("1 node finished", table)   # finished nodes are not listed
         self.q.beats[(job, "s")] = 0; self.q.data["jobs"][-1]["nodes"].pop("s")
         # a node's metadata before its first row
         send("c", {"Other/acopf_default.csv.meta.toml": 'device = "cuda"\n'})
@@ -780,6 +783,10 @@ class TestServer(Base):
         self.assertEqual(claim("a", "w")[1]["todo"], [])
         self.q.beats[(job, "b")] = 0
         self.assertEqual(claim("a", "w")[1]["todo"], ["default"])
+        # a node that has finished leaves the workers' status
+        send("b", {}, state="finished", host="n2")
+        self.assertNotIn("node n2", open(os.path.join(root, "L40S", "summary.md")).read())
+        self.assertIn("node n1", open(os.path.join(root, "H200", "summary.md")).read())
         # the job ends when every node still there has finished (c went quiet)
         self.q.beats[(job, "c")] = 0
         send("a", {}, state="finished")
