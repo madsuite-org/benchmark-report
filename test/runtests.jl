@@ -344,6 +344,8 @@ end
         write(joinpath(job, "run.json"), """{"repository":"o/r","pr":"","commit":"$newest","state":"running"}""")
         BenchmarkReport.UPLOADS[] = uploads
         @test !occursin("run-x5-newest", BenchmarkReport.latest_merged(live, "pr-1").label)   # not until it has finished
+        write(joinpath(job, "run.json"), """{"repository":"o/r","pr":"","commit":"$newest","state":"finished","only":["x"]}""")
+        @test !occursin("run-x5-newest", BenchmarkReport.latest_merged(live, "pr-1").label)   # nor over a subset
         write(joinpath(job, "run.json"), """{"repository":"o/r","pr":"","commit":"$newest","state":"finished"}""")
         rs = BenchmarkReport.latest_merged(live, "pr-1")
         @test occursin("`$(first(newest, 8))` from run-x5-newest (cuda, cluster nodes)", rs.label)
@@ -382,6 +384,7 @@ end
         index = read(joinpath(site, "index.html"), String)
         @test occursin("<h2>Runs</h2>", index) && occursin("href=\"run-try-this/\"", index)   # one list of every run
         @test !occursin("Manual run", index)
+        @test occursin("<th class=\"l\">device</th>", index) && occursin("<span class=\"tag cuda\">CUDA</span>", index)   # the device, a column
         @test !occursin("<b>x", index)
         @test !occursin("Finished", index)
         report = read(joinpath(site, "run-try-this", "index.html"), String)

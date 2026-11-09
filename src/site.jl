@@ -553,6 +553,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     write_instances(joinpath(site, "instances.json"), cand.rows, k -> (p = get(logs, k, ""); isempty(p) ? "" : joinpath(site, p)))
     # a run of Ipopt itself (config `ipopt`) is shown with its own results, not the reference's
     own_ipopt = any(k -> k[3] == "ipopt", keys(cand.rows))
+    own_devices = sort!(unique!([k[1] for k in keys(cand.rows)]))
     # until the run has results of its own there is nothing to compare: no reference, no base
     if isempty(cand.rows)
         reference, base = nothing, nothing
@@ -614,7 +615,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     # for a check outside this machine that the report is alive
     write_atomic(joinpath(site, "status.json"), "{\"state\":\"$(finished ? "finished" : "running")\",\"updated\":\"$stamp\"}\n")
     # how much of the run is done, over every device: instances with a result, of all
-    return (; done = sum(first, counts; init = 0), total = sum(last, counts; init = 0))
+    return (; done = sum(first, counts; init = 0), total = sum(last, counts; init = 0), devices = own_devices)
 end
 
 # The theme of every page: Bootstrap, this site's stylesheet and its script, all served locally.
@@ -642,10 +643,12 @@ function write_index(site, runs; repository)
     # One list of every run, however it was started (Sungho): pull requests, master, runs on the
     # queue's machines or on clusters, the archived results and the Ipopt references. Running first,
     # then the newest.
-    row(name_html, github, commit, state, updated, files) = "<tr><td>$name_html</td><td class=\"l\">$github</td><td class=\"l\">$commit</td><td class=\"l\">$state</td><td>$updated</td><td class=\"l\">$files</td></tr>"
+    row(name_html, device, github, commit, state, updated, files) = "<tr><td>$name_html</td><td class=\"l\">$device</td><td class=\"l\">$github</td><td class=\"l\">$commit</td><td class=\"l\">$state</td><td>$updated</td><td class=\"l\">$files</td></tr>"
+    devices_of(r) = join(device_tag.(get(r, :devices, String[])), " ")
     commit_link(c) = occursin(r"^[0-9a-f]{40}$", c) ? "<a href=\"$code/commit/$c\">$(first(c, 8))</a>" : escape_html(first(c, 8))
     live_row(r) = row(
         "<a href=\"$(escape_html(r.name))/\">" * (isempty(r.pr) ? escape_html(replace(r.title, r"^Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name)) * "</a>",
+        devices_of(r),
         isempty(r.pr) ? (occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">commit</a>" : "–") : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>",
         commit_link(r.commit),
         state_badge(shown_state(r)) * (shown_state(r) == "running" && get(r, :total, 0) > 0 ? " <span class=\"m\">$(r.done)/$(r.total)</span>" : ""),
@@ -661,15 +664,15 @@ function write_index(site, runs; repository)
     commits = unique!([String(m[2]) for m in archived])
     for commit in commits
         machines = [replace(m[1], "_" => " ") for m in archived if m[2] == commit]
-        push!(rows, row("<a href=\"archive/$commit/\">master $(first(commit, 8))</a> <span class=\"m\">$(escape_html(join(machines, ", ")))</span>",
+        push!(rows, row("<a href=\"archive/$commit/\">master $(first(commit, 8))</a> <span class=\"m\">$(escape_html(join(machines, ", ")))</span>", "",
             "<a href=\"$code/commit/$commit\">commit</a>", commit_link(commit), state_badge("archived"), "", "<a href=\"archive/$commit/data/\">files</a>"))
     end
     versions = unique!([m[1] for m in filter(!isnothing, [match(r"^ipopt/([^/]+)/", p) for p in paths])])
     tree = isempty(ARCHIVE_URL[]) ? code : escape_html(ARCHIVE_URL[])
     for v in versions
-        push!(rows, row("<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">Ipopt reference, benchmark $(escape_html(v))</a>", "–", "–", state_badge("reference"), "", "<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">files</a>"))
+        push!(rows, row("<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">Ipopt reference, benchmark $(escape_html(v))</a>", device_tag("cpu"), "–", "–", state_badge("reference"), "", "<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">files</a>"))
     end
-    println(io, "<h2>Runs</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
+    println(io, "<h2>Runs</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
     foreach(r -> println(io, r), rows)
     println(io, "</tbody></table></div>")
     line = "<span class=\"m\">$(length(running)) running, $(length(finished)) finished, $(length(commits)) archived</span>"

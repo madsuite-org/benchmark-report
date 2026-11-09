@@ -70,7 +70,7 @@ function build_run(live, site, name)
         finished = state != "running", assets = "..", live = true,
     )
     updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
-    RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed, counts.done, counts.total)
+    RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed, counts.done, counts.total, counts.devices)
     return
 end
 

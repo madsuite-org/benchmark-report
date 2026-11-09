@@ -317,6 +317,8 @@ function latest_merged(live, name; depth = 200)
             (c === nothing || !haskey(position_of, c[1])) && continue
             # only a finished run is a reference (Sungho): not one still running, cancelled or failed
             json_field(text, "state") == "finished" || continue
+            # nor a run over a subset of the instances: it does not cover the benchmark
+            occursin(r"\"only\"\s*:", text) && continue
             # of several jobs of one commit, the one with the most results first (not a test on a few)
             rows = sum((countlines(p) - 1 for (dir, _, _) in walkdir(joinpath(UPLOADS[], n)) for p in values(result_files(dir)) if endswith(p, "_default.csv")); init = 0)
             push!(external, (position_of[c[1]], -rows, n, String(c[1])))

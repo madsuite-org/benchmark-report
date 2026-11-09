@@ -1080,9 +1080,10 @@ def write_run_json(cfg, j):
     os.makedirs(target, mode=0o755, exist_ok=True)
     hosts = sorted({v.get("host", "") for v in j.get("nodes", {}).values()} - {""})
     st = settings_of(j)
-    what = ", ".join(x for x in (st["devices"].replace("cuda", "GPU").replace("cpu", "CPU"), st["config"] if st["config"] != "default" else "", st["options"],
+    # the device is a column of the list of runs, not part of the name (Sungho)
+    what = ", ".join(x for x in (st["config"] if st["config"] != "default" else "", st["options"],
                                  f"{len(j['only'])} instances: {j.get('subset', '')}" if j.get("only") else "") if x)
-    title = f"Job {j['id']}: {j.get('title') or folder(j)}, {what}" + (f" ({', '.join(hosts)[:80]})" if hosts else "")
+    title = f"Job {j['id']}: {j.get('title') or folder(j)}" + (f", {what}" if what else "") + (f" ({', '.join(hosts)[:80]})" if hosts else "")
     doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
     if j.get("only"):
         doc["only"] = j["only"]      # a subset: the report compares over these instances only
