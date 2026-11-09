@@ -76,8 +76,9 @@ end
         write(joinpath(other, "smoke_default.csv.meta.toml"), replace(meta, "device = \"cuda\"" => "device = \"cpu\""))
         write_report(site, results; wall = 60.0, finished = true)
         index = read(joinpath(site, "index.html"), String)
+        # one row for the set, over the instance both solvers (GPU and host) have
         @test occursin("<td>1/2</td>", index)
-        @test occursin("<td>2/2</td>", index)
+        @test !occursin("<td>2/2</td>", index)
     end
 end
 
@@ -95,14 +96,17 @@ end
         meta = read(joinpath(machine, "smoke_default.csv.meta.toml"), String)
         write(joinpath(other, "smoke_default.csv.meta.toml"), replace(meta, "device = \"cuda\"" => "device = \"cpu\""))
         write_report(site, results; wall = 7200.0, finished = true)
-        @test occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
-        @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cpu-smoke.html"), String))
+        # one page with both: the GPU solve past 600 s failed, the same time on the host did not
+        page = read(joinpath(site, "smoke.html"), String)
+        @test count("<td class=\"l fail\"", page) == 1
+        @test occursin("current (GPU)", page) && occursin("current (CPU)", page)
+        @test occursin("url=smoke.html", read(joinpath(site, "cuda-smoke.html"), String))   # the old address
         # the result files are left as they were
         @test occursin(",900,", read(joinpath(site, "data", "machine", "smoke_default.csv"), String))
         # a run with a longer limit of its own is still held to the benchmark's
         write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 1000.0\n")
         write_report(site, results; wall = 7200.0, finished = true)
-        @test occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+        @test occursin("<td class=\"l fail\"", read(joinpath(site, "smoke.html"), String))
         # and one with a shorter limit to that
         write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 950.0\n")
         @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 600.0
@@ -130,12 +134,12 @@ end
         stamp(joinpath(machine, "smoke_default.csv"), t - 60)
         stamp(joinpath(later, "smoke_default.csv"), t)
         write_report(site, results; wall = 7200.0, finished = true)
-        @test occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+        @test occursin("<td class=\"l fail\"", read(joinpath(site, "smoke.html"), String))
         @test BenchmarkReport.current_machines(results)["cuda"] == normpath(later)
         # and the first machine's, once it is the one written to last
         stamp(joinpath(machine, "smoke_default.csv"), t + 60)
         write_report(site, results; wall = 7200.0, finished = true)
-        @test !occursin("<td class=\"l fail\"", read(joinpath(site, "cuda-smoke.html"), String))
+        @test !occursin("<td class=\"l fail\"", read(joinpath(site, "smoke.html"), String))
     end
 end
 
@@ -160,8 +164,8 @@ end
         @test length(rows) == 2
         @test Set(r.machine for r in values(rows)) == Set(["machine", "other-gpu"])
         write_report(site, results; wall = 7200.0, finished = true)
-        @test occursin("<sup>m</sup>", read(joinpath(site, "cuda-smoke.html"), String))
-        @test occursin("data/other-gpu/logs/smoke/another_case__default.txt", read(joinpath(site, "cuda-smoke.html"), String))   # every machine's logs
+        @test occursin("<sup>m</sup>", read(joinpath(site, "smoke.html"), String))
+        @test occursin("data/other-gpu/logs/smoke/another_case__default.txt", read(joinpath(site, "smoke.html"), String))   # every machine's logs
         # each instance for choosing subsets: the log of this one shows the restoration phase
         write(joinpath(results, "other-gpu", "logs", "smoke", "another_case__default.txt"), "iter objective\n   0 1.0\n  12r 2.0\n")
         write_report(site, results; wall = 7200.0, finished = true)
@@ -170,7 +174,7 @@ end
         # one kind of node: nothing to mark
         rm(other; recursive = true)
         write_report(site, results; wall = 7200.0, finished = true)
-        @test !occursin("<sup>m</sup>", read(joinpath(site, "cuda-smoke.html"), String))
+        @test !occursin("<sup>m</sup>", read(joinpath(site, "smoke.html"), String))
     end
 end
 
@@ -193,7 +197,7 @@ end
         reference = BenchmarkReport.ResultSet("Ipopt reference")
         BenchmarkReport.add!(reference, "smoke", "ipopt", BenchmarkReport.read_meta(joinpath(machine, "smoke_ipopt.csv")), [(; BenchmarkReport.read_results(joinpath(machine, "smoke_ipopt.csv"))[1]..., iters = 99999)])
         write_report(site, results; wall = 7200.0, finished = true, reference)
-        page = read(joinpath(site, "cpu-smoke.html"), String)
+        page = read(joinpath(site, "smoke.html"), String)
         @test !occursin("99999", page)
         @test occursin("Ipopt", page)
     end
@@ -228,7 +232,7 @@ end
     end
 end
 
-@testset "a device that has not run a set counts none of it" begin
+@testset "a set's row counts what all of its solvers have, of every device" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
         hostile_results(results)
@@ -241,7 +245,9 @@ end
         path = joinpath(other, "second_default.csv")
         BenchmarkReport.add!(reference, "second", "ipopt", BenchmarkReport.read_meta(path), BenchmarkReport.read_results(path))
         write_report(site, results; wall = 60.0, finished = true, reference)
-        @test occursin("<td>0/1</td>", read(joinpath(site, "index.html"), String))
+        index = read(joinpath(site, "index.html"), String)
+        @test occursin("<td>1/1</td>", index)              # second: the host's solver and Ipopt
+        @test occursin("Ipopt (CPU)", index)
     end
 end
 
@@ -363,7 +369,7 @@ end
         reset_runs()
         BenchmarkReport.build_all(live, site)
         report = read(joinpath(site, "pr-1", "index.html"), String)
-        @test occursin(">master &lt;script&gt;", report)   # the column names what master ran, escaped
+        @test occursin(">master (GPU) &lt;script&gt;", report)   # the column names its device and what master ran, escaped
         @test !occursin("<script>alert", report)
         @test occursin("from #7", report)
     end
@@ -507,8 +513,8 @@ end
         try
             reset_runs()
             BenchmarkReport.build_all(live, site)
-            page = read(joinpath(site, "run-new", "cuda-smoke.html"), String)
-            @test occursin("<a href=\"../run-old/\">run-old (005) †</a>", page)   # linked to its report
+            page = read(joinpath(site, "run-new", "smoke.html"), String)
+            @test occursin("<a href=\"../run-old/\">run-old (005) † (GPU)</a>", page)   # linked to its report, its device in its name
             @test occursin("its times are of different hardware", page)
             # its SGM and SSGM are shown all the same
             summary = read(joinpath(site, "run-new", "index.html"), String)

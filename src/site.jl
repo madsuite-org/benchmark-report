@@ -43,7 +43,9 @@ end
 # Per device the columns are Ipopt, the base and the current results.
 # A run added for comparison sits in the base results under the configuration "cmp:<label>:<config>";
 # its label ends in † when it ran on another machine, whose times are not comparable.
-untimed(label) = endswith(label, "†")
+untimed(label) = occursin("†", label)
+device_name(device) = device == "cpu" ? "CPU" : device == "cuda" ? "GPU" : uppercase(device)
+is_reference(s) = s.key[2] == "ipopt"
 
 function report_sides(cand, base)
     suffix(key) = key[2] == "default" ? "" : " " * key[2]
@@ -55,7 +57,9 @@ function report_sides(cand, base)
     sort!(sides; by = s -> s[2][2] != "ipopt")
     others = sort!(unique!([l for (l, _, _) in sides if l ∉ ("Ipopt", "current", "master")]))
     color(l, device) = l == "Ipopt" ? REFERENCE_COLOR : l == "current" ? device_color(device) : l == "master" ? COLORS[2] : COLORS[mod1(3 + findfirst(==(l), others), length(COLORS))]
-    return [Side(l, color(l, k[1]), k, b) for (l, k, b) in sides]
+    # the device is part of a solver's name, so that host and GPU solvers sit side by side (Sungho)
+    named(l, k) = l * " (" * (k[2] == "ipopt" ? "CPU" : device_name(k[1])) * ")"
+    return [Side(named(l, k), color(l, k[1]), k, b) for (l, k, b) in sides]
 end
 
 side_rows(side, cand, base, set) = get((side.base ? base : cand).rows, (side.key[1], set, side.key[2]), Dict{String, Any}())
@@ -78,7 +82,9 @@ function device_walls(root, wall)
 end
 device_wall(device, walls) = walls[device]
 capped(rows, wall) = Dict{String, Any}(c => r.t_total > wall ? merge(r, (; status = MAXIMUM_WALLTIME_EXCEEDED, t_total = wall)) : r for (c, r) in rows)
-page_rows(side, cand, base, set, device, wall) = capped(side_rows(side, cand, base, set), device_wall(device, wall))
+# each solver held to the limit of its own device (Ipopt to the host's)
+side_device(side) = side.key[2] == "ipopt" ? "cpu" : side.key[1]
+page_rows(side, cand, base, set, device, wall) = capped(side_rows(side, cand, base, set), device_wall(side_device(side), wall))
 
 # What a performance profile compares, each on its own.
 const PROFILE_METRICS = ["Wall time" => (r -> max(r.t_total, 1.0e-3)), "Iterations" => (r -> max(r.iters, 1))]
@@ -125,7 +131,7 @@ function profile_svg(io, title, sides, n, ratios)
             print(d, "L$(X(t)) $(Y((i - 1) / n))L$(X(t)) $(Y(i / n))")
         end
         print(d, "L$(w - right) $(Y(length(r) / n))")
-        print(io, "<path d=\"$(String(take!(d)))\" fill=\"none\" style=\"stroke:$(s.color)\" stroke-width=\"2\" stroke-linejoin=\"round\" stroke-linecap=\"round\"", s.label == "Ipopt" ? " stroke-dasharray=\"6 4\"" : "", "/>")
+        print(io, "<path d=\"$(String(take!(d)))\" fill=\"none\" style=\"stroke:$(s.color)\" stroke-width=\"2\" stroke-linejoin=\"round\" stroke-linecap=\"round\"", is_reference(s) ? " stroke-dasharray=\"6 4\"" : "", "/>")
     end
     println(io, "</svg>")
     return
@@ -133,7 +139,7 @@ end
 
 # The solvers shown for a device: its own, with Ipopt as the reference of every device. MadNLP on
 # the host and a solver on a device are never compared.
-on_device(sides, device) = [s for s in sides if s.key[1] == device || s.key[2] == "ipopt"]
+on_device(sides, device) = sides   # every solver, of every device, on every page
 
 # What a column shows as its name: its label with what it ran, `master 31576532`, `current
 # 1b00be2e`, `Ipopt 3.14.19`, a commit linked; set for each report by `set_titles!`.
@@ -144,7 +150,8 @@ function set_titles!(sides, cand, base, code)
     for s in sides
         rev = get((s.base ? base : cand).revs, s.key, "")
         short = something(match(r"([0-9a-f]{8})[0-9a-f]*$", rev), match(r"^(.*)$", rev))[1]
-        name = haskey(COLUMN_REPORTS, s.label) ? "<a href=\"../$(escape_html(COLUMN_REPORTS[s.label]))/\">$(escape_html(s.label))</a>" : escape_html(s.label)
+        plain = replace(s.label, r" \((CPU|GPU|[A-Z]+)\)$" => "")   # the label before its device
+        name = haskey(COLUMN_REPORTS, plain) ? "<a href=\"../$(escape_html(COLUMN_REPORTS[plain]))/\">$(escape_html(s.label))</a>" : escape_html(s.label)
         isempty(short) && (TITLES[s.label] = name; continue)
         link = occursin(r"^[0-9a-f]{8}$", short) && code !== nothing ? "<a href=\"$code/commit/$short\">$short</a>" : escape_html(short)
         # one name across devices: a label whose devices ran different things lists them
@@ -262,9 +269,10 @@ end
 function summary_table(io, blocks, sides, cand, base, wall)
     # a group of columns per solver: Ipopt, the base, current
     labels = unique!([s.label for (set, device) in blocks for s in on_device(sides, device) if !isempty(side_rows(s, cand, base, set))])
-    rank(l) = l == "Ipopt" ? 1 : l == "current" ? 3 : any(s -> s.base && s.label == l, sides) ? 2 : 4
+    side_of = Dict(s.label => s for s in sides)
+    rank(l) = is_reference(side_of[l]) ? (1, l) : side_of[l].base ? (2, l) : (3, l)
     sort!(labels; by = rank)
-    println(io, "<div class=\"wide\"><table class=\"table table-sm summary\"><thead><tr><th rowspan=\"2\">set</th><th rowspan=\"2\" class=\"l\">device</th><th rowspan=\"2\" title=\"compared out of the whole set\">problems</th>")
+    println(io, "<div class=\"wide\"><table class=\"table table-sm summary\"><thead><tr><th rowspan=\"2\">set</th><th rowspan=\"2\" title=\"compared out of the whole set\">problems</th>")
     foreach(l -> print(io, "<th colspan=\"3\" class=\"g\">", title(l), "</th>"), labels)
     print(io, "</tr><tr>")
     foreach(_ -> print(io, "<th class=\"g\">solved</th><th>SGM (s)</th><th>SSGM</th>"), labels)
@@ -275,10 +283,11 @@ function summary_table(io, blocks, sides, cand, base, wall)
         isempty(have) && continue
         cases = collect(reduce(intersect, [Set(keys(here[l])) for l in have]))
         isempty(cases) && continue
-        means = Dict(l => sgm([score_time(here[l][c], device_wall(device, wall)) for c in cases]) + 10 for l in have)
+        means = Dict(l => sgm([score_time(here[l][c], device_wall(side_device(side_of[l]), wall)) for c in cases]) + 10 for l in have)
         # Ipopt is the reference where it has run, else the best solver
-        scale = haskey(means, "Ipopt") ? means["Ipopt"] : minimum(values(means))
-        print(io, "<tr><td><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a></td><td class=\"l\">$(device_tag(device))</td><td>$(all(==("Ipopt"), have) ? 0 : length(cases))/$(set_size(cand, base, set))</td>")
+        ref = findfirst(l -> is_reference(side_of[l]), have)
+        scale = ref === nothing ? minimum(values(means)) : means[have[ref]]
+        print(io, "<tr><td><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a></td><td>$(all(l -> is_reference(side_of[l]), have) ? 0 : length(cases))/$(set_size(cand, base, set))</td>")
         for l in labels
             if l in have
                 # a column of other hardware (†) is computed all the same; its name says so
@@ -393,7 +402,7 @@ function workers_page(site, root, bar, assets)
     return
 end
 
-page_name(device, set) = "$device-$set.html"
+page_name(device, set) = "$set.html"     # one page per set, with every device's solvers
 device_tag(device) = "<span class=\"tag $device\">$(uppercase(device))</span>"
 
 # The page of a set on a device.
@@ -416,7 +425,7 @@ function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh
     keep = [i for i in eachindex(sides) if !isempty(rows[i])]
     sides, rows = sides[keep], rows[keep]
     io = IOBuffer()
-    println(io, "<h1>", get(SET_TITLES, set, set), " ", device_tag(device), "</h1>")
+    println(io, "<h1>", get(SET_TITLES, set, set), "</h1>")
     summary_table(io, [(set, device)], sides, cand, base, wall)
     println(io, "<h2>Outcomes</h2>")
     outcome_table(io, sides, rows, set_size(cand, base, set))
@@ -431,7 +440,7 @@ function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh
     println(io, "<h2>Instances</h2><p class=\"m\">nv, nc: variables, constraints. st: ok solved, a solved to the acceptable level, t time limit, i iteration limit, f other failure; click it for the solver log. it: iterations. inf: infeasibility. nfac, nsol: factorizations, linear solves. nf, ng, nc, nj, nh: evaluations of the objective, gradient, constraints, Jacobian, Hessian.</p><input id=\"filter\" placeholder=\"Filter by name\"><label class=\"only\"><input id=\"failed\" type=\"checkbox\">Failures only</label>")
     instance_table(io, set, sides, rows, logs)
     here = "href=\"$(page_name(device, set))\""
-    page(joinpath(site, page_name(device, set)), "$set on $device: MadNLP benchmarks", String(take!(io)), replace(bar, here => here * " class=\"active\" aria-current=\"page\""); refresh, assets)
+    page(joinpath(site, page_name(device, set)), "$set: MadNLP benchmarks", String(take!(io)), replace(bar, here => here * " class=\"active\" aria-current=\"page\""); refresh, assets)
     return
 end
 
@@ -579,21 +588,25 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     stamp = Dates.format(now(UTC), "yyyy-mm-dd HH:MM:SS")
     # the bar pinned to the top of every page
     devices = unique!(vcat([s.key[1] for s in sides if s.key[2] != "ipopt"], own_ipopt ? ["cpu"] : String[]))
-    menu(device) = "<nav class=\"$device\">" * device_tag(device) * join(["<a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a>" for set in sets]) * "</nav>"
+    menu = "<nav>" * join(["<a href=\"$(page_name("", set))\">$(get(SET_TITLES, set, set))</a>" for set in sets]) * "</nav>"
     tools = ["<a href=\"index.html\">Summary</a>"]
     finished || push!(tools, "<a href=\"workers.html\">Workers</a>")
     push!(tools, "<a href=\"data/\">Raw data</a>")
     trail = "<span class=\"trail\">" * (link === nothing ? escape_html(title) : "<a href=\"" * escape_html(link) * "\">" * escape_html(title) * "</a>") * "</span>"
     line = state_badge(finished ? "finished" : "running") * " <span class=\"m\">updated <span class=\"ago\" data-t=\"$(replace(stamp, " " => "T"))Z\">$stamp UTC</span></span>"
-    bar = banner(assets == "." ? "index.html" : "$assets/index.html", trail, line, "<nav class=\"tools\">" * join(tools) * "</nav>" * join(menu.(devices)))
-    for device in devices, set in sets
-        set_page(site, set, device, sides, cand, base, walls, logs, bar; refresh = live, assets)
+    bar = banner(assets == "." ? "index.html" : "$assets/index.html", trail, line, "<nav class=\"tools\">" * join(tools) * "</nav>" * menu)
+    for set in sets
+        set_page(site, set, "", sides, cand, base, walls, logs, bar; refresh = live, assets)
+        # the pages of a set per device, from before: to the one page of the set
+        for device in DEVICES
+            write(joinpath(site, "$device-$set.html"), "<!doctype html><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex, nofollow\"><meta http-equiv=\"refresh\" content=\"0; url=$set.html\"><a href=\"$set.html\">$set</a>\n")
+        end
     end
     finished || workers_page(site, root, bar, assets)
     io = IOBuffer()
     println(io, "<h1>Summary</h1>")
     counts = progress(io, devices, sets, sides, cand, base, walls)
-    summary_table(io, [(set, device) for device in devices for set in sets], sides, cand, base, walls)
+    summary_table(io, [(set, "") for set in sets], sides, cand, base, walls)
     println(io, "<h2>Solvers</h2>")
     solver_table(io, sides, cand, base, repository === nothing ? nothing : repository[1])
     for device in devices
