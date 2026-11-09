@@ -17,6 +17,18 @@ tb.querySelectorAll('th.s').forEach(h=>{let up=true;h.addEventListener('click',(
 const key=r=>{const v=r.cells[i].textContent,n=parseFloat(v);return isNaN(n)?v:n};
 [...body.rows].sort((a,b)=>{const x=key(a),y=key(b),c=x<y?-1:x>y?1:0;return up?-c:c}).forEach(r=>body.append(r))})})})
 }
+// the list of runs: a search over every column, and pages of RUNS_PER_PAGE; both kept across the
+// live refresh, which replaces the table
+const RUNS_PER_PAGE=50;let runQuery='',runPage=0;
+function bindRuns(){const tb=document.querySelector('#runs'),q=document.querySelector('#runsearch'),nav=document.querySelector('#runpages');
+if(!tb||!q||!nav)return;q.value=runQuery;
+const show=()=>{const v=runQuery.toLowerCase(),rows=[...tb.tBodies[0].rows],hit=rows.filter(r=>r.textContent.toLowerCase().includes(v)),
+pages=Math.max(1,Math.ceil(hit.length/RUNS_PER_PAGE));runPage=Math.min(runPage,pages-1);
+rows.forEach(r=>r.style.display='none');hit.slice(runPage*RUNS_PER_PAGE,(runPage+1)*RUNS_PER_PAGE).forEach(r=>r.style.display='');
+nav.innerHTML=pages<2?'':[...Array(pages).keys()].map(i=>'<a href="#" data-p="'+i+'"'+(i===runPage?' class="active" aria-current="page"':'')+'>'+(i+1)+'</a>').join(' ');
+nav.querySelectorAll('a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();runPage=+a.dataset.p;show()}))};
+q.addEventListener('input',()=>{runQuery=q.value;runPage=0;show()});show()}
+bindRuns();
 bind();
 document.querySelectorAll('pre.log').forEach(b=>b.scrollTop=b.scrollHeight);
 // while a run is going, take the page again every two seconds and swap its content in place
@@ -38,7 +50,7 @@ const d=new DOMParser().parseFromString(await r.text(),'text/html'),q=document.q
 const SCROLLS='#live .wide,#live .scroll,#live pre.log';
 const kept=[...document.querySelectorAll(SCROLLS)].map(b=>[b.scrollLeft,b.scrollTop,b.scrollHeight-b.scrollTop-b.clientHeight<4]);
 const open=[...document.querySelectorAll('#live details[open]')].map(x=>x.querySelector('summary')?.textContent);
-document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();
+document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();bindRuns();
 document.querySelectorAll(SCROLLS).forEach((b,i)=>{if(!kept[i])return;b.scrollLeft=kept[i][0];
 b.scrollTop=b.matches('pre.log')&&kept[i][2]?b.scrollHeight:kept[i][1]});
 document.querySelectorAll('#live details').forEach(x=>{if(open.includes(x.querySelector('summary')?.textContent))x.open=true});

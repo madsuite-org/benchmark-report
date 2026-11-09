@@ -410,6 +410,7 @@ end
         @test occursin("<h2>Runs</h2>", index) && occursin("href=\"run-try-this/\"", index)   # one list of every run
         @test !occursin("Manual run", index)
         @test occursin("<th class=\"l\">device</th>", index) && occursin("<span class=\"tag cuda\">CUDA</span>", index)   # the device, a column
+        @test occursin("id=\"runsearch\"", index) && occursin("id=\"runpages\"", index) && occursin("class=\"trunc\"", index)   # search, pages, long names cut
         @test !occursin("<b>x", index)
         @test !occursin("Finished", index)
         report = read(joinpath(site, "run-try-this", "index.html"), String)

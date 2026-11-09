@@ -61,3 +61,5 @@ table.cases td.l,table.cases th.l{border-left:2px solid var(--line2)}
 .menu>div a:hover,.menu>div button:hover{background:var(--hover);text-decoration:none}.menu>div form{margin:0}
 pre.log{max-height:60vh;overflow:auto;background:var(--card);border:1px solid var(--line2);border-radius:4px;padding:8px;font-size:12px;white-space:pre-wrap;word-break:break-all}
 .jobbar{display:flex;flex-wrap:wrap;gap:.5em;align-items:center;padding:.4em .6em;border:1px solid var(--line2);border-radius:6px;background:var(--card)}.jobbar form{margin:0}
+.trunc{display:inline-block;max-width:30em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+.pages{display:flex;flex-wrap:wrap;gap:.4em;margin:.2em 0 1em}.pages a{padding:.1em .5em;border:1px solid var(--line2);border-radius:4px}.pages a.active{background:var(--hover);font-weight:600}

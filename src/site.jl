@@ -681,8 +681,11 @@ function write_index(site, runs; repository)
     row(name_html, device, github, commit, state, updated, files) = "<tr><td>$name_html</td><td class=\"l\">$device</td><td class=\"l\">$github</td><td class=\"l\">$commit</td><td class=\"l\">$state</td><td>$updated</td><td class=\"l\">$files</td></tr>"
     devices_of(r) = join(device_tag.(get(r, :devices, String[])), " ")
     commit_link(c) = occursin(r"^[0-9a-f]{40}$", c) ? "<a href=\"$code/commit/$c\">$(first(c, 8))</a>" : escape_html(first(c, 8))
+    # a long name (a job's title, its nodes) is cut to the column's width; the whole of it on hover
+    short(text, href) = "<a class=\"trunc\" href=\"$href\" title=\"$(escape_html(text))\">$(escape_html(text))</a>"
     live_row(r) = row(
-        "<a href=\"$(escape_html(r.name))/\">" * (isempty(r.pr) ? escape_html(replace(r.title, r"^Manual run: " => "")) : "#" * escape_html(r.pr) * at_commit(r.name)) * "</a>",
+        isempty(r.pr) ? short(replace(r.title, r"^Manual run: " => ""), escape_html(r.name) * "/") :
+            "<a href=\"$(escape_html(r.name))/\">#" * escape_html(r.pr) * at_commit(r.name) * "</a>",
         devices_of(r),
         isempty(r.pr) ? (occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">commit</a>" : "–") : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>",
         commit_link(r.commit),
@@ -699,7 +702,7 @@ function write_index(site, runs; repository)
     commits = unique!([String(m[2]) for m in archived])
     for commit in commits
         machines = [replace(m[1], "_" => " ") for m in archived if m[2] == commit]
-        push!(rows, row("<a href=\"archive/$commit/\">master $(first(commit, 8))</a> <span class=\"m\">$(escape_html(join(machines, ", ")))</span>", "",
+        push!(rows, row(short("master $(first(commit, 8)): $(join(machines, ", "))", "archive/$commit/"), "",
             "<a href=\"$code/commit/$commit\">commit</a>", commit_link(commit), state_badge("archived"), "", "<a href=\"archive/$commit/data/\">files</a>"))
     end
     versions = unique!([m[1] for m in filter(!isnothing, [match(r"^ipopt/([^/]+)/", p) for p in paths])])
@@ -707,9 +710,9 @@ function write_index(site, runs; repository)
     for v in versions
         push!(rows, row("<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">Ipopt reference, benchmark $(escape_html(v))</a>", device_tag("cpu"), "–", "–", state_badge("reference"), "", "<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">files</a>"))
     end
-    println(io, "<h2>Runs</h2><div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
+    println(io, "<h2>Runs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
     foreach(r -> println(io, r), rows)
-    println(io, "</tbody></table></div>")
+    println(io, "</tbody></table></div><nav id=\"runpages\" class=\"pages\" aria-label=\"Pages of runs\"></nav>")
     line = "<span class=\"m\">$(length(running)) running, $(length(finished)) finished, $(length(commits)) archived</span>"
     page(joinpath(site, "index.html"), "MadNLP benchmarks", String(take!(io)), banner("index.html", "", line); refresh = true)
     return
