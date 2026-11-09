@@ -17,18 +17,33 @@ escape_html(s) = replace(string(s), "&" => "&amp;", "<" => "&lt;", ">" => "&gt;"
 
 function status_name(code)
     code == KILLED_STATUS && return "killed at the limit"
-    code == ERROR_STATUS && return "error"
+    code == ERROR_STATUS && return "not run: the model could not be built (a download failed, say) or the worker failed; not a result of the solver"
     code == SOLVE_SUCCEEDED && return "solved"
     code == SOLVED_TO_ACCEPTABLE_LEVEL && return "solved to acceptable level"
     return get(STATUS_NAMES, code, "status $code")
 end
 
 # The letter of an outcome in the instance tables, as in Hans Mittelmann's tables.
+# The instances of a run that could not be run at all (the model not built, the worker failed), per
+# set: not results of the solver, so a report says so above everything else.
+function not_run(cand, own)
+    out = Dict{String, Vector{String}}()
+    for ((device, set, config), rows) in cand.rows, (case, r) in rows
+        (device, set, config) in own && r.status == ERROR_STATUS && push!(get!(out, set, String[]), case)
+    end
+    return out
+end
+not_run_note(errors) = isempty(errors) ? "" : "<div class=\"alert alert-warning\">" *
+    "$(sum(length, values(errors))) instance(s) could not be run: the model was not built (a download failed, say) or the worker failed. " *
+    "They are not results of the solver; they show as <b>e</b> and count as failures in the means until they are run again. " *
+    join(["$(escape_html(set)): " * join(escape_html.(sort(cases)), ", ") for (set, cases) in sort!(collect(errors))], "; ") * ".</div>"
+
 function status_letter(code)
     code == SOLVE_SUCCEEDED && return "ok"
     code == SOLVED_TO_ACCEPTABLE_LEVEL && return "a"
     (code == KILLED_STATUS || code == MAXIMUM_WALLTIME_EXCEEDED) && return "t"
     code == MAXIMUM_ITERATIONS_EXCEEDED && return "i"
+    code == ERROR_STATUS && return "e"
     return "f"
 end
 
@@ -305,7 +320,7 @@ end
 
 # How each solver ended on a set, and how it fared by problem size.
 function outcome_table(io, sides, rows, total)
-    names = ["ok" => "solved", "a" => "acceptable", "t" => "time limit", "i" => "iteration limit", "f" => "other failure"]
+    names = ["ok" => "solved", "a" => "acceptable", "t" => "time limit", "i" => "iteration limit", "f" => "other failure", "e" => "not run (error)"]
     println(io, "<div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>solver</th>")
     foreach(n -> print(io, "<th>", n[2], "</th>"), names)
     println(io, "<th>not run yet</th></tr></thead><tbody>")
@@ -427,6 +442,9 @@ function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh
     sides, rows = sides[keep], rows[keep]
     io = IOBuffer()
     println(io, "<h1>", get(SET_TITLES, set, set), "</h1>")
+    # this run's instances that could not be run, as on the summary
+    mine = unique!([c for (sd, r) in zip(sides, rows) if !sd.base && !is_reference(sd) for (c, x) in r if x.status == ERROR_STATUS])
+    print(io, not_run_note(isempty(mine) ? Dict{String, Vector{String}}() : Dict(set => mine)))
     summary_table(io, [(set, device)], sides, cand, base, wall)
     println(io, "<h2>Outcomes</h2>")
     outcome_table(io, sides, rows, set_size(cand, base, set))
@@ -564,6 +582,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     # a run of Ipopt itself (config `ipopt`) is shown with its own results, not the reference's
     own_ipopt = any(k -> k[3] == "ipopt", keys(cand.rows))
     own_devices = sort!(unique!([k[1] for k in keys(cand.rows)]))
+    own_keys = Set(keys(cand.rows))
     # until the run has results of its own there is nothing to compare: no reference, no base
     if isempty(cand.rows)
         reference, base = nothing, nothing
@@ -606,6 +625,8 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     finished || workers_page(site, root, bar, assets)
     io = IOBuffer()
     println(io, "<h1>Summary</h1>")
+    errors = not_run(cand, own_keys)
+    print(io, not_run_note(errors))
     counts = progress(io, devices, sets, sides, cand, base, walls)
     summary_table(io, [(set, "") for set in sets], sides, cand, base, walls)
     println(io, "<h2>Solvers</h2>")

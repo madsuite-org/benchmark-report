@@ -219,6 +219,25 @@ end
     end
 end
 
+@testset "instances that could not be run are flagged, not hidden among failures" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
+        hostile_results(results)
+        machine = joinpath(results, "machine")
+        lines = readlines(joinpath(machine, "smoke_default.csv"))
+        row = split(lines[2], ",")
+        row[1] = "not_downloaded"
+        row[findfirst(==("status"), split(lines[1], ","))] = "-101"
+        write(joinpath(machine, "smoke_default.csv"), join([lines; join(row, ",")], "\n") * "\n")
+        write_report(site, results; wall = 7200.0, finished = true)
+        summary = read(joinpath(site, "index.html"), String)
+        @test occursin("1 instance(s) could not be run", summary) && occursin("smoke: not_downloaded", summary)
+        page = read(joinpath(site, "smoke.html"), String)
+        @test occursin("could not be run", page) && occursin("not run (error)", page)
+        @test occursin(">e<", page)
+    end
+end
+
 @testset "a run with no results yet shows no reference" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "empty")), joinpath(root, "site")
