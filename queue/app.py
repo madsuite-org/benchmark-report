@@ -549,6 +549,7 @@ def order(job):
 def public(cfg, j):
     """A job as the API gives it."""
     out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note", "cancelled_by", "cancelled_at", "node")}
+    out["purpose"] = j.get("purpose", "")
     if j.get("external"):
         out["nodes"] = {k: {"host": v.get("host", ""), "state": v.get("state", "")} for k, v in j.get("nodes", {}).items()}
         out["external"] = True
@@ -1083,7 +1084,8 @@ def write_run_json(cfg, j):
     # the device is a column of the list of runs, not part of the name (Sungho)
     what = ", ".join(x for x in (st["config"] if st["config"] != "default" else "", st["options"],
                                  f"{len(j['only'])} instances: {j.get('subset', '')}" if j.get("only") else "") if x)
-    title = f"Job {j['id']}: {j.get('title') or folder(j)}" + (f", {what}" if what else "") + (f" ({', '.join(hosts)[:80]})" if hosts else "")
+    title = (f"Job {j['id']}: {j.get('title') or folder(j)}" + (f" ({j['purpose']})" if j.get("purpose") else "")
+             + (f", {what}" if what else "") + (f" on {', '.join(hosts)[:80]}" if hosts else ""))
     doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
     if j.get("only"):
         doc["only"] = j["only"]      # a subset: the report compares over these instances only
@@ -1527,7 +1529,7 @@ def jobs_section(cfg, q, login=None):
     e = html.escape
     def row(j):
         report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
-        return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{e(name(cfg, j))}</a></td><td class="l">{e(j.get("title", ""))}</td>'
+        return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{e(name(cfg, j))}</a></td><td class="l">{e(j.get("title", ""))}{" <span class=m>(" + e(j["purpose"]) + ")</span>" if j.get("purpose") else ""}</td>'
                 f'<td class="l">{badge(j, cfg)} <span class="m">{e(progress_of(cfg, j))}</span></td><td class="l">{e(machine_of(j))}</td>'
                 f'<td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
                 f'<td class="l">{report}</td><td class="l">{cancel_button(cfg, q, login, j)}</td></tr>')
@@ -1846,7 +1848,7 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
-                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", *DEFAULTS})
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", *DEFAULTS})
                 if unknown:
                     # a field this app does not know would otherwise be ignored without a word
                     return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
@@ -1860,6 +1862,9 @@ def handler(cfg, q):
                     if not cfg.uploads:
                         return reply(503, {"error": "Uploads are not set up on this server."})
                     what = {k: data[k] for k in ("master", "pr", "branch", "commit") if data.get(k)}
+                    purpose = " ".join(str(data.get("note") or "").split())
+                    if len(purpose) > 200:
+                        return reply(400, {"error": "A note is up to 200 characters."})
                     sets = str(data.get("sets") or "acopf,cops,mittelmann,cutest")
                     if not re.fullmatch(r"[a-z]+(,[a-z]+){0,9}", sets):
                         return reply(400, {"error": "sets is a comma-separated list of set names."})
@@ -1874,7 +1879,7 @@ def handler(cfg, q):
                         settings = settings | {"only": only, "subset": str(data.get("subset") or "") + (" + listed instances" if given else "")}
                     if len(what) != 1 or ("pr" in what and not str(what["pr"]).isdigit()):
                         return reply(400, {"error": "Give one of master, pr, branch or commit."})
-                    job, token = q.add_external(login, {k: (int(v) if k == "pr" else v) for k, v in what.items()}, settings)
+                    job, token = q.add_external(login, {k: (int(v) if k == "pr" else v) for k, v in what.items()}, settings | ({"purpose": purpose} if purpose else {}))
                     if job is None:
                         return reply(400, {"error": token})
                     return reply(201, public(cfg, job) | {"token": token, "files": f"{cfg.base}/api/jobs/{job['id']}/files",
@@ -1900,6 +1905,22 @@ def handler(cfg, q):
             if len(parts) == 2 and parts[0] == "jobs" and method == "GET":
                 j = find(parts[1])
                 return reply(200, public(cfg, j)) if j else reply(404, {"error": "There is no such job."})
+            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "note" and method == "POST":
+                # what a job is for, set or changed by whoever started it (or an admin)
+                j = find(parts[1])
+                if j is None:
+                    return reply(404, {"error": "There is no such job."})
+                if j["by"].lower() != login.lower() and permission != "admin":
+                    return reply(403, {"error": "Only who started the job can change its note."})
+                purpose = " ".join(str(data.get("note") or "").split())
+                if len(purpose) > 200:
+                    return reply(400, {"error": "A note is up to 200 characters."})
+                with q.changed:
+                    j["purpose"] = purpose
+                    q.save()
+                if j.get("external"):
+                    write_run_json(cfg, j)
+                return reply(200, public(cfg, j))
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cancel" and method == "POST":
                 j = find(parts[1])
                 if j is None:

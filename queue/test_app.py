@@ -737,6 +737,10 @@ class TestServer(Base):
         self.assertEqual((doc["state"], doc["commit"], doc["job"]), ("running", "9" * 40, job))
         self.assertIn("n1, n2", doc["title"])
         self.assertTrue(doc["title"].startswith(f"Job {job}: master 99999999, tol=1e-6"), doc["title"])
+        code, out = self.call_api("POST", f"/queue/api/jobs/{job}/note", {"note": "baseline for  the fallback"}, token="tok-alice")
+        self.assertEqual((code, out["purpose"]), (200, "baseline for the fallback"))
+        self.assertIn("(baseline for the fallback)", json.load(open(os.path.join(root, "run.json")))["title"])
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{job}/note", {"note": "x" * 201}, token="tok-alice")[0], 400)
         # a node gone silent (preempted) loses its claims
         self.assertEqual(claim("b", "w")[1]["todo"], ["default"])
         self.assertEqual(claim("a", "w")[1]["todo"], [])
