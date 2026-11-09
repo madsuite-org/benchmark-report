@@ -167,17 +167,17 @@ class TestQueue(Base):
 
     def test_settings(self):
         bad = [{"config": "a;b"}, {"devices": "gpu"}, {"harness": "../x"}, {"harness": "-x"}, {"options": "tol='1'"},
-               {"options": "tol=1,tol=2"}, {"options": "tol"}, {"options": "x" * 301}]
+               {"options": "tol=1,tol=2"}, {"options": "tol"}, {"options": "x" * 1001}]
         for b in bad:
             self.assertIsNotNone(app.settings_problem(self.cfg, {**app.DEFAULTS, **b}), b)
         self.assertIsNone(app.settings_problem(self.cfg, {**app.DEFAULTS, "options": "tol=1e-6,max_iter=5", "harness": "exp/x", "devices": "cpu"}))
-        # with the harness's list: names checked, unless a harness branch may bring its own
+        # with the harness's list: configuration names checked; option names are the harness's to check
         path = os.path.join(self.dir, "configs.toml")
         open(path, "w").write('[configurations.cpu]\nnames = ["default", "ipopt"]\n[options]\nmadnlp = ["tol"]\n[options.linear_solver]\nMumpsSolver = ["mumps_pivtol"]\n')
         self.cfg.harness_configs = path
         self.assertIsNone(app.settings_problem(self.cfg, {**app.DEFAULTS, "config": "ipopt", "options": "tol=1e-6,mumps_pivtol=0.1"}))
         self.assertIn("no configuration", app.settings_problem(self.cfg, {**app.DEFAULTS, "config": "nope"}))
-        self.assertIn("Unknown options: linear_solver", app.settings_problem(self.cfg, {**app.DEFAULTS, "options": "linear_solver=X"}))
+        self.assertIsNone(app.settings_problem(self.cfg, {**app.DEFAULTS, "options": "linear_solver=X"}))
         self.assertIsNone(app.settings_problem(self.cfg, {**app.DEFAULTS, "options": "linear_solver=X", "harness": "exp"}))
 
     def test_jobs_with_settings_get_reports_of_their_own(self):
@@ -815,6 +815,13 @@ class TestServer(Base):
         os.remove(self.cfg.master_pushed)
         self.hook("push", {"repository": {"full_name": REPO}, "ref": "refs/heads/other", "after": "9" * 40})
         self.assertFalse(os.path.exists(self.cfg.master_pushed))
+
+    def test_options_construct_types(self):
+        ok = {**app.DEFAULTS, "options": "kkt_scaler=RuizScaler(),barrier=QualityFunctionUpdate{Float64}(sigma_max=2,mu_min=1e-11),slack_reset=true"}
+        self.assertIsNone(app.settings_problem(self.cfg, ok))
+        for bad in ("x=f(1", "x=1,x=2", "x=a;b", "x=f(a)b)"):
+            self.assertIsNotNone(app.settings_problem(self.cfg, {**app.DEFAULTS, "options": bad}), bad)
+        self.assertEqual(app.split_options("a=f(1,b=2),c=3"), ["a=f(1,b=2)", "c=3"])
 
     def test_version(self):
         code, _, out = self.request("GET", "/queue/version")

@@ -151,10 +151,15 @@ def settings_problem(cfg, settings):
         return "The harness is not a branch name."
     o = settings["options"]
     if o:
-        if len(o) > 300 or not re.fullmatch(r"[A-Za-z0-9_.,=+-]+", o):
-            return "Options are name=value pairs separated by commas, with letters, digits and _ . + - only."
-        names = [pair.split("=", 1)[0] for pair in o.split(",")]
-        if any("=" not in pair or not pair.split("=", 1)[1] for pair in o.split(",")) or len(set(names)) != len(names):
+        # a value can construct a type of MadNLP, RuizScaler() or QualityFunctionUpdate{Float64}(sigma_max=2):
+        # its commas, inside the parentheses, do not separate options
+        if len(o) > 1000 or not re.fullmatch(r"[A-Za-z0-9_.,=+(){}-]+", o):
+            return "Options are name=value pairs separated by commas, with letters, digits, _ . + - and ( ) { } only."
+        pairs = split_options(o)
+        if pairs is None:
+            return "Options have unbalanced parentheses."
+        names = [pair.split("=", 1)[0] for pair in pairs]
+        if any("=" not in pair or not pair.split("=", 1)[1] for pair in pairs) or len(set(names)) != len(names):
             return "Options are name=value pairs, each name once."
     if not h and cfg.harness_configs:
         try:
@@ -166,11 +171,29 @@ def settings_problem(cfg, settings):
             configs = set().union(*(set(c.get("names", [])) for c in known.get("configurations", {}).values()))
             if settings["config"] not in configs:
                 return f"There is no configuration {settings['config']}."
-            allowed = set(known.get("options", {}).get("madnlp", [])).union(*known.get("options", {}).get("linear_solver", {}).values())
-            unknown = [n for n in (pair.split("=", 1)[0] for pair in o.split(",")) if o and n not in allowed]
-            if unknown:
-                return "Unknown options: " + ", ".join(unknown) + "."
+    # option names are checked by the harness when a node starts, against the MadNLP it runs: a
+    # list kept here would lag behind every new option
     return None
+
+
+def split_options(text):
+    """The name=value pairs of an options text, split at the commas outside parentheses and braces;
+    None if they are unbalanced."""
+    parts, depth, cur = [], 0, ""
+    for c in text:
+        depth += c in "({"
+        depth -= c in ")}"
+        if depth < 0:
+            return None
+        if c == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += c
+    if depth:
+        return None
+    parts.append(cur)
+    return [p for p in parts if p]
 
 
 def variant(job):
