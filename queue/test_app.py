@@ -685,6 +685,26 @@ class TestServer(Base):
         self.cfg.upload_limit = 10
         self.assertEqual(self.post_upload(self.make_tar(good), "try-3")[0], 413)
 
+    def test_an_ab_names_what_it_is_against(self):
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        code, a = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu", "label": "GMRES"}, token="tok-alice")
+        self.assertEqual((code, a["label"]), (201, "GMRES"), a)
+        code, b = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu", "options": "tol=1e-6",
+                                                            "label": "CG", "against": [a["id"]]}, token="tok-alice")
+        self.assertEqual((code, b["against"]), (201, [a["id"]]), b)
+        fa, fb = (app.folder(next(j for j in self.q.data["jobs"] if j["id"] == x["id"])) for x in (a, b))
+        c = app.load_comparisons(self.cfg)
+        self.assertEqual((c[fb]["with"], c[fb]["names"]), ([fa], ["GMRES"]))     # each report shows the other
+        self.assertEqual((c[fa]["with"], c[fa]["names"]), ([fb], ["CG"]))
+        # a label changed afterwards renames the column
+        code, _ = self.call_api("POST", f"/queue/api/jobs/{a['id']}/against", {"label": "GMRES (baseline)"}, token="tok-alice")
+        self.assertEqual(code, 200)
+        self.assertEqual(app.load_comparisons(self.cfg)[fb]["names"], ["GMRES (baseline)"])
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{a['id']}/against", {"against": [999]}, token="tok-alice")[0], 400)
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{a['id']}/against", {"label": "x;rm"}, token="tok-alice")[0], 400)
+        code, out = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "against": 12345}, token="tok-alice")
+        self.assertEqual(code, 400); self.assertIn("is created, but not compared", out["error"])
+
     def test_a_job_run_elsewhere_on_two_nodes(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
         code, out = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cuda", "options": "tol=1e-6"}, token="tok-alice")

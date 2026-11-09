@@ -577,6 +577,10 @@ def public(cfg, j):
     """A job as the API gives it."""
     out = {k: j.get(k) for k in ("id", "kind", "pr", "ref", "sha", "title", "by", "state", "queued", "started", "ended", "note", "cancelled_by", "cancelled_at", "node")}
     out["purpose"] = j.get("purpose", "")
+    if j.get("against"):
+        out["against"] = j["against"]
+    if j.get("label"):
+        out["label"] = j["label"]
     if j.get("external"):
         now = int(time.time())
         out["nodes"] = {k: {"host": v.get("host", ""), "state": v.get("state", ""), "joined": v.get("joined"),
@@ -1379,6 +1383,56 @@ def change_comparison(cfg, report, add=None, remove=None, label=""):
     return None
 
 
+LABEL = re.compile(r"[A-Za-z0-9 #()._+-]{1,40}")
+
+
+def column_label(j):
+    """What a job's results are called as a column of another report: its label, else `job <id>`."""
+    return j.get("label") or f"job {j['id']}"
+
+
+def set_label(cfg, q, j, label):
+    """A job's label, and its column renamed wherever it is shown. Why not, or None."""
+    label = " ".join(str(label or "").split())
+    if label and not LABEL.fullmatch(label):
+        return "A label has letters, digits, spaces and # ( ) . _ + - only, up to 40."
+    with q.changed:
+        j["label"] = label
+        q.save()
+        if cfg.uploads:
+            data = load_comparisons(cfg)
+            for entry in data.values():
+                entry["names"] = [column_label(j) if w == folder(j) else n for w, n in zip(entry.get("with", []), entry.get("names", []))]
+            save_comparisons(cfg, data)
+    return None
+
+
+def compare_jobs(cfg, q, j, against):
+    """An A/B: `j`'s report shows each job of `against` (ids) as a column, and each of theirs shows
+    `j`, named `job <id>`. Why not, or None. The reports need not be built yet."""
+    if not cfg.uploads:
+        return "Uploads are not set up on this server."
+    if not isinstance(against, list) or not 1 <= len(against) <= 4 or not all(isinstance(i, int) for i in against):
+        return "against is a list of up to 4 job numbers."
+    others = []
+    for i in against:
+        o = next((x for x in q.data["jobs"] if x["id"] == i), None)
+        if o is None or not (o.get("sha") or o.get("folder")) or o["id"] == j["id"]:
+            return f"There is no job {i} with a report to compare with."
+        others.append(o)
+    with q.changed:
+        data = load_comparisons(cfg)
+        for a, b in [(j, o) for o in others] + [(o, j) for o in others]:
+            entry = data.setdefault(folder(a), {"with": [], "names": []})
+            names = dict(zip(entry.get("with", []), entry.get("names", []) + [""] * len(entry.get("with", []))))
+            names[folder(b)] = column_label(b)
+            entry["with"], entry["names"] = list(names), [names[w] or w for w in names]
+        save_comparisons(cfg, data)
+        j["against"] = sorted(set(j.get("against", [])) | {o["id"] for o in others})
+        q.save()
+    return None
+
+
 def compare_panel(cfg, login, name):
     """On a report, for members: the runs shown beside it, and a way to add or remove one."""
     if not cfg.uploads or not cfg.site:
@@ -1414,7 +1468,9 @@ def job_details(cfg, j):
             f'branch <a href="https://github.com/{cfg.repo}/tree/{urllib.parse.quote(j.get("ref") or "", safe="/")}">{e(j.get("ref") or "")}</a>' if j["kind"] == "branch" else
             "master" if j["kind"] == "master" or (j.get("title") or "").startswith("master ") else "commit")
     sha = j.get("sha") or ""
-    fields = [("note", e(j["purpose"])) if j.get("purpose") else None,
+    fields = [("label", e(j["label"])) if j.get("label") else None,
+              ("note", e(j["purpose"])) if j.get("purpose") else None,
+              ("against", ", ".join(f"job {int(i)}" for i in j["against"])) if j.get("against") else None,
               ("runs", what + (f' at <a href="https://github.com/{cfg.repo}/commit/{sha}"><code>{sha[:8]}</code></a>' if sha else "")),
               ("device", e(st["devices"].replace("cuda", "GPU").replace("cpu", "CPU"))),
               ("configuration", e(st["config"])),
@@ -1936,7 +1992,7 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
-                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", *DEFAULTS})
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", "against", "label", *DEFAULTS})
                 if unknown:
                     # a field this app does not know would otherwise be ignored without a word
                     return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
@@ -1970,6 +2026,15 @@ def handler(cfg, q):
                     job, token = q.add_external(login, {k: (int(v) if k == "pr" else v) for k, v in what.items()}, settings | ({"purpose": purpose} if purpose else {}))
                     if job is None:
                         return reply(400, {"error": token})
+                    if data.get("label"):
+                        problem = set_label(cfg, q, job, data["label"])
+                        if problem:
+                            return reply(400, {"error": f"Job {job['id']} is created, but has no label: {problem}", "id": job["id"], "token": token})
+                    if data.get("against") is not None:
+                        against = data["against"] if isinstance(data["against"], list) else [data["against"]]
+                        problem = compare_jobs(cfg, q, job, against)
+                        if problem:
+                            return reply(400, {"error": f"Job {job['id']} is created, but not compared: {problem}", "id": job["id"], "token": token})
                     return reply(201, public(cfg, job) | {"token": token, "files": f"{cfg.base}/api/jobs/{job['id']}/files",
                                                           "claim": f"{cfg.base}/api/jobs/{job['id']}/claim"})
                 node = str(data.get("node") or "")
@@ -2009,6 +2074,15 @@ def handler(cfg, q):
                 if j.get("external"):
                     write_run_json(cfg, j)
                 return reply(200, public(cfg, j))
+            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "against" and method == "POST":
+                # an A/B made afterwards: the reports of the job and the ones given show each other
+                j = find(parts[1])
+                if j is None:
+                    return reply(404, {"error": "There is no such job."})
+                against = data.get("against")
+                problem = set_label(cfg, q, j, data["label"]) if "label" in data else None
+                problem = problem or (compare_jobs(cfg, q, j, against if isinstance(against, list) else [against]) if against is not None else None)
+                return reply(400, {"error": problem}) if problem else reply(200, public(cfg, j))
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cancel" and method == "POST":
                 j = find(parts[1])
                 if j is None:
