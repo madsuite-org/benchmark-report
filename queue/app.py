@@ -1136,8 +1136,8 @@ def shell(cfg, login, title, body, message=""):
 
 def signin(cfg, message=""):
     body = ('<div class="card mx-auto mt-4" style="max-width:32em"><div class="card-body"><h1 class="h4">Sign in</h1>'
-            '<p>Sign in with GitHub to see the benchmark jobs and start new ones. Anyone with write access to '
-            f'{html.escape(cfg.repo)} can. The <a href="{html.escape(cfg.reports)}/">reports</a> are public.</p>'
+            '<p>Sign in with GitHub to see the benchmark runs and jobs. Anyone with write access to '
+            f'{html.escape(cfg.repo)} can. A report is open to anyone given its link.</p>'
             f'<a class="btn btn-primary" href="{html.escape(cfg.base)}/login">Sign in with GitHub</a></div></div>')
     return shell(cfg, None, "Sign in", body, message)
 

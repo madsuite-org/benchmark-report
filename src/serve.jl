@@ -152,6 +152,32 @@ end
 # Build everything once, and report in `version.json` that this code has done so: a deployment
 # waits for it. A folder that cannot be built must not stop the site, but code that can build
 # no folder at all is broken, and then `version.json` keeps the previous commit.
+# The newest Ipopt reference's instances (see `write_instances`), for subsets chosen against it:
+# `ipopt-instances.json`, written again only when the archive moves, as its logs come from git.
+function write_reference_instances(site)
+    archive = archive_revision()
+    archive === nothing && return
+    rev = readchomp(archive_command("rev-parse", archive))
+    stamp = joinpath(site, "ipopt-instances.rev")
+    isfile(stamp) && readchomp(stamp) == rev && return
+    versions = sort!(unique!([String(m[1]) for m in (match(r"^ipopt/([^/]+)/", p) for p in split(archive_git("ls-tree", "-r", "--name-only", archive, "ipopt/"), '\n'; keepempty = false)) if m !== nothing && tryparse(VersionNumber, m[1]) !== nothing]); by = VersionNumber)
+    isempty(versions) && return
+    reference = ipopt_reference(last(versions))
+    reference === nothing && return
+    mktempdir() do tmp
+        function log_of(key)
+            path = get(reference.logs, key, "")
+            isempty(path) && return ""
+            file = joinpath(tmp, replace(path, "/" => "_"))
+            write(file, read(archive_command("show", "$archive:$path")))
+            return file
+        end
+        write_instances(joinpath(site, "ipopt-instances.json"), reference.rows, log_of)
+    end
+    write_atomic(stamp, rev, "\n")
+    return
+end
+
 function build_all(live, site; repository = DEFAULT_REPOSITORY)
     names = [(root, name) for (root, name) in folders(live) if is_run(root, name)]
     for (root, name) in names
@@ -242,6 +268,12 @@ function serve(live, site; repository = DEFAULT_REPOSITORY)
         return
     end
     watch_new()
+    # off the way of the reports: it reads every log of the reference from git, once per archive
+    errormonitor(@async try
+        write_reference_instances(site)
+    catch err
+        @warn "the Ipopt reference's instances were not written" exception = err
+    end)
     try
         build_archive(site)
     catch err

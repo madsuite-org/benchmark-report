@@ -162,6 +162,11 @@ end
         write_report(site, results; wall = 7200.0, finished = true)
         @test occursin("<sup>m</sup>", read(joinpath(site, "cuda-smoke.html"), String))
         @test occursin("data/other-gpu/logs/smoke/another_case__default.txt", read(joinpath(site, "cuda-smoke.html"), String))   # every machine's logs
+        # each instance for choosing subsets: the log of this one shows the restoration phase
+        write(joinpath(results, "other-gpu", "logs", "smoke", "another_case__default.txt"), "iter objective\n   0 1.0\n  12r 2.0\n")
+        write_report(site, results; wall = 7200.0, finished = true)
+        instances = read(joinpath(site, "instances.json"), String)
+        @test occursin(r"\"cuda/smoke/another_case/default\":\{\"class\":\"(small|medium|large)\",\"constrained\":(true|false),\"solved\":(true|false),\"iters\":(\d+|null),\"resto\":true\}", instances)
         # one kind of node: nothing to mark
         rm(other; recursive = true)
         write_report(site, results; wall = 7200.0, finished = true)

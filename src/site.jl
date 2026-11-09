@@ -437,6 +437,36 @@ end
 
 const MAX_FILE_SIZE = 64 * 2^20
 
+# Whether a solver log shows the restoration phase (an iteration numbered like `12r`). Read once per
+# version of a log.
+const RESTO = Dict{String, Tuple{Float64, Bool}}()
+function went_to_restoration(path)
+    (isempty(path) || !isfile(path)) && return nothing
+    t = mtime(path)
+    haskey(RESTO, path) && RESTO[path][1] == t && return RESTO[path][2]
+    resto = occursin(r"^\s*\d+r\s"m, read(path, String))
+    RESTO[path] = (t, resto)
+    return resto
+end
+
+"""
+    write_instances(path, rows, log_of)
+
+What a run has for each instance, as JSON, for choosing subsets of the benchmark (the app): per
+`device/set/case` and configuration, its size class, whether it is constrained, whether it was solved,
+its iterations and whether it went to restoration (from its log, `log_of(key)`; null if unknown).
+"""
+function write_instances(path, rows, log_of)
+    entries = String[]
+    for ((device, set, config), cases) in sort!(collect(rows); by = first), (case, r) in sort!(collect(cases); by = first)
+        safe_name(case) || continue
+        resto = went_to_restoration(log_of((device, set, case, config)))
+        push!(entries, "\"$device/$set/$case/$config\":{\"class\":\"$(isfinite(r.nnzj + r.nnzh) ? size_class(r) : "")\",\"constrained\":$(r.ncon > 0),\"solved\":$(solved(r)),\"iters\":$(isfinite(r.iters) ? round(Int, r.iters) : "null"),\"resto\":$(resto === nothing ? "null" : resto)}")
+    end
+    write_atomic(path, "{", join(entries, ","), "}\n")
+    return
+end
+
 # Bring `data/` up to date with the result directories, and index the solver logs.
 function sync_data(site, root)
     logs = Dict{Tuple{String, String, String, String}, String}()
@@ -520,6 +550,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
         end
     end
     cand = from_directory(root, "this run")
+    write_instances(joinpath(site, "instances.json"), cand.rows, k -> (p = get(logs, k, ""); isempty(p) ? "" : joinpath(site, p)))
     # a run of Ipopt itself (config `ipopt`) is shown with its own results, not the reference's
     own_ipopt = any(k -> k[3] == "ipopt", keys(cand.rows))
     # until the run has results of its own there is nothing to compare: no reference, no base
