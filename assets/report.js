@@ -18,6 +18,10 @@ const key=r=>{const v=r.cells[i].textContent,n=parseFloat(v);return isNaN(n)?v:n
 [...body.rows].sort((a,b)=>{const x=key(a),y=key(b),c=x<y?-1:x>y?1:0;return up?-c:c}).forEach(r=>body.append(r))})})})
 }
 // the list of runs: a search over every column, and pages of RUNS_PER_PAGE; both kept across the
+// the tab of the page shown
+function markTab(){const here=location.pathname.split('/').pop()||'index.html';
+document.querySelectorAll('.bar nav.tabs a').forEach(a=>{const on=a.getAttribute('href')===here;a.classList.toggle('active',on);on?a.setAttribute('aria-current','page'):a.removeAttribute('aria-current')})}
+markTab();
 // live refresh, which replaces the table
 const RUNS_PER_PAGE=50;let runQuery='',runPage=0;
 function bindRuns(){const tb=document.querySelector('#runs'),q=document.querySelector('#runsearch'),nav=document.querySelector('#runpages');
@@ -41,22 +45,33 @@ addEventListener('pointerdown',()=>{pressed=true;touched=Date.now()},{capture:tr
 for(const k of ['pointerup','pointercancel','touchend'])addEventListener(k,()=>{pressed=false;touched=Date.now()},{capture:true,passive:true});
 if(document.querySelector('meta[name=live]'))setInterval(async()=>{
 if(pressed||Date.now()-touched<2500)return;
+// nor while the reader is filling in a form (adding a column, say), whose input it would throw away
+const typing=()=>document.activeElement?.matches?.('#live input:not([type=hidden]),#live select,#live textarea');
+if(typing())return;
 const r=await fetch(location.href,{cache:'no-cache'});if(!r.ok)return;
 const v=r.headers.get('etag')||r.headers.get('last-modified');if(v&&v===seen)return;
-if(pressed||Date.now()-touched<2500)return;seen=v;
+if(pressed||Date.now()-touched<2500||typing())return;seen=v;
 const d=new DOMParser().parseFromString(await r.text(),'text/html'),q=document.querySelector('#filter')?.value,c=document.querySelector('#failed')?.checked;
 // keep where the reader had scrolled every table to, and any open menu, across the swap
 // a log followed at its end keeps following it; anything else stays where it was
 const SCROLLS='#live .wide,#live .scroll,#live pre.log';
 const kept=[...document.querySelectorAll(SCROLLS)].map(b=>[b.scrollLeft,b.scrollTop,b.scrollHeight-b.scrollTop-b.clientHeight<4]);
 const open=[...document.querySelectorAll('#live details[open]')].map(x=>x.querySelector('summary')?.textContent);
-document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();bindRuns();
+const FIELDS='#live form input[name]:not([type=hidden]),#live form select[name]';
+const filled=[...document.querySelectorAll(FIELDS)].map(x=>[x.form?.getAttribute('action')+'|'+x.name,x.value]);
+document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();bindRuns();markTab();
 document.querySelectorAll(SCROLLS).forEach((b,i)=>{if(!kept[i])return;b.scrollLeft=kept[i][0];
 b.scrollTop=b.matches('pre.log')&&kept[i][2]?b.scrollHeight:kept[i][1]});
 document.querySelectorAll('#live details').forEach(x=>{if(open.includes(x.querySelector('summary')?.textContent))x.open=true});
+document.querySelectorAll(FIELDS).forEach(x=>{const k=x.form?.getAttribute('action')+'|'+x.name,f=filled.find(e=>e[0]===k);if(f&&f[1])x.value=f[1]});
 if(q||c){const f=document.querySelector('#filter');f.value=q||'';document.querySelector('#failed').checked=c;f.dispatchEvent(new Event('input'))}},2000);
 // how long ago the shown data was built, so that a live page visibly is one
 setInterval(()=>document.querySelectorAll('.ago').forEach(a=>{const s=Math.max(0,Math.round((Date.now()-Date.parse(a.dataset.t))/1000));
 a.textContent=s<90?s+' s ago':s<5400?Math.round(s/60)+' min ago':a.dataset.t.slice(0,16).replace('T',' ')+' UTC';
 // a run that says it is running but has had no new data for 15 minutes has stalled: say so
 const st=document.querySelector('.state.on');if(st)st.textContent=s>900?'stalled':'running';if(st)st.classList.toggle('stalled',s>900)}),1000);
+
+// the button that copies a report's link, which anyone given it can open
+document.addEventListener('click',ev=>{const b=ev.target.closest?.('.copylink');if(!b)return;
+const url=new URL(b.dataset.link,location.href).href,done=()=>{const t=b.textContent;b.textContent='Copied';setTimeout(()=>b.textContent=t,1500)};
+if(navigator.clipboard?.writeText)navigator.clipboard.writeText(url).then(done,()=>prompt('Copy this link',url));else prompt('Copy this link',url)});

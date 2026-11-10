@@ -769,11 +769,10 @@ class TestServer(Base):
         self.assertEqual(open(os.path.join(root, "job.log")).read(), "a's log")
         doc = json.load(open(os.path.join(root, "run.json")))
         self.assertEqual((doc["state"], doc["commit"], doc["job"]), ("running", "9" * 40, job))
-        self.assertIn("n1, n2", doc["title"])
-        self.assertTrue(doc["title"].startswith(f"Job {job}: master 99999999, tol=1e-6"), doc["title"])
+        self.assertEqual(doc["title"], f"Job {job}: master 99999999")         # short; the rest is in its details
         code, out = self.call_api("POST", f"/queue/api/jobs/{job}/note", {"note": "baseline for  the fallback"}, token="tok-alice")
         self.assertEqual((code, out["purpose"]), (200, "baseline for the fallback"))
-        self.assertIn("(baseline for the fallback)", json.load(open(os.path.join(root, "run.json")))["title"])
+        self.assertNotIn("baseline", json.load(open(os.path.join(root, "run.json")))["title"])
         self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{job}/note", {"note": "x" * 201}, token="tok-alice")[0], 400)
         details = app.job_details(self.cfg, self.q.data["jobs"][-1])
         for want in ("baseline for the fallback", "<code>99999999</code>", "GPU", "tol=1e-6", "started by"):
@@ -1027,7 +1026,7 @@ class TestSite(Base):
         member = {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"}
         code, headers, body = self.get("/madnlp/run-new/", member)
         self.assertEqual(code, 200)
-        share = re.search(r'href="([^"]*/r/([A-Za-z0-9_-]+)/)"', body)
+        share = re.search(r'data-link="([^"]*/r/([A-Za-z0-9_-]+)/)"', body)
         self.assertIsNotNone(share, body)
         code, headers, body = self.get(f"/madnlp/r/{share[2]}/")      # anyone with the long address
         self.assertEqual(code, 200); self.assertIn("report", body)

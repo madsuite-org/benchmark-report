@@ -1212,8 +1212,8 @@ def write_run_json(cfg, j):
     # the device is a column of the list of runs, not part of the name (Sungho)
     what = ", ".join(x for x in (st["config"] if st["config"] != "default" else "", st["options"],
                                  f"{len(j['only'])} instances: {j.get('subset', '')}" if j.get("only") else "") if x)
-    title = (f"Job {j['id']}: {j.get('title') or folder(j)}" + (f" ({j['purpose']})" if j.get("purpose") else "")
-             + (f", {what}" if what else "") + (f" on {', '.join(hosts)[:80]}" if hosts else ""))
+    # short: the job's label, else what it runs; its note, settings and hosts are in its details (Sungho)
+    title = f"Job {j['id']}: {j.get('label') or j.get('title') or folder(j)}"
     doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
     if j.get("only"):
         doc["only"] = j["only"]      # a subset: the report compares over these instances only
@@ -1553,6 +1553,33 @@ def compare_panel(cfg, login, name):
             '<input name="name" class="form-control form-control-sm" style="width:10em" placeholder="column name">'
             '<button class="btn btn-sm btn-outline-primary">Add column</button></form>'
             '<span class="m">A run on another machine compares in solves and iterations only.</span></div></div>')
+
+
+def header_panel(cfg, q, login, name, member, report, links):
+    """The top of a report: one line with its job, state, a button to copy its link and the job's
+    actions, and the rest (what it runs, its times, the columns compared) folded under Details."""
+    j = job_of(q, name)
+    e = html.escape
+    if j is None and not member:
+        return ""
+    line = "" if j is None else f'Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)}' if member else f'Job {j["id"]}'
+    if j is not None and j.get("label"):
+        line += f' <b>{e(j["label"])}</b>'
+    if member and report:
+        share = f"{cfg.reports.rstrip('/')}/r/{links.token_of(report)}/"
+        line += f' <button type="button" class="btn btn-sm btn-outline-secondary copylink" data-link="{e(share)}" title="Anyone with the link can open the report, without signing in">Copy link</button>'
+    more = ""
+    if j is not None:
+        if member:
+            line += " " + actions(cfg, q, login, j)
+        times = ", ".join(x for x in (f"queued {when(j['queued'])}", j.get("started") and f"started {when(j['started'])}",
+                                      j.get("ended") and f"ended {when(j['ended'])}") if x)
+        more = f'<div>{job_details(cfg, j)}</div><div class="m">{times} UTC</div>'
+    if member:
+        compare = compare_panel(cfg, login, name)
+        more += compare.removeprefix('<div class="container mt-2">').removesuffix("</div>")
+    return (f'<div class="container mt-2"><div class="jobbar jobhead">{line}'
+            f'<details class="more"><summary>Details</summary>{more}</details></div></div>')
 
 
 def job_details(cfg, j):
@@ -2296,17 +2323,10 @@ def handler(cfg, q):
                 if len(parts) > 1:
                     data = data.replace(b"</header>", b"</header>" + commits_panel(cfg, q, parts[1]).encode(), 1)
                     if len(parts) == 2 or parts[2] in ("", "index.html"):
-                        # what the job runs, for anyone reading the report (its long link included)
-                        data = data.replace(b"</header>", b"</header>" + details_panel(cfg, q, parts[1]).encode(), 1)
-                if len(parts) > 1 and member_of(login):
-                    # the report and its job are one page: the job's state and actions, for members
-                    data = data.replace(b"</header>", b"</header>" + job_panel(cfg, q, login, parts[1]).encode(), 1)
-                    if report and (len(parts) == 2 or parts[2] in ("", "index.html")):
-                        share = f"{cfg.reports.rstrip('/')}/r/{links.token_of(report)}/"
-                        data = data.replace(b"</header>", b"</header>" + (f'<div class="container mt-2"><div class="jobbar"><span class="m">Link to share (no sign-in needed):</span> '
-                                                                         f'<a href="{html.escape(share)}">{html.escape(share)}</a></div></div>').encode(), 1)
-                    if len(parts) == 2 or parts[2] in ("", "index.html"):
-                        data = data.replace(b"</header>", b"</header>" + compare_panel(cfg, login, parts[1]).encode(), 1)
+                        # the job, in one line with the rest folded (Sungho): for anyone reading the
+                        # report, its state, link and actions for members
+                        panel = header_panel(cfg, q, login, parts[1], member_of(login), report, links)
+                        data = data.replace(b"</header>", b"</header>" + panel.encode(), 1)
             self.send_response(200)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(data)))

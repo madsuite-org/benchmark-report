@@ -608,13 +608,13 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     stamp = Dates.format(now(UTC), "yyyy-mm-dd HH:MM:SS")
     # the bar pinned to the top of every page
     devices = unique!(vcat([s.key[1] for s in sides if s.key[2] != "ipopt"], own_ipopt ? ["cpu"] : String[]))
-    menu = "<nav>" * join(["<a href=\"$(page_name("", set))\">$(get(SET_TITLES, set, set))</a>" for set in sets]) * "</nav>"
-    tools = ["<a href=\"index.html\">Summary</a>"]
-    finished || push!(tools, "<a href=\"workers.html\">Workers</a>")
-    push!(tools, "<a href=\"data/\">Raw data</a>")
+    # the pages of the report as tabs, the summary first (Sungho), then each set, then the workers
+    tabs = ["<a href=\"index.html\">Summary</a>"; ["<a href=\"$(page_name("", set))\">$(get(SET_TITLES, set, set))</a>" for set in sets]]
+    finished || push!(tabs, "<a href=\"workers.html\">Workers</a>")
+    menu = "<nav class=\"tabs\">" * join(tabs) * "<a class=\"raw\" href=\"data/\">Raw data</a></nav>"
     trail = "<span class=\"trail\">" * (link === nothing ? escape_html(title) : "<a href=\"" * escape_html(link) * "\">" * escape_html(title) * "</a>") * "</span>"
     line = state_badge(finished ? "finished" : "running") * " <span class=\"m\">updated <span class=\"ago\" data-t=\"$(replace(stamp, " " => "T"))Z\">$stamp UTC</span></span>"
-    bar = banner(assets == "." ? "index.html" : "$assets/index.html", trail, line, "<nav class=\"tools\">" * join(tools) * "</nav>" * menu)
+    bar = banner(assets == "." ? "index.html" : "$assets/index.html", trail, line, menu)
     for set in sets
         set_page(site, set, "", sides, cand, base, walls, logs, bar; refresh = live, assets)
         # the pages of a set per device, from before: to the one page of the set
