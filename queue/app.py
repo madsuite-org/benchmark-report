@@ -2309,7 +2309,10 @@ def handler(cfg, q):
                     data = data.replace(b'href="data/', f'href="{html.escape(share)}data/'.encode())
                 if member_of(login) and os.path.realpath(target) == os.path.realpath(os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"), "index.html")):
                     # one dashboard: the jobs above the reports
-                    data = data.replace(b'<main class="container">', b'<main class="container">' + jobs_section(cfg, q, login).encode(), 1)
+                    # reports first (Sungho), then the queue, then the runs
+                    marker = b"<h2>Runs</h2>" if b"<h2>Runs</h2>" in data else b'<main class="container">'
+                    section = jobs_section(cfg, q, login).encode()
+                    data = data.replace(marker, (section + marker) if marker == b"<h2>Runs</h2>" else (marker + section), 1)
                 parts = path.strip("/").split("/")
                 age = stalled(cfg, parts[1]) if len(parts) > 1 else None
                 if age is not None:

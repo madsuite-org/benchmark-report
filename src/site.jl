@@ -70,7 +70,8 @@ function report_sides(cand, base; own = "current")
     label(key, name) = key[2] == "ipopt" ? "Ipopt" : cmp(key) !== nothing ? cmp(key)[1] : name * suffix(key)
     keys_of(rs) = rs === nothing ? [] : sort!(unique!([(k[1], k[3]) for k in keys(rs.rows)]); by = k -> (k[1] != "cpu", k))
     sides = [(label(k, "master"), k, true) for k in keys_of(base) if k[2] != "ipopt"]
-    append!(sides, [(label(k, own), k, false) for k in keys_of(cand)])
+    # a report names its first run's column itself, without the configuration's name
+    append!(sides, [(own == "current" ? label(k, own) : k[2] == "ipopt" ? "Ipopt" : own, k, false) for k in keys_of(cand)])
     sort!(sides; by = s -> s[2][2] != "ipopt")
     others = sort!(unique!([l for (l, _, _) in sides if l ∉ ("Ipopt", own, "master")]))
     color(l, device) = l == "Ipopt" ? REFERENCE_COLOR : l == own ? device_color(device) : l == "master" ? COLORS[2] : COLORS[mod1(3 + findfirst(==(l), others), length(COLORS))]
