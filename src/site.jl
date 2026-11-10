@@ -260,11 +260,12 @@ function progress(io, devices, sets, sides, cand, base, wall)
     counts = Tuple{Int, Int}[]
     println(io, "<div class=\"tiles\">")
     for device in devices
-        candidates = [s for s in sides if s.key[1] == device && s.key[2] != "ipopt"]
-        # a run of Ipopt alone: its own Ipopt
-        isempty(candidates) && (candidates = [s for s in sides if s.key[2] == "ipopt" && !s.base])
+        # the progress of this run, never of a column it is compared with: its own MadNLP, else (a run
+        # of Ipopt alone) its own Ipopt
+        candidates = [s for s in sides if s.key[1] == device && !s.base && s.key[2] != "ipopt"]
+        isempty(candidates) && (candidates = [s for s in sides if s.key[1] == device && s.key[2] == "ipopt" && !s.base])
         isempty(candidates) && continue
-        mine = something(findfirst(s -> !s.base, candidates), 1) |> i -> candidates[i]
+        mine = first(candidates)
         done = solved_count = total = 0
         for set in sets
             rows = page_rows(mine, cand, base, set, device, wall)
@@ -444,6 +445,9 @@ function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh
     println(io, "<h1>", get(SET_TITLES, set, set), "</h1>")
     # this run's instances that could not be run, as on the summary
     mine = unique!([c for (sd, r) in zip(sides, rows) if !sd.base && !is_reference(sd) for (c, x) in r if x.status == ERROR_STATUS])
+    # every table of the page over the instances that all of its columns have (Sungho)
+    common = isempty(rows) ? Set{String}() : reduce(intersect, [Set(keys(r)) for r in rows])
+    rows = [filter(p -> first(p) in common, r) for r in rows]
     print(io, not_run_note(isempty(mine) ? Dict{String, Vector{String}}() : Dict(set => mine)))
     summary_table(io, [(set, device)], sides, cand, base, wall)
     println(io, "<h2>Outcomes</h2>")
@@ -456,7 +460,7 @@ function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh
     breakdown(io, sides, rows)
     files = result_links(site, set)
     isempty(files) || println(io, "<p class=\"m\">Result files: ", join(files, ", "), "</p>")
-    println(io, "<h2>Instances</h2><p class=\"m\">nv, nc: variables, constraints. st: ok solved, a solved to the acceptable level, t time limit, i iteration limit, f other failure; click it for the solver log. it: iterations. inf: infeasibility. nfac, nsol: factorizations, linear solves. nf, ng, nc, nj, nh: evaluations of the objective, gradient, constraints, Jacobian, Hessian.</p><input id=\"filter\" placeholder=\"Filter by name\"><label class=\"only\"><input id=\"failed\" type=\"checkbox\">Failures only</label>")
+    println(io, "<h2>Instances</h2><p class=\"m\">The $(length(common)) instances that every column has a result for. nv, nc: variables, constraints. st: ok solved, a solved to the acceptable level, t time limit, i iteration limit, f other failure; click it for the solver log. it: iterations. inf: infeasibility. nfac, nsol: factorizations, linear solves. nf, ng, nc, nj, nh: evaluations of the objective, gradient, constraints, Jacobian, Hessian.</p><input id=\"filter\" placeholder=\"Filter by name\"><label class=\"only\"><input id=\"failed\" type=\"checkbox\">Failures only</label>")
     instance_table(io, set, sides, rows, logs)
     here = "href=\"$(page_name(device, set))\""
     page(joinpath(site, page_name(device, set)), "$set: MadNLP benchmarks", String(take!(io)), replace(bar, here => here * " class=\"active\" aria-current=\"page\""); refresh, assets)
@@ -700,7 +704,11 @@ function write_index(site, runs; repository)
     )
     running = [r for r in runs if shown_state(r) == "running"]
     finished = [r for r in runs if shown_state(r) != "running"]
-    rows = [live_row(r) for r in vcat(sort(running; by = r -> r.updated, rev = true), sort(finished; by = r -> r.updated, rev = true))]
+    # a fixed order, so that the list does not reorder itself while runs report (Sungho): the newest
+    # job first, by its number; others by when they last changed
+    job_number(r) = (m = match(r"^run-x(\d+)-", r.name); m === nothing ? 0 : parse(Int, m[1]))
+    order(rs) = sort(rs; by = r -> (job_number(r), r.updated), rev = true)
+    rows = [live_row(r) for r in vcat(order(running), order(finished))]
     paths = split(archive_git("ls-tree", "-r", "--name-only", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
     archived = [match(r"^([^/]+)/([0-9a-f]{40})/summary\.md$", p) for p in paths]
     filter!(!isnothing, archived)
