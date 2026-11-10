@@ -701,6 +701,14 @@ class TestServer(Base):
         code, r2 = self.call_api("PATCH", f"/queue/api/reports/{r['id']}", {"runs": [{"job": a["id"], "label": "GMRES (base)"}, b["id"]]}, token="tok-alice")
         self.assertEqual((code, [c["label"] for c in r2["runs"]], r2["title"]), (200, ["GMRES (base)", f"job {b['id']}"], "CG vs GMRES"))
         self.assertEqual([x["id"] for x in self.call_api("GET", "/queue/api/reports", token="tok-alice")[1]["reports"]], [r["id"]])
+        # columns added and taken away on the report's page
+        self.assertIsNone(app.change_report(self.cfg, self.q, r["id"], remove=b["id"]))
+        self.assertIsNotNone(app.change_report(self.cfg, self.q, r["id"], remove=a["id"]))          # one column is kept
+        self.assertIsNone(app.change_report(self.cfg, self.q, r["id"], add=b["id"], label="CG again"))
+        self.assertIsNotNone(app.change_report(self.cfg, self.q, r["id"], add=b["id"]))             # already a column
+        self.assertIn('labels = ["GMRES (base)", "CG again"]', open(os.path.join(self.cfg.uploads, f"report-{r['id']}", "report.toml")).read())
+        panel = app.report_columns(self.cfg, self.q, "alice", f"report-{r['id']}")
+        self.assertIn("CG again ×", panel); self.assertIn("Add column", panel)
         for bad in ({"title": "x", "runs": [999]}, {"title": "x", "runs": []}, {"runs": [a["id"]]}, {"title": "x", "runs": [a["id"], a["id"]]},
                     {"title": "x", "runs": [{"job": a["id"], "label": "x;rm"}]}, {"title": "x", "runs": [a["id"]], "with": 1}):
             self.assertEqual(self.call_api("POST", "/queue/api/reports", bad, token="tok-alice")[0], 400, bad)

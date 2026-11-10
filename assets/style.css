@@ -72,3 +72,4 @@ pre.log{max-height:60vh;overflow:auto;background:var(--card);border:1px solid va
 .statusbar{position:relative;height:1.4em;border:1px solid var(--line2);border-radius:4px;margin:.4em 0 .8em;overflow:hidden}
 .statusbar i{position:absolute;inset:0 auto 0 0;background:var(--line2)}.statusbar span{position:relative;padding:0 .5em;font-size:.85em;line-height:1.4em}
 .tiles .statusbar{flex:1 1 100%;width:100%}
+.reportcols{flex-basis:100%;display:flex;flex-wrap:wrap;gap:.3em;align-items:center}.addcol summary{list-style:none}.addcol summary::-webkit-details-marker{display:none}

@@ -1496,6 +1496,50 @@ def public_report(cfg, r, links=None):
     return out
 
 
+def change_report(cfg, q, rid, add=None, label="", remove=None):
+    """Add a run (a job's number) as a column of report `rid`, or take one away. Why not, or None."""
+    with q.changed:
+        store = load_reports(cfg)
+        r = store["reports"].get(str(rid))
+        if r is None:
+            return "There is no such report."
+        given = [{"job": c["job"], "label": c["label"]} for c in r["runs"] if c["job"] != remove]
+        if add is not None:
+            if any(c["job"] == add for c in given):
+                return f"Job {add} is a column already."
+            given.append({"job": add, "label": label})
+        if not given:
+            return "A report keeps at least one column."
+        runs, problem = report_runs(q, given)
+        if problem:
+            return problem
+        r["runs"] = runs
+        save_reports(cfg, store)
+        write_report_spec(cfg, r)
+    return None
+
+
+def report_columns(cfg, q, login, name):
+    """On a report, for members: its columns, each with a button to take it away, and a form to add
+    a run as one more."""
+    e, rid = html.escape, name.removeprefix("report-")
+    r = load_reports(cfg)["reports"].get(rid)
+    if not r:
+        return ""
+    hidden = f'<input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}"><input type="hidden" name="report" value="{e(rid)}">'
+    chips = " ".join(f'<form method="post" action="{e(cfg.base)}/report-columns" class="d-inline">{hidden}<input type="hidden" name="remove" value="{c["job"]}">'
+                     f'<button class="btn btn-sm btn-outline-secondary" title="Take this column away">{e(c["label"])} ×</button></form>' for c in r["runs"])
+    have = {c["job"] for c in r["runs"]}
+    runs = sorted((j for j in q.data["jobs"] if (j.get("sha") or j.get("folder")) and j["state"] != "waiting" and j["id"] not in have), key=lambda j: -j["id"])[:300]
+    options = "".join(f'<option value="{j["id"]}">Job {j["id"]}: {e((j.get("label") or j.get("title") or "")[:60])}</option>' for j in runs)
+    add = (f'<details class="d-inline-block addcol"><summary class="btn btn-sm btn-outline-primary">Add column</summary>'
+           f'<form method="post" action="{e(cfg.base)}/report-columns" class="d-inline-flex gap-1 mt-1">{hidden}'
+           f'<select name="add" class="form-select form-select-sm" style="width:auto;max-width:22em">{options}</select>'
+           '<input name="name" class="form-control form-control-sm" style="width:10em" placeholder="column name">'
+           '<button class="btn btn-sm btn-primary">Add</button></form></details>')
+    return f'<div class="reportcols"><span class="m">Columns:</span> {chips} {add}</div>'
+
+
 def report_details(cfg, q, name):
     """On a report, what it is made of: each column and the run it comes from."""
     e = html.escape
@@ -1528,6 +1572,8 @@ def header_panel(cfg, q, login, name, member, report, links):
             f'<div>{job_details(cfg, j)}</div><div class="m">{times} UTC</div>'
     if name.startswith("report-"):
         more += report_details(cfg, q, name)
+        if member:
+            line += report_columns(cfg, q, login, name)
     return (f'<div class="container mt-2"><div class="jobbar jobhead">{line}'
             f'<details class="more"><summary>Details</summary>{more}</details></div></div>')
 
@@ -2488,6 +2534,14 @@ def handler(cfg, q):
                 if not problem:
                     q.place([j for j in q.jobs("waiting") if j.get("pr") == int(what)][-1], node)
                 return self.send(400, new_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
+            if self.path == "/queue/report-columns":
+                rid = get("report")
+                add, remove = get("add"), get("remove")
+                problem = change_report(cfg, q, rid, add=int(add) if add.isdigit() else None, label=get("name").strip(),
+                                        remove=int(remove) if remove.isdigit() else None) if rid.isdigit() else "No such report."
+                if problem:
+                    return self.send(400, shell(cfg, login, "Report", f"<p>{html.escape(problem)}</p>"))
+                return self.redirect(f"{cfg.reports}/report-{rid}/")
             if self.path == "/queue/update":
                 pr = get("pr")
                 if not pr.isdigit():
