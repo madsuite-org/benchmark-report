@@ -1807,8 +1807,8 @@ def jobs_section(cfg, q, login=None):
         started = j.get("sha") and j["state"] != "waiting"
         target = f'{e(cfg.reports)}/{folder(j)}/' if started else f'{e(cfg.base)}/job/{j["id"]}'
         devices = " ".join(f'<span class="tag {d}">{d.upper()}</span>' for d in settings_of(j)["devices"].split(","))
-        github = (f'<a href="https://github.com/{cfg.repo}/pull/{j["pr"]}">pull request</a>' if j["kind"] == "pr" else
-                  f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}">commit</a>' if j.get("sha") else "–")
+        # only a pull request number or a commit hash links to GitHub (Sungho)
+        github = f'<a href="https://github.com/{cfg.repo}/pull/{j["pr"]}">#{j["pr"]}</a>' if j["kind"] == "pr" else "–"
         commit = f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}">{j["sha"][:8]}</a>' if j.get("sha") else "–"
         state = "cancelling" if j.get("cancel") and j["state"] == "running" else j["state"]
         shown = f'<span class="state {"on" if state == "running" else "off"}">{e(state)}</span>'
@@ -1819,7 +1819,7 @@ def jobs_section(cfg, q, login=None):
                 f'<td>{when(j.get("started") or j["queued"])}</td>'
                 f'<td class="l">{f"<a href={chr(34)}{e(cfg.reports)}/{folder(j)}/data/{chr(34)}>files</a>" if started else ""}</td></tr>')
     def table(title, jobs, empty):
-        head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">device</th><th class="l">GitHub</th>'
+        head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">device</th><th class="l">PR</th>'
                 '<th class="l">commit</th><th class="l">state</th><th>started (UTC)</th><th class="l">raw data</th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)

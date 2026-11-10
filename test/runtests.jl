@@ -253,7 +253,7 @@ end
     end
 end
 
-@testset "a set's row counts what all of its solvers have, of every device" begin
+@testset "a set's row counts only what every column has (Sungho)" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
         hostile_results(results)
@@ -267,7 +267,8 @@ end
         BenchmarkReport.add!(reference, "second", "ipopt", BenchmarkReport.read_meta(path), BenchmarkReport.read_results(path))
         write_report(site, results; wall = 60.0, finished = true, reference)
         index = read(joinpath(site, "index.html"), String)
-        @test occursin("<td>1/1</td>", index)              # second: the host's solver and Ipopt
+        @test !occursin("<td>1/1</td>", index)             # second has no GPU result, smoke no CPU one:
+        @test count("<td>0/1</td>", index) == 2            # no instance is in every column
         @test occursin("Ipopt (CPU)", index)
     end
 end

@@ -268,18 +268,22 @@ function progress(io, devices, sets, sides, cand, base, wall)
         isempty(candidates) && (candidates = [s for s in sides if s.key[1] == device && s.key[2] == "ipopt" && !s.base])
         isempty(candidates) && continue
         mine = first(candidates)
-        done = solved_count = total = 0
+        done = solved_count = total = common_count = 0
         for set in sets
             rows = page_rows(mine, cand, base, set, device, wall)
             isempty(rows) && continue
             done += length(rows)
-            solved_count += count(solved, values(rows))
             total += set_size(cand, base, set)
+            # what the tile shows is over the instances that every column has, as every table (Sungho)
+            others = [page_rows(s, cand, base, set, s.key[1], wall) for s in sides]
+            common = reduce(intersect, [Set(keys(r)) for r in others]; init = Set(keys(rows)))
+            common_count += length(common)
+            solved_count += count(c -> solved(rows[c]), common)
         end
-        push!(counts, (done, total))
-        share = total == 0 ? 0 : round(Int, 100 * done / total)
-        println(io, "<div class=\"tile\"><div class=\"m\">", device_tag(device), " ", escape_html(mine.label), "</div><div class=\"big\">", done, "<small>/", total, "</small></div>")
-        println(io, "<div class=\"meter\"><i style=\"width:", share, "%;background:", device_color(device), "\"></i></div><div class=\"m\">", solved_count, " solved</div></div>")
+        push!(counts, (done, total))   # the run's own progress, for the list of runs
+        share = total == 0 ? 0 : round(Int, 100 * common_count / total)
+        println(io, "<div class=\"tile\"><div class=\"m\">", device_tag(device), " ", escape_html(mine.label), "</div><div class=\"big\">", common_count, "<small>/", total, "</small></div>")
+        println(io, "<div class=\"meter\"><i style=\"width:", share, "%;background:", device_color(device), "\"></i></div><div class=\"m\">", solved_count, " solved, of the instances every column has</div></div>")
     end
     println(io, "</div>")
     return counts
@@ -298,10 +302,16 @@ function summary_table(io, blocks, sides, cand, base, wall)
     println(io, "</tr></thead><tbody>")
     for (set, device) in blocks
         here = Dict(s.label => page_rows(s, cand, base, set, device, wall) for s in on_device(sides, device))
-        have = [l for l in labels if !isempty(get(here, l, Dict()))]
-        isempty(have) && continue
+        # over the instances that every column has (Sungho): a column without results here leaves none
+        have = [l for l in labels if haskey(here, l)]
+        (isempty(have) || all(l -> isempty(here[l]), have)) && continue
         cases = collect(reduce(intersect, [Set(keys(here[l])) for l in have]))
-        isempty(cases) && continue
+        if isempty(cases)
+            print(io, "<tr><td><a href=\"$(page_name(device, set))\">$(get(SET_TITLES, set, set))</a></td><td>0/$(set_size(cand, base, set))</td>")
+            foreach(_ -> print(io, "<td class=\"g\"></td><td></td><td></td>"), labels)
+            println(io, "</tr>")
+            continue
+        end
         means = Dict(l => sgm([score_time(here[l][c], device_wall(side_device(side_of[l]), wall)) for c in cases]) + 10 for l in have)
         # Ipopt is the reference where it has run, else the best solver
         ref = findfirst(l -> is_reference(side_of[l]), have)
@@ -441,8 +451,6 @@ end
 function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh, assets)
     sides = on_device(sides, device)
     rows = [page_rows(s, cand, base, set, device, wall) for s in sides]
-    keep = [i for i in eachindex(sides) if !isempty(rows[i])]
-    sides, rows = sides[keep], rows[keep]
     io = IOBuffer()
     println(io, "<h1>", get(SET_TITLES, set, set), "</h1>")
     # this run's instances that could not be run, as on the summary
@@ -642,8 +650,11 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     # line under it (Sungho)
     job = match(r"^(Job \d+): (.*)$", title)
     crumb, subtitle = job === nothing ? (title, "") : (job[1], job[2])
-    trail = "<span class=\"trail\">" * (link === nothing ? escape_html(crumb) : "<a href=\"" * escape_html(link) * "\">" * escape_html(crumb) * "</a>") * "</span>"
-    line = (isempty(subtitle) ? "" : "<span class=\"subtitle\">" * escape_html(subtitle) * "</span> ") *
+    # only a commit hash or a pull request number links to GitHub (Sungho), never the job's name
+    gh = link === nothing ? nothing : match(r"/(pull|commit)/([0-9a-f]+|\d+)", link)
+    ref = gh === nothing ? "" : " <a class=\"m\" href=\"" * escape_html(link) * "\">" * (gh[1] == "pull" ? "#" * gh[2] : first(gh[2], 8)) * "</a>"
+    trail = "<span class=\"trail\">" * escape_html(crumb) * "</span>"
+    line = (isempty(subtitle) ? "" : "<span class=\"subtitle\">" * escape_html(subtitle) * "</span>") * ref * " " *
         state_badge(finished ? "finished" : "running") * " <span class=\"m\">updated <span class=\"ago\" data-t=\"$(replace(stamp, " " => "T"))Z\">$stamp UTC</span></span>"
     bar = banner(assets == "." ? "index.html" : "$assets/index.html", trail, line, menu)
     for set in sets
@@ -718,7 +729,7 @@ function write_index(site, runs; repository)
         isempty(r.pr) ? short(replace(r.title, r"^Manual run: " => ""), escape_html(r.name) * "/") :
             "<a href=\"$(escape_html(r.name))/\">#" * escape_html(r.pr) * at_commit(r.name) * "</a>",
         devices_of(r),
-        isempty(r.pr) ? (occursin(r"^[0-9a-f]{40}$", r.commit) ? "<a href=\"$code/commit/$(r.commit)\">commit</a>" : "–") : "<a href=\"$code/pull/$(escape_html(r.pr))\">pull request</a>",
+        isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">#$(escape_html(r.pr))</a>",
         commit_link(r.commit),
         state_badge(shown_state(r)) * (shown_state(r) == "running" && get(r, :total, 0) > 0 ? " <span class=\"m\">$(r.done)/$(r.total)</span>" : ""),
         escape_html(replace(first(r.updated, 16), "T" => " ")),
@@ -738,14 +749,14 @@ function write_index(site, runs; repository)
     for commit in commits
         machines = [replace(m[1], "_" => " ") for m in archived if m[2] == commit]
         push!(rows, row(short("master $(first(commit, 8)): $(join(machines, ", "))", "archive/$commit/"), "",
-            "<a href=\"$code/commit/$commit\">commit</a>", commit_link(commit), state_badge("archived"), "", "<a href=\"archive/$commit/data/\">files</a>"))
+            "–", commit_link(commit), state_badge("archived"), "", "<a href=\"archive/$commit/data/\">files</a>"))
     end
     versions = unique!([m[1] for m in filter(!isnothing, [match(r"^ipopt/([^/]+)/", p) for p in paths])])
     tree = isempty(ARCHIVE_URL[]) ? code : escape_html(ARCHIVE_URL[])
     for v in versions
         push!(rows, row("<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">Ipopt reference, benchmark $(escape_html(v))</a>", device_tag("cpu"), "–", "–", state_badge("reference"), "", "<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">files</a>"))
     end
-    println(io, "<h2>Runs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">GitHub</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
+    println(io, "<h2>Runs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">PR</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
     foreach(r -> println(io, r), rows)
     println(io, "</tbody></table></div><nav id=\"runpages\" class=\"pages\" aria-label=\"Pages of runs\"></nav>")
     line = "<span class=\"m\">$(length(running)) running, $(length(finished)) finished, $(length(commits)) archived</span>"
