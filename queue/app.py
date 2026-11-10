@@ -1281,8 +1281,9 @@ def receive_job_files(cfg, q, j, node, archive_path, state):
         for f in sorted(os.listdir(wdir)):
             m = re.match(r"^```\n(.*?)\n```", open(os.path.join(wdir, f)).read(), re.S)
             nid = f[:-3]
-            # a node that has finished is done with its workers: only the others are listed
-            if m and j.get("nodes", {}).get(nid, {}).get("state") not in ("finished", "cancelled", "failed"):
+            # a node that has finished, stopped or gone silent has released its workers: only the
+            # others are listed
+            if m and j.get("nodes", {}).get(nid, {}).get("state") not in ("finished", "cancelled", "failed", "interrupted") and (nid == node or q.alive(j, nid)):
                 host = j.get("nodes", {}).get(nid, {}).get("host", "")
                 lines.append(f"node {host} ({nid[:4]}):" if host else f"node {nid}:")
                 lines.extend(m[1].split("\n"))
@@ -1695,18 +1696,17 @@ def nodes_table(j):
     if not j or not j.get("nodes"):
         return ""
     e, now, rows = html.escape, int(time.time()), []
-    done = sum(v.get("state") in ("finished", "cancelled", "failed") for v in j["nodes"].values())
+    released = lambda v: v.get("state") in ("finished", "cancelled", "failed", "interrupted") or now - v.get("seen", v.get("joined", now)) >= Queue.NODE_GONE
+    done = sum(released(v) for v in j["nodes"].values())
     for k, v in sorted(j["nodes"].items(), key=lambda kv: kv[1].get("joined", 0)):
-        if v.get("state") in ("finished", "cancelled", "failed"):
-            continue   # a finished node is listed no more, only counted
+        if released(v):
+            continue   # a node that has finished, stopped or gone is listed no more, only counted
         quiet = now - v.get("seen", v.get("joined", now))
         state = v.get("state", "")
-        if quiet >= Queue.NODE_GONE and state not in ("finished", "failed", "cancelled"):
-            state = f"gone ({state})"
         heard = f"{quiet} s ago" if quiet < 120 else f"{quiet // 60} min ago"
         rows.append(f'<tr><td class="l">{e(v.get("host", "") or "?")}</td><td class="l"><code>{e(k)}</code></td>'
                     f'<td class="l">{e(NODE_SAY.get(state, state))}</td><td>{heard}</td></tr>')
-    note = f'<p class="m">{done} node{"s" * (done != 1)} finished and no longer listed.</p>' if done else ""
+    note = f'<p class="m">{done} node{"s" * (done != 1)} finished or released, no longer listed.</p>' if done else ""
     return (f'<h2>Nodes</h2>{note}' + ('<div class="wide"><table class="table table-sm"><thead><tr><th class="l">host</th><th class="l">node</th>'
             '<th class="l">state</th><th>last heard</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>" if rows else ""))
 

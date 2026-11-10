@@ -740,11 +740,11 @@ class TestServer(Base):
         table = app.nodes_table(self.q.data["jobs"][-1])
         self.assertIn("setting up", table); self.assertIn("n9", table)
         self.q.data["jobs"][-1]["nodes"]["s"]["seen"] -= 3600
-        self.assertIn("gone (setup)", app.nodes_table(self.q.data["jobs"][-1]))
+        self.assertNotIn("n9", app.nodes_table(self.q.data["jobs"][-1]))             # a node gone silent is released
         self.assertEqual(send("s", {}, state="bogus")[0], 400)
         self.q.data["jobs"][-1]["nodes"]["s"]["state"] = "finished"
         table = app.nodes_table(self.q.data["jobs"][-1])
-        self.assertNotIn("n9", table); self.assertIn("1 node finished", table)   # finished nodes are not listed
+        self.assertNotIn("n9", table); self.assertIn("1 node finished or released", table)   # finished nodes are not listed
         self.q.beats[(job, "s")] = 0; self.q.data["jobs"][-1]["nodes"].pop("s")
         # a node's metadata before its first row
         send("c", {"Other/acopf_default.csv.meta.toml": 'device = "cuda"\n'})
