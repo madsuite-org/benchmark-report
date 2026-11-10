@@ -1057,7 +1057,8 @@ class TestSite(Base):
         mine = self.get("/madnlp/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
         self.assertLess(mine.index("Queue"), mine.index("<h2>Reports</h2>"))
         self.assertNotIn("Recent jobs", mine)                   # finished runs are in the one list of runs
-        self.assertIn('<th class="l">machine</th>', mine)
+        self.assertIn('<th class="l">device</th>', mine)
+        self.assertNotIn('<th class="l">machine</th>', mine)                  # one short line per job
         self.assertIn("Seven", mine)
         code, headers, _ = self.get("/queue/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})
         self.assertEqual((code, headers["Location"]), (303, "/madnlp/"))

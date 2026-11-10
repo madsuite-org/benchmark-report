@@ -1801,14 +1801,17 @@ def jobs_section(cfg, q, login=None):
     """The jobs: what runs and waits, and what ran lately. On the dashboard, above the reports."""
     e = html.escape
     def row(j):
-        report = f'<a href="{e(cfg.reports)}/{folder(j)}/">report</a>' if j.get("sha") and j["state"] != "waiting" else ""
-        return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{e(name(cfg, j))}</a></td><td class="l">{e(j.get("title", ""))}{" <span class=m>(" + e(j["purpose"]) + ")</span>" if j.get("purpose") else ""}</td>'
-                f'<td class="l">{badge(j, cfg)} <span class="m">{e(progress_of(cfg, j))}</span></td><td class="l">{e(machine_of(j))}</td>'
-                f'<td class="l">{e(j["by"])}</td><td>{when(j.get("ended") or j.get("started") or j["queued"])}</td>'
-                f'<td class="l">{report}</td><td class="l">{cancel_button(cfg, q, login, j)}</td></tr>')
+        # one short line per job (Sungho): its title links to its report, the rest is there
+        short = j.get("label") or j.get("title", "") or name(cfg, j)
+        target = f'{e(cfg.reports)}/{folder(j)}/' if j.get("sha") and j["state"] != "waiting" else f'{e(cfg.base)}/job/{j["id"]}'
+        device = e(settings_of(j)["devices"].replace("cuda", "GPU").replace("cpu", "CPU"))
+        return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a></td>'
+                f'<td class="l"><a class="trunc" href="{target}" title="{e(j.get("purpose") or short)}">{e(short)}</a></td>'
+                f'<td class="l">{device}</td><td class="l">{badge(j, cfg)} <span class="m">{e(progress_of(cfg, j))}</span></td>'
+                f'<td class="l m">{e(j["by"])}</td></tr>')
     def table(title, jobs, empty):
-        head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">title</th><th class="l">state</th>'
-                '<th class="l">machine</th><th class="l">by</th><th>time (UTC)</th><th class="l"></th><th class="l"></th></tr></thead><tbody>')
+        head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>job</th><th class="l">title</th><th class="l">device</th>'
+                '<th class="l">state</th><th class="l">by</th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
     bot = e(cfg.bots[0]) if cfg.bots else ""
@@ -1900,7 +1903,7 @@ exec env BENCHMARK_SITE={shlex.quote(site)} runner/publish.sh "$@"
 
 def run_card(cfg):
     e = html.escape
-    return ('<div class="card mt-3 mb-3"><div class="card-body"><h2 class="h5">Starting a job</h2>'
+    return ('<details class="card mt-3 mb-3"><summary class="card-body py-2">Starting a job</summary><div class="card-body pt-0">'
             '<p class="m">On machines you can use, cluster nodes included. Create a job once, with a GitHub token with write '
             'access (<code>gh auth login</code>, or <code>BENCHMARK_TOKEN</code>); it fixes what is run and writes a job file. Then run '
             'the job on as many machines as you like, at once or later: this server hands each instance to one of them, merges '
@@ -1908,7 +1911,7 @@ def run_card(cfg):
             'when started again. Run CPU and GPU as two jobs.</p>'
             f'<pre class="log">curl -fsSL {e(cfg.base)}/run.sh | bash -s -- new master --devices=cuda --options=tol=1e-6\n'
             f'curl -fsSL {e(cfg.base)}/run.sh | bash -s -- run --job-file=benchmark-job-N</pre>'
-            f'<p class="m"><a href="{e(cfg.base)}/run.sh">The script</a>; its <code>runner/publish.sh</code> describes every option.</p></div></div>')
+            f'<p class="m"><a href="{e(cfg.base)}/run.sh">The script</a>; its <code>runner/publish.sh</code> describes every option.</p></div></details>')
 
 
 def new_page(cfg, q, login, message=""):
