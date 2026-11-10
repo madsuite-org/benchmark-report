@@ -1565,9 +1565,8 @@ def header_panel(cfg, q, login, name, member, report, links):
     e = html.escape
     if j is None and not member:
         return ""
-    line = "" if j is None else f'Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)}' if member else f'Job {j["id"]}'
-    if j is not None and j.get("label"):
-        line += f' <b>{e(j["label"])}</b>'
+    # the job's number, state and title are in the bar above; here only what to do with it
+    line = ""
     if member and report:
         share = f"{cfg.reports.rstrip('/')}/r/{links.token_of(report)}/"
         line += f' <button type="button" class="btn btn-sm btn-outline-secondary copylink" data-link="{e(share)}" title="Anyone with the link can open the report, without signing in">Copy link</button>'
@@ -1577,7 +1576,8 @@ def header_panel(cfg, q, login, name, member, report, links):
             line += " " + actions(cfg, q, login, j)
         times = ", ".join(x for x in (f"queued {when(j['queued'])}", j.get("started") and f"started {when(j['started'])}",
                                       j.get("ended") and f"ended {when(j['ended'])}") if x)
-        more = f'<div>{job_details(cfg, j)}</div><div class="m">{times} UTC</div>'
+        more = (f'<div>Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)}</div>' if member else "") + \
+            f'<div>{job_details(cfg, j)}</div><div class="m">{times} UTC</div>'
     if member:
         compare = compare_panel(cfg, login, name)
         more += compare.removeprefix('<div class="container mt-2">').removesuffix("</div>")

@@ -612,8 +612,13 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     tabs = ["<a href=\"index.html\">Summary</a>"; ["<a href=\"$(page_name("", set))\">$(get(SET_TITLES, set, set))</a>" for set in sets]]
     finished || push!(tabs, "<a href=\"workers.html\">Workers</a>")
     menu = "<nav class=\"tabs\">" * join(tabs) * "<a class=\"raw\" href=\"data/\">Raw data</a></nav>"
-    trail = "<span class=\"trail\">" * (link === nothing ? escape_html(title) : "<a href=\"" * escape_html(link) * "\">" * escape_html(title) * "</a>") * "</span>"
-    line = state_badge(finished ? "finished" : "running") * " <span class=\"m\">updated <span class=\"ago\" data-t=\"$(replace(stamp, " " => "T"))Z\">$stamp UTC</span></span>"
+    # the trail names the job only, `MadSuite benchmarks / MadNLP / Job 130`; its short title is the
+    # line under it (Sungho)
+    job = match(r"^(Job \d+): (.*)$", title)
+    crumb, subtitle = job === nothing ? (title, "") : (job[1], job[2])
+    trail = "<span class=\"trail\">" * (link === nothing ? escape_html(crumb) : "<a href=\"" * escape_html(link) * "\">" * escape_html(crumb) * "</a>") * "</span>"
+    line = (isempty(subtitle) ? "" : "<span class=\"subtitle\">" * escape_html(subtitle) * "</span> ") *
+        state_badge(finished ? "finished" : "running") * " <span class=\"m\">updated <span class=\"ago\" data-t=\"$(replace(stamp, " " => "T"))Z\">$stamp UTC</span></span>"
     bar = banner(assets == "." ? "index.html" : "$assets/index.html", trail, line, menu)
     for set in sets
         set_page(site, set, "", sides, cand, base, walls, logs, bar; refresh = live, assets)

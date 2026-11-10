@@ -68,3 +68,4 @@ pre.log{max-height:60vh;overflow:auto;background:var(--card);border:1px solid va
 .pages{display:flex;flex-wrap:wrap;gap:.4em;margin:.2em 0 1em}.pages a{padding:.1em .5em;border:1px solid var(--line2);border-radius:4px}.pages a.active{background:var(--hover);font-weight:600}
 .jobhead{display:flex;flex-wrap:wrap;align-items:center;gap:.5em}.jobhead details.more{flex-basis:100%}
 .jobhead details.more summary{cursor:pointer;color:var(--muted,#6b7280);font-size:.9em}.jobhead details.more>div{margin:.3em 0}
+.bar .subtitle{font-weight:600;font-size:1.1em;margin-right:.4em}
