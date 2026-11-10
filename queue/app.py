@@ -1523,6 +1523,9 @@ def compare_jobs(cfg, q, j, against):
             names = dict(zip(entry.get("with", []), entry.get("names", []) + [""] * len(entry.get("with", []))))
             names[folder(b)] = column_label(b)
             entry["with"], entry["names"] = list(names), [names[w] or w for w in names]
+        # what a job is compared against takes the place of the latest master, the default (Sungho)
+        own = data[folder(j)]
+        own["hide"] = sorted(set(own.get("hide", [])) | {"master"})
         save_comparisons(cfg, data)
         j["against"] = sorted(set(j.get("against", [])) | {o["id"] for o in others})
         q.save()

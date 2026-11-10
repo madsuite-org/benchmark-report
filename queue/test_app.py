@@ -696,6 +696,7 @@ class TestServer(Base):
         c = app.load_comparisons(self.cfg)
         self.assertEqual((c[fb]["with"], c[fb]["names"]), ([fa], ["GMRES"]))     # each report shows the other
         self.assertEqual((c[fa]["with"], c[fa]["names"]), ([fb], ["CG"]))
+        self.assertEqual((c[fb].get("hide"), c[fa].get("hide")), (["master"], None))   # B's baseline is A, not the latest master
         # a label changed afterwards renames the column
         code, _ = self.call_api("POST", f"/queue/api/jobs/{a['id']}/against", {"label": "GMRES (baseline)"}, token="tok-alice")
         self.assertEqual(code, 200)
