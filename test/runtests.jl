@@ -240,6 +240,25 @@ end
     end
 end
 
+@testset "a solve that threw (-102) is a solver failure, not an instance that could not be run" begin
+    mktempdir() do root
+        results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
+        hostile_results(results)
+        machine = joinpath(results, "machine")
+        lines = readlines(joinpath(machine, "smoke_default.csv"))
+        row = split(lines[2], ",")
+        row[1] = "solver_threw"
+        row[findfirst(==("status"), split(lines[1], ","))] = "-102"
+        write(joinpath(machine, "smoke_default.csv"), join([lines; join(row, ",")], "\n") * "\n")
+        write_report(site, results; wall = 7200.0, finished = true)
+        summary = read(joinpath(site, "index.html"), String)
+        page = read(joinpath(site, "smoke.html"), String)
+        @test occursin("solver_threw", page)           # the row is there
+        @test !occursin("could not be run", summary) && !occursin("could not be run", page)
+        @test occursin("solver error", page)
+    end
+end
+
 @testset "a run with no results yet shows no reference" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "empty")), joinpath(root, "site")

@@ -18,6 +18,7 @@ escape_html(s) = replace(string(s), "&" => "&amp;", "<" => "&lt;", ">" => "&gt;"
 function status_name(code)
     code == KILLED_STATUS && return "killed at the limit"
     code == ERROR_STATUS && return "not run: the model could not be built (a download failed, say) or the worker failed; not a result of the solver"
+    code == SOLVER_ERROR_STATUS && return "solver error: the solve threw, or its worker crashed or ran out of memory"
     code == SOLVE_SUCCEEDED && return "solved"
     code == SOLVED_TO_ACCEPTABLE_LEVEL && return "solved to acceptable level"
     return get(STATUS_NAMES, code, "status $code")

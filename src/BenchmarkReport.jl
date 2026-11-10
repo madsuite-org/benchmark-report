@@ -10,10 +10,13 @@ using Dates, DelimitedFiles, FileWatching, Printf, TOML
 
 export write_report, write_index, locate, ipopt_reference, benchmark_version, serve
 
-# Status recorded for an instance whose worker was killed for overrunning the wall limit, and
-# for one that could not be built or whose solve threw.
+# Statuses the harness records itself (MadNLPBenchmark.jl's BenchmarkFormat): the worker killed at
+# the wall limit or for its memory; the instance not run (model not built, worker failed before the
+# solve), which says nothing about the solver; and the solve threw or its worker died (a crash
+# inside a library, or out of memory), a failure of the solver.
 const KILLED_STATUS = -100
 const ERROR_STATUS = -101
+const SOLVER_ERROR_STATUS = -102
 
 # The status codes of MadNLP that the report tells apart.
 const SOLVE_SUCCEEDED = 1
