@@ -1801,33 +1801,33 @@ def jobs_section(cfg, q, login=None):
     """The jobs: what runs and waits, and what ran lately. On the dashboard, above the reports."""
     e = html.escape
     def row(j):
-        # one short line per job (Sungho): its title links to its report, the rest is there
+        # the columns and styles of the list of runs below (Sungho): run, device, GitHub, commit,
+        # state, time, raw data
         short = j.get("label") or j.get("title", "") or name(cfg, j)
-        target = f'{e(cfg.reports)}/{folder(j)}/' if j.get("sha") and j["state"] != "waiting" else f'{e(cfg.base)}/job/{j["id"]}'
-        device = e(settings_of(j)["devices"].replace("cuda", "GPU").replace("cpu", "CPU"))
-        return (f'<tr><td><a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a></td>'
-                f'<td class="l"><a class="trunc" href="{target}" title="{e(j.get("purpose") or short)}">{e(short)}</a></td>'
-                f'<td class="l">{device}</td><td class="l">{badge(j, cfg)} <span class="m">{e(progress_of(cfg, j))}</span></td>'
-                f'<td class="l m">{e(j["by"])}</td></tr>')
+        started = j.get("sha") and j["state"] != "waiting"
+        target = f'{e(cfg.reports)}/{folder(j)}/' if started else f'{e(cfg.base)}/job/{j["id"]}'
+        devices = " ".join(f'<span class="tag {d}">{d.upper()}</span>' for d in settings_of(j)["devices"].split(","))
+        github = (f'<a href="https://github.com/{cfg.repo}/pull/{j["pr"]}">pull request</a>' if j["kind"] == "pr" else
+                  f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}">commit</a>' if j.get("sha") else "–")
+        commit = f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}">{j["sha"][:8]}</a>' if j.get("sha") else "–"
+        state = "cancelling" if j.get("cancel") and j["state"] == "running" else j["state"]
+        shown = f'<span class="state {"on" if state == "running" else "off"}">{e(state)}</span>'
+        progress = progress_of(cfg, j)
+        return (f'<tr><td><a class="trunc" href="{target}" title="{e(j.get("purpose") or short)}">Job {j["id"]}: {e(short)}</a></td>'
+                f'<td class="l">{devices}</td><td class="l">{github}</td><td class="l">{commit}</td>'
+                f'<td class="l">{shown}{" <span class=m>" + e(progress) + "</span>" if progress else ""}</td>'
+                f'<td>{when(j.get("started") or j["queued"])}</td>'
+                f'<td class="l">{f"<a href={chr(34)}{e(cfg.reports)}/{folder(j)}/data/{chr(34)}>files</a>" if started else ""}</td></tr>')
     def table(title, jobs, empty):
-        head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>job</th><th class="l">title</th><th class="l">device</th>'
-                '<th class="l">state</th><th class="l">by</th></tr></thead><tbody>')
+        head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">device</th><th class="l">GitHub</th>'
+                '<th class="l">commit</th><th class="l">state</th><th>started (UTC)</th><th class="l">raw data</th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
     bot = e(cfg.bots[0]) if cfg.bots else ""
-    down = ""
-    for node, d in sorted(q.down().items()):
-        button = ""
-        if login:
-            button = (f' <form method="post" action="{e(cfg.base)}/node-up" class="d-inline"><input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}">'
-                      f'<input type="hidden" name="node" value="{e(node)}"><button class="btn btn-sm btn-outline-secondary">Try it now</button></form>')
-        down += (f'<div class="alert alert-warning">Machine {e(node)} could not be reached at {when(d["since"])} UTC. Its jobs wait; '
-                 f'it is tried again when the queue changes, at most every {Dispatcher.RETRY_DOWN // 60} min.{button}'
-                 f'<div class="m small">{e(d.get("reason", ""))}</div></div>')
     # jobs start through the API (Sungho), so the dashboard has no form for them: it says how
     return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2></div>'
             # finished runs are in the one list of runs below, with the rest (Sungho)
-            + down + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
+            + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
             + run_card(cfg))
 
 

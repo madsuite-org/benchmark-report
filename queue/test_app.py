@@ -461,9 +461,7 @@ class TestDispatcher(Base):
     def test_down_machines_on_the_dashboard_and_the_api(self):
         self.q.mark_down("005", "ssh: connect to host 005 port 22: No route to host")
         page = app.jobs_section(self.cfg, self.q, "alice")
-        self.assertIn("Machine 005 could not be reached", page)
-        self.assertIn("No route to host", page)
-        self.assertIn("Try it now", page)
+        self.assertNotIn("could not be reached", page)     # no warning on the dashboard (Sungho); the API has it
         self.q.mark_up("005")
         self.assertNotIn("could not be reached", app.jobs_section(self.cfg, self.q, "alice"))
 
