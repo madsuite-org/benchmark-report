@@ -810,6 +810,10 @@ class TestServer(Base):
         send("b", {}, state="finished", host="n2")
         self.assertNotIn("node n2", open(os.path.join(root, "L40S", "summary.md")).read())
         self.assertIn("node n1", open(os.path.join(root, "H200", "summary.md")).read())
+        # a node that fails (its machine could not set up) does not end the job
+        send("f", {}, state="failed", host="n1")
+        self.assertEqual(self.q.data["jobs"][-1]["state"], "running")
+        self.q.beats[(job, "f")] = 0
         # the job ends when every node still there has finished (c went quiet)
         self.q.beats[(job, "c")] = 0
         send("a", {}, state="finished")

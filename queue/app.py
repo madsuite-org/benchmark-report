@@ -308,11 +308,12 @@ class Queue:
             n = j["nodes"].setdefault(node, {"host": "", "joined": int(time.time())})
             changed = n.get("state") != state
             n["state"] = state
-            if state in final and j["state"] == "running":
+            # the job ends when a node has finished it and every node still there is done too; a node
+            # that failed (a broken setup on its machine) does not end it, as others may still join
+            if state == "finished" and j["state"] == "running":
                 live = [k for k, v in j["nodes"].items() if v.get("state") not in final and self.alive(j, k)]
                 if not live:
-                    states = {v.get("state") for v in j["nodes"].values()}
-                    j["state"] = "finished" if "finished" in states else "failed"
+                    j["state"] = "finished"
                     j["ended"] = int(time.time())
                     changed = True
             if changed:
