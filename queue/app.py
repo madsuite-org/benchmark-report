@@ -1323,6 +1323,12 @@ def command(cfg, body):
     return re.search(rf"^\s*@({names})(\[bot\])?\s+benchmark\s*$", body or "", re.I | re.M) is not None
 
 
+# times in the reader's own time zone, as report.js does on the reports' pages
+LOCAL_TIMES = ("<script>document.querySelectorAll('time.lt').forEach(t=>{const d=new Date(t.getAttribute('datetime'));if(isNaN(d))return;"
+               "const p=n=>String(n).padStart(2,'0');t.textContent=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());"
+               "t.title=t.getAttribute('datetime')})</script>")
+
+
 def shell(cfg, login, title, body, message=""):
     """Every page of the app: the banner of the reports, with the app's links and the signed-in user."""
     e, r = html.escape, html.escape(cfg.reports)
@@ -1332,7 +1338,7 @@ def shell(cfg, login, title, body, message=""):
             f'<link rel="stylesheet" href="{r}/bootstrap.min.css"><link rel="stylesheet" href="{r}/style.css"><body>'
             f'<header class="site"><div class="container"><a class="brand" href="{e(cfg.base)}/">MadSuite benchmarks</a>'
             f'{app_nav(cfg, login)}</div></header>'
-            f'<main class="container py-3">{note}{body}</main></body></html>')
+            f'<main class="container py-3">{note}{body}</main>{LOCAL_TIMES}</body></html>')
 
 
 def signin(cfg, message=""):
@@ -1374,7 +1380,11 @@ def name(cfg, j):
 
 
 def when(t):
-    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(t)) if t else ""
+    """A time for a page: in UTC here, shown in the reader's own time zone by report.js (Sungho)."""
+    if not t:
+        return ""
+    return (f'<time class="lt" datetime="{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))}">'
+            f'{time.strftime("%Y-%m-%d %H:%M", time.gmtime(t))} UTC</time>')
 
 
 def cancel_button(cfg, q, login, j):
@@ -1547,7 +1557,7 @@ def report_details(cfg, q, name):
     if not r:
         return ""
     cols = " · ".join(f'<span class="m">{e(c["label"])}</span> <a href="../{e(c["folder"])}/">job {c["job"]}</a>' for c in r["runs"])
-    return f'<div>{cols}</div><div class="m">made by {e(r["by"])}, {when(r["created"])} UTC</div>'
+    return f'<div>{cols}</div><div class="m">made by {e(r["by"])}, {when(r["created"])}</div>'
 
 
 def header_panel(cfg, q, login, name, member, report, links):
@@ -1569,7 +1579,7 @@ def header_panel(cfg, q, login, name, member, report, links):
         times = ", ".join(x for x in (f"queued {when(j['queued'])}", j.get("started") and f"started {when(j['started'])}",
                                       j.get("ended") and f"ended {when(j['ended'])}") if x)
         more = (f'<div>Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)}</div>' if member else "") + \
-            f'<div>{job_details(cfg, j)}</div><div class="m">{times} UTC</div>'
+            f'<div>{job_details(cfg, j)}</div><div class="m">{times}</div>'
     if name.startswith("report-"):
         more += report_details(cfg, q, name)
         if member:
@@ -1597,7 +1607,7 @@ def job_details(cfg, j):
               ("sets", e(j["sets"])) if j.get("sets") and j["sets"] != "acopf,cops,mittelmann,cutest" else None,
               ("subset", f'{e(j.get("subset") or "listed")}, {len(j["only"])} instances') if j.get("only") else None,
               ("harness", e(st["harness"])) if st["harness"] else None,
-              ("started by", f'{e(j["by"])}, {when(j.get("started") or j["queued"])} UTC')]
+              ("started by", f'{e(j["by"])}, {when(j.get("started") or j["queued"])}')]
     return " · ".join(f'<span class="m">{k}</span> {v}' for k, v in (f for f in fields if f))
 
 
@@ -1624,7 +1634,7 @@ def job_panel(cfg, q, login, name):
                                   j.get("ended") and f"ended {when(j['ended'])}") if x)
     where = f" on {e(j['node'])}" if j.get("node") else ""
     return (f'<div class="container mt-2"><div class="jobbar">Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)}{where} '
-            f'<span class="m">by {e(j["by"])}, {times} UTC</span> {actions(cfg, q, login, j)}</div></div>')
+            f'<span class="m">by {e(j["by"])}, {times}</span> {actions(cfg, q, login, j)}</div></div>')
 
 
 def actions(cfg, q, login, j):
@@ -1760,7 +1770,7 @@ def workers_page(cfg, login, name, q=None):
         body += f'<h2>Log</h2><p class="m">The last lines of {what} ({log}).</p><pre class="log">{e(log_tail(os.path.join(root, log)) or "")}</pre>'
     page = shell(cfg, login, f"Workers of {name}", body)
     # the page takes itself again, as the reports do
-    return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace("</main></body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)
+    return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace(f"</main>{LOCAL_TIMES}</body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)
 
 
 _STATUS = {"mtime": 0, "data": {}}
@@ -1812,7 +1822,7 @@ def jobs_section(cfg, q, login=None):
                 f'<td class="l">{f"<a href={chr(34)}{e(cfg.reports)}/{folder(j)}/data/{chr(34)}>files</a>" if started else ""}</td></tr>')
     def table(title, jobs, empty):
         head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">device</th><th class="l">PR</th>'
-                '<th class="l">commit</th><th class="l">state</th><th>started (UTC)</th><th class="l">raw data</th></tr></thead><tbody>')
+                '<th class="l">commit</th><th class="l">state</th><th>started</th><th class="l">raw data</th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
     bot = e(cfg.bots[0]) if cfg.bots else ""

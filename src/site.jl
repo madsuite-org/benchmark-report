@@ -215,6 +215,8 @@ function banner(home, trail, line = "", menus = "")
     return "<header class=\"site\"><div class=\"container\"><a class=\"brand\" href=\"/\">MadSuite benchmarks</a><span class=\"trail\"><a href=\"$home\">MadNLP</a></span>$trail<nav class=\"app\"><details class=\"menu\"><summary aria-label=\"Menu\">☰</summary><div><a href=\"/queue/\">Sign in</a><button id=\"theme\" type=\"button\">Light or dark</button></div></details></nav></div></header>" *
         "<div class=\"bar\"><div class=\"container\"><div class=\"line\">$line</div>$menus</div></div>"
 end
+# a time in UTC (`2026-11-10T13:30:02Z`), shown in the reader's own time zone by report.js (Sungho)
+local_time(t) = occursin(r"^\d{4}-\d\d-\d\dT\d\d:\d\d", t) ? "<time class=\"lt\" datetime=\"$(escape_html(t))\">$(escape_html(replace(first(t, 16), "T" => " "))) UTC</time>" : escape_html(t)
 state_badge(state) = "<span class=\"state $(state == "running" ? "on" : "off")\">$(escape_html(state))</span>"
 
 # A run that says it is running but has not written for an hour has stopped without saying so (its
@@ -734,10 +736,10 @@ function write_index(site, runs; repository, reports = [])
     io = IOBuffer()
     # reports first: compositions of runs, made through the API (Sungho)
     if !isempty(reports)
-        println(io, "<h2>Reports</h2><div class=\"wide\"><table id=\"reports\" class=\"table table-sm\"><thead><tr><th>report</th><th class=\"l\">columns</th><th class=\"l\">state</th><th>updated (UTC)</th></tr></thead><tbody>")
+        println(io, "<h2>Reports</h2><div class=\"wide\"><table id=\"reports\" class=\"table table-sm\"><thead><tr><th>report</th><th class=\"l\">columns</th><th class=\"l\">state</th><th>updated</th></tr></thead><tbody>")
         for r in sort(reports; by = r -> parse(Int, r.name[8:end]), rev = true)
             cols = join(escape_html.(r.labels), ", ")
-            println(io, "<tr><td><a class=\"trunc\" href=\"$(escape_html(r.name))/\" title=\"$(escape_html(r.title))\">Report $(r.name[8:end]): $(escape_html(r.title))</a></td><td class=\"l\"><span class=\"trunc\" title=\"$cols\">$cols</span></td><td class=\"l\">$(state_badge(r.state))</td><td>$(escape_html(replace(first(r.updated, 16), "T" => " ")))</td></tr>")
+            println(io, "<tr><td><a class=\"trunc\" href=\"$(escape_html(r.name))/\" title=\"$(escape_html(r.title))\">Report $(r.name[8:end]): $(escape_html(r.title))</a></td><td class=\"l\"><span class=\"trunc\" title=\"$cols\">$cols</span></td><td class=\"l\">$(state_badge(r.state))</td><td>$(local_time(r.updated))</td></tr>")
         end
         println(io, "</tbody></table></div>")
     end
@@ -756,7 +758,7 @@ function write_index(site, runs; repository, reports = [])
         isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">#$(escape_html(r.pr))</a>",
         commit_link(r.commit),
         state_badge(shown_state(r)) * (shown_state(r) == "running" && get(r, :total, 0) > 0 ? " <span class=\"m\">$(r.done)/$(r.total)</span>" : ""),
-        escape_html(replace(first(r.updated, 16), "T" => " ")),
+        local_time(r.updated),
         "<a href=\"$(escape_html(r.name))/data/\">files</a>",
     )
     running = [r for r in runs if shown_state(r) == "running"]
@@ -780,7 +782,7 @@ function write_index(site, runs; repository, reports = [])
     for v in versions
         push!(rows, row("<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">Ipopt reference, benchmark $(escape_html(v))</a>", device_tag("cpu"), "–", "–", state_badge("reference"), "", "<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">files</a>"))
     end
-    println(io, "<h2>Runs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">PR</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated (UTC)</th><th class=\"l\">raw data</th></tr></thead><tbody>")
+    println(io, "<h2>Runs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">PR</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated</th><th class=\"l\">raw data</th></tr></thead><tbody>")
     foreach(r -> println(io, r), rows)
     println(io, "</tbody></table></div><nav id=\"runpages\" class=\"pages\" aria-label=\"Pages of runs\"></nav>")
     line = "<span class=\"m\">$(length(running)) running, $(length(finished)) finished, $(length(commits)) archived</span>"

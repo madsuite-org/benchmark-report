@@ -59,7 +59,7 @@ const kept=[...document.querySelectorAll(SCROLLS)].map(b=>[b.scrollLeft,b.scroll
 const open=[...document.querySelectorAll('#live details[open]')].map(x=>x.querySelector('summary')?.textContent);
 const FIELDS='#live form input[name]:not([type=hidden]),#live form select[name]';
 const filled=[...document.querySelectorAll(FIELDS)].map(x=>[x.form?.getAttribute('action')+'|'+x.name,x.value]);
-document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();bindRuns();markTab();
+document.querySelector('#live').replaceWith(d.querySelector('#live'));bind();bindRuns();markTab();localTimes();
 document.querySelectorAll(SCROLLS).forEach((b,i)=>{if(!kept[i])return;b.scrollLeft=kept[i][0];
 b.scrollTop=b.matches('pre.log')&&kept[i][2]?b.scrollHeight:kept[i][1]});
 document.querySelectorAll('#live details').forEach(x=>{if(open.includes(x.querySelector('summary')?.textContent))x.open=true});
@@ -67,7 +67,7 @@ document.querySelectorAll(FIELDS).forEach(x=>{const k=x.form?.getAttribute('acti
 if(q||c){const f=document.querySelector('#filter');f.value=q||'';document.querySelector('#failed').checked=c;f.dispatchEvent(new Event('input'))}},2000);
 // how long ago the shown data was built, so that a live page visibly is one
 setInterval(()=>document.querySelectorAll('.ago').forEach(a=>{const s=Math.max(0,Math.round((Date.now()-Date.parse(a.dataset.t))/1000));
-a.textContent=s<90?s+' s ago':s<5400?Math.round(s/60)+' min ago':a.dataset.t.slice(0,16).replace('T',' ')+' UTC';
+a.textContent=s<90?s+' s ago':s<5400?Math.round(s/60)+' min ago':localTime(new Date(a.dataset.t));
 // a run that says it is running but has had no new data for 15 minutes has stalled: say so
 const st=document.querySelector('.state.on');if(st)st.textContent=s>900?'stalled':'running';if(st)st.classList.toggle('stalled',s>900)}),1000);
 
@@ -75,3 +75,8 @@ const st=document.querySelector('.state.on');if(st)st.textContent=s>900?'stalled
 document.addEventListener('click',ev=>{const b=ev.target.closest?.('.copylink');if(!b)return;
 const url=new URL(b.dataset.link,location.href).href,done=()=>{const t=b.textContent;b.textContent='Copied';setTimeout(()=>b.textContent=t,1500)};
 if(navigator.clipboard?.writeText)navigator.clipboard.writeText(url).then(done,()=>prompt('Copy this link',url));else prompt('Copy this link',url)});
+
+// times are sent in UTC and shown in the reader's own time zone (Sungho)
+function localTime(d){const p=n=>String(n).padStart(2,'0');return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes())}
+function localTimes(){document.querySelectorAll('time.lt').forEach(t=>{const d=new Date(t.getAttribute('datetime'));if(!isNaN(d)){t.textContent=localTime(d);t.title=t.getAttribute('datetime')}})}
+localTimes();
