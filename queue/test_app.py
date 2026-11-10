@@ -810,6 +810,7 @@ class TestServer(Base):
         send("b", {}, state="finished", host="n2")
         self.assertNotIn("node n2", open(os.path.join(root, "L40S", "summary.md")).read())
         self.assertIn("node n1", open(os.path.join(root, "H200", "summary.md")).read())
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{job}/reopen", {}, token="tok-alice")[0], 400)   # running
         # a node that fails (its machine could not set up) does not end the job
         send("f", {}, state="failed", host="n1")
         self.assertEqual(self.q.data["jobs"][-1]["state"], "running")

@@ -2222,6 +2222,21 @@ def handler(cfg, q):
                 if j.get("external"):
                     write_run_json(cfg, j)
                 return reply(200, public(cfg, j))
+            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "reopen" and method == "POST":
+                # a job run elsewhere that ended failed (its nodes could not set up) runs again: new
+                # nodes carry on with what it has
+                j = find(parts[1])
+                if j is None or not j.get("external"):
+                    return reply(404, {"error": "There is no such job run elsewhere."})
+                if j["by"].lower() != login.lower() and permission != "admin":
+                    return reply(403, {"error": "Only who started the job can reopen it."})
+                if j["state"] != "failed":
+                    return reply(400, {"error": f"Job {j['id']} is {j['state']}; only a failed job can be reopened."})
+                with q.changed:
+                    j["state"], j["ended"] = "running", None
+                    q.save()
+                write_run_json(cfg, j)
+                return reply(200, public(cfg, j))
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "against" and method == "POST":
                 # an A/B made afterwards: the reports of the job and the ones given show each other
                 j = find(parts[1])
