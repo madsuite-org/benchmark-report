@@ -143,9 +143,10 @@ struct ResultSet
     revs::Dict{Tuple{String, String}, String}      # (device, config) => what was run
     harness::Dict{Tuple{String, String}, String}   # (device, config) => version of this benchmark
     logs::Dict{Tuple{String, String, String, String}, String}   # (device, set, case, config) => address of the solver log
+    options::Dict{Tuple{String, String}, String}   # (device, config) => the options given, for a custom configuration
 end
 
-ResultSet(label) = ResultSet(label, Dict(), Dict(), Dict(), Dict(), Dict())
+ResultSet(label) = ResultSet(label, Dict(), Dict(), Dict(), Dict(), Dict(), Dict())
 
 # A row as the report may use it: every column but the name of the instance is a number.
 number(x) = x isa Real ? x : something(tryparse(Float64, string(x)), NaN)
@@ -166,6 +167,7 @@ function add!(rs::ResultSet, set, config, meta, rows; machine = "")
     haskey(meta, "first_commit") && (commit = abbreviate(meta["first_commit"]) * " to " * commit)
     rs.harness[(device, config)] = get(meta, "benchmark_version", "–")
     rs.revs[(device, config)] = config == "ipopt" ? get(meta, "ipopt_version", "?") : commit
+    haskey(meta, "custom_options") && (rs.options[(device, config)] = string(meta["custom_options"]))
     line = hardware_line(meta)
     line in get!(rs.machines, device, String[]) || push!(rs.machines[device], line)
     return rs
@@ -242,7 +244,7 @@ function from_archive(rev; depth = 200)
             length(commits) == 1 ? name : name * " (" * join(sort!([d for (d, c) in used if c == sha]), ", ") * ")"
         end, "; ",
     )
-    return ResultSet(label, rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
+    return ResultSet(label, rs.rows, rs.machines, rs.revs, rs.harness, rs.logs, rs.options)
 end
 
 # The results that stand for master for the run in folder `name` of `live`: for each machine and
@@ -366,7 +368,7 @@ function latest_merged(live, name; depth = 200)
         foreach(d -> d in mine || delete!(used, d), collect(keys(used)))
     end
     isempty(rs.rows) && return nothing
-    return ResultSet(join(reduce(vcat, [used[d] for d in sort!(collect(keys(used)))]; init = String[]), "; "), rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
+    return ResultSet(join(reduce(vcat, [used[d] for d in sort!(collect(keys(used)))]; init = String[]), "; "), rs.rows, rs.machines, rs.revs, rs.harness, rs.logs, rs.options)
 end
 
 # The Ipopt reference of a version of this benchmark, `ipopt/<version>/` on the archive branch:
@@ -409,7 +411,7 @@ end
 function locate(arg, label)
     isdir(arg) && return from_directory(arg, something(label, "`$arg`"))
     rs = from_archive(arg)
-    return rs === nothing || label === nothing ? rs : ResultSet(label, rs.rows, rs.machines, rs.revs, rs.harness, rs.logs)
+    return rs === nothing || label === nothing ? rs : ResultSet(label, rs.rows, rs.machines, rs.revs, rs.harness, rs.logs, rs.options)
 end
 
 include("site.jl")

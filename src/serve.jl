@@ -90,7 +90,7 @@ function build_report(live, site, name)
         joinpath(site, name), joinpath(first_root, spec.runs[1]);
         base = with_comparisons(nothing, live, name), reference = nothing, wall = 7200.0,
         title = "Report $(name[8:end]): $(spec.title)", own_label = spec.labels[1],
-        finished = all(!=("running"), states), assets = "..", live = true,
+        finished = all(!=("running"), states), assets = "..", live = true, tiles = false,
     )
     REPORTS[name] = (; name, title = spec.title, runs = spec.runs, labels = spec.labels, mtime = changed,
                      updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ"), state = any(==("running"), states) ? "running" : "finished")
@@ -212,6 +212,7 @@ function with_comparisons(base, live, name)
             base.rows[(device, set, "cmp:$label:$config")] = rows
             haskey(rs.revs, (device, config)) && (base.revs[(device, "cmp:$label:$config")] = rs.revs[(device, config)])
             haskey(rs.harness, (device, config)) && (base.harness[(device, "cmp:$label:$config")] = rs.harness[(device, config)])
+            haskey(rs.options, (device, config)) && (base.options[(device, "cmp:$label:$config")] = rs.options[(device, config)])
         end
     end
     return base

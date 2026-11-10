@@ -65,7 +65,10 @@ is_reference(s) = s.key[2] == "ipopt"
 is_own(s) = !s.base && !is_reference(s) && !startswith(s.key[2], "cmp:")
 
 function report_sides(cand, base; own = "current")
-    suffix(key) = key[2] == "default" ? "" : " " * key[2]
+    # a column is named by its solver, not by its configuration (whose options are in the table of
+    # solvers), unless a run has several configurations on one device
+    several = Set(d for d in unique!([k[1] for k in keys(cand.rows)]) if length(unique!([k[3] for k in keys(cand.rows) if k[1] == d && k[3] != "ipopt"])) > 1)
+    suffix(key) = key[2] == "default" || key[1] ∉ several ? "" : " " * key[2]
     cmp(key) = match(r"^cmp:(.*):([^:]*)$", key[2])
     label(key, name) = key[2] == "ipopt" ? "Ipopt" : cmp(key) !== nothing ? cmp(key)[1] : name * suffix(key)
     keys_of(rs) = rs === nothing ? [] : sort!(unique!([(k[1], k[3]) for k in keys(rs.rows)]); by = k -> (k[1] != "cpu", k))
@@ -250,16 +253,20 @@ end
 function solver_table(io, sides, cand, base, code)
     info(s, field) = get(getfield(s.base ? base : cand, field), s.key, "–")
     revision(s) = code === nothing ? escape_html(info(s, :revs)) : replace(escape_html(info(s, :revs)), r"\b[0-9a-f]{8,40}\b" => c -> "<a href=\"$code/commit/$c\">$c</a>")
-    println(io, "<div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>solver</th><th class=\"l\">device</th><th class=\"l\">revision</th><th class=\"l\">benchmark</th></tr></thead><tbody>")
+    # each column's configuration and the options it was given: kept out of the column's name
+    config(s) = (m = match(r"^cmp:.*:([^:]*)$", s.key[2]); m === nothing ? s.key[2] : m[1])
+    println(io, "<div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>solver</th><th class=\"l\">device</th><th class=\"l\">configuration</th><th class=\"l\">options</th><th class=\"l\">revision</th><th class=\"l\">benchmark</th></tr></thead><tbody>")
     for s in sides
-        println(io, "<tr><td>", key(s), "</td><td class=\"l\">", device_tag(s.key[2] == "ipopt" ? "cpu" : s.key[1]), "</td><td class=\"l\">", revision(s), "</td><td class=\"l\">", escape_html(info(s, :harness)), "</td></tr>")
+        options = info(s, :options)
+        println(io, "<tr><td>", key(s), "</td><td class=\"l\">", device_tag(s.key[2] == "ipopt" ? "cpu" : s.key[1]), "</td><td class=\"l\">", escape_html(config(s)),
+                "</td><td class=\"l\">", options == "–" ? "–" : "<code>" * escape_html(options) * "</code>", "</td><td class=\"l\">", revision(s), "</td><td class=\"l\">", escape_html(info(s, :harness)), "</td></tr>")
     end
     println(io, "</tbody></table></div>")
     return
 end
 
 # One bar per device: how much of its sets has been run.
-function progress(io, devices, sets, sides, cand, base, wall)
+function progress(io, devices, sets, sides, cand, base, wall; bar_only = false)
     counts = Tuple{Int, Int}[]
     println(io, "<div class=\"tiles\">")
     for device in devices
@@ -283,6 +290,11 @@ function progress(io, devices, sets, sides, cand, base, wall)
         end
         push!(counts, (done, total))   # the run's own progress, for the list of runs
         share = total == 0 ? 0 : round(Int, 100 * common_count / total)
+        if bar_only
+            # a report: a bar of how much of the sets every column has, nothing else (Sungho)
+            println(io, "<div class=\"statusbar\" title=\"", common_count, " of ", total, " instances in every column\"><i style=\"width:", share, "%\"></i><span>", common_count, "/", total, "</span></div>")
+            continue
+        end
         println(io, "<div class=\"tile\"><div class=\"m\">", device_tag(device), " ", escape_html(mine.label), "</div><div class=\"big\">", common_count, "<small>/", total, "</small></div>")
         println(io, "<div class=\"meter\"><i style=\"width:", share, "%;background:", device_color(device), "\"></i></div><div class=\"m\">", solved_count, " solved, of the instances every column has</div></div>")
     end
@@ -583,7 +595,7 @@ escape_url(s) = replace(s, r"[^A-Za-z0-9_.~+-]" => c -> join(["%" * uppercase(st
 # The config of the Ipopt reference when it is a column beside a run of Ipopt itself.
 const REFERENCE_IPOPT = "cmp:Ipopt reference:ipopt"
 
-function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished, only = nothing, own_label = "current")
+function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished, only = nothing, own_label = "current", tiles = true)
     mkpath(site)
     chmod(site, 0o755)
     assets == "." && write_assets(site)
@@ -635,6 +647,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
         mergewith!((mine, _) -> mine, cand.rows, reference.rows)
         mergewith!((mine, _) -> mine, cand.revs, reference.revs)
         mergewith!((mine, _) -> mine, cand.harness, reference.harness)
+        mergewith!((mine, _) -> mine, cand.options, reference.options)
     end
     sides = report_sides(cand, base; own = own_label)
     set_titles!(sides, cand, base, repository === nothing ? nothing : repository[1])
@@ -670,7 +683,8 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     println(io, "<h1>Summary</h1>")
     errors = not_run(cand, own_keys)
     print(io, not_run_note(errors))
-    counts = progress(io, devices, sets, sides, cand, base, walls)
+    # a run's progress; a report compares, so it has none (Sungho)
+    counts = progress(io, devices, sets, sides, cand, base, walls; bar_only = !tiles)
     summary_table(io, [(set, "") for set in sets], sides, cand, base, walls)
     println(io, "<h2>Solvers</h2>")
     solver_table(io, sides, cand, base, repository === nothing ? nothing : repository[1])
