@@ -184,7 +184,7 @@ end
     @test BenchmarkReport.shown_state((; state = "finished", mtime = time() - 7200)) == "finished"
 end
 
-@testset "a run of Ipopt shows its own results" begin
+@testset "a run of Ipopt shows its own results, beside the previous Ipopt run" begin
     mktempdir() do root
         results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")
         hostile_results(results)
@@ -198,8 +198,10 @@ end
         BenchmarkReport.add!(reference, "smoke", "ipopt", BenchmarkReport.read_meta(joinpath(machine, "smoke_ipopt.csv")), [(; BenchmarkReport.read_results(joinpath(machine, "smoke_ipopt.csv"))[1]..., iters = 99999)])
         write_report(site, results; wall = 7200.0, finished = true, reference)
         page = read(joinpath(site, "smoke.html"), String)
-        @test !occursin("99999", page)
-        @test occursin("Ipopt", page)
+        @test occursin("Ipopt reference (CPU)", page)     # the previous run, a column of its own
+        @test occursin("99999", page)                     # with its own results
+        @test occursin("Ipopt (CPU)", page)               # and this run's beside it
+        @test count("99999", page) == 1                   # its results only in the reference's column
     end
 end
 

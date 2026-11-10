@@ -61,6 +61,8 @@ end
 untimed(label) = occursin("†", label)
 device_name(device) = device == "cpu" ? "CPU" : device == "cuda" ? "GPU" : uppercase(device)
 is_reference(s) = s.key[2] == "ipopt"
+# a column of this run itself, not the base, the Ipopt reference or another run compared with it
+is_own(s) = !s.base && !is_reference(s) && !startswith(s.key[2], "cmp:")
 
 function report_sides(cand, base)
     suffix(key) = key[2] == "default" ? "" : " " * key[2]
@@ -262,7 +264,7 @@ function progress(io, devices, sets, sides, cand, base, wall)
     for device in devices
         # the progress of this run, never of a column it is compared with: its own MadNLP, else (a run
         # of Ipopt alone) its own Ipopt
-        candidates = [s for s in sides if s.key[1] == device && !s.base && s.key[2] != "ipopt"]
+        candidates = [s for s in sides if s.key[1] == device && is_own(s)]
         isempty(candidates) && (candidates = [s for s in sides if s.key[1] == device && s.key[2] == "ipopt" && !s.base])
         isempty(candidates) && continue
         mine = first(candidates)
@@ -444,7 +446,7 @@ function set_page(site, set, device, sides, cand, base, wall, logs, bar; refresh
     io = IOBuffer()
     println(io, "<h1>", get(SET_TITLES, set, set), "</h1>")
     # this run's instances that could not be run, as on the summary
-    mine = unique!([c for (sd, r) in zip(sides, rows) if !sd.base && !is_reference(sd) for (c, x) in r if x.status == ERROR_STATUS])
+    mine = unique!([c for (sd, r) in zip(sides, rows) if is_own(sd) for (c, x) in r if x.status == ERROR_STATUS])
     # every table of the page over the instances that all of its columns have (Sungho)
     common = isempty(rows) ? Set{String}() : reduce(intersect, [Set(keys(r)) for r in rows])
     rows = [filter(p -> first(p) in common, r) for r in rows]
@@ -569,6 +571,9 @@ function write_listings(site, assets)
 end
 escape_url(s) = replace(s, r"[^A-Za-z0-9_.~+-]" => c -> join(["%" * uppercase(string(b; base = 16, pad = 2)) for b in codeunits(c)]))
 
+# The config of the Ipopt reference when it is a column beside a run of Ipopt itself.
+const REFERENCE_IPOPT = "cmp:Ipopt reference:ipopt"
+
 function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished, only = nothing)
     mkpath(site)
     chmod(site, 0o755)
@@ -576,12 +581,15 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     logs = sync_data(site, root)
     write_listings(site, assets)
     repository = link === nothing ? nothing : match(r"^(https://github\.com/[^/]+/[^/]+)/", link)
+    cand = from_directory(root, "this run")
+    ipopt_only = !isempty(cand.rows) && all(k -> k[3] == "ipopt", keys(cand.rows))
     if reference !== nothing && repository !== nothing
         for (key, path) in reference.logs
+            key = ipopt_only && key[4] == "ipopt" ? (key[1], key[2], key[3], REFERENCE_IPOPT) : key
+            haskey(logs, key) && continue   # this run's own log of it comes first
             logs[key] = (isempty(ARCHIVE_URL[]) ? repository[1] : ARCHIVE_URL[]) * "/blob/$ARCHIVE_BRANCH/" * path
         end
     end
-    cand = from_directory(root, "this run")
     write_instances(joinpath(site, "instances.json"), cand.rows, k -> (p = get(logs, k, ""); isempty(p) ? "" : joinpath(site, p)))
     # a run of Ipopt itself (config `ipopt`) is shown with its own results, not the reference's
     own_ipopt = any(k -> k[3] == "ipopt", keys(cand.rows))
@@ -590,6 +598,20 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     # until the run has results of its own there is nothing to compare: no reference, no base
     if isempty(cand.rows)
         reference, base = nothing, nothing
+    end
+    # a run of Ipopt alone is compared with the previous Ipopt run, the reference, not with MadNLP's
+    # master (Sungho): the reference becomes a column of its own beside this run's Ipopt
+    if ipopt_only
+        base = nothing
+        if reference !== nothing
+            rekey(k) = (k[1], k[2], REFERENCE_IPOPT)
+            for k in collect(keys(reference.rows))
+                k[3] == "ipopt" && (reference.rows[rekey(k)] = pop!(reference.rows, k))
+            end
+            for d in (reference.revs, reference.harness), k in collect(keys(d))
+                k[2] == "ipopt" && (d[(k[1], REFERENCE_IPOPT)] = pop!(d, k))
+            end
+        end
     end
     if only !== nothing
         # a subset: every column over its instances alone, so that sizes and progress are the subset's
