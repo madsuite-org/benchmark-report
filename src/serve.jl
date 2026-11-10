@@ -4,6 +4,9 @@
 
 const DEFAULT_REPOSITORY = "madsuite-org/MadNLP.jl"
 const RUNS = Dict{String, NamedTuple}()
+# Reports: compositions of runs, `report-<id>` folders in the uploads root with a `report.toml`
+# written by the app (title, the runs' folders and their columns' labels).
+const REPORTS = Dict{String, NamedTuple}()
 
 function json_field(text, name)
     m = match(Regex("\"$name\"\\s*:\\s*\"([^\"]*)\""), text)
@@ -29,24 +32,89 @@ function code_commit()
 end
 
 # a pull request's results are kept per commit, pr-<N>-<sha8>; plain pr-<N> is from before that
-is_folder(name) = occursin(r"^(pr-\d+(-[0-9a-f]{8})?|run-[a-z0-9-]+|master-[0-9a-f]{8})$", name)
+is_folder(name) = occursin(r"^(pr-\d+(-[0-9a-f]{8})?|run-[a-z0-9-]+|master-[0-9a-f]{8}|report-\d+)$", name)
+is_report(name) = occursin(r"^report-\d+$", name)
 
 # Uploaded results, in a root of their own: only their run-up-* and run-x* (jobs run elsewhere)
 # folders are read there, and none of those is read from the live root, so neither can stand in
 # for the other.
 const UPLOADS = Ref("")
 function folders(live)
-    uploaded(n) = startswith(n, "run-up-") || startswith(n, "run-x")
+    uploaded(n) = startswith(n, "run-up-") || startswith(n, "run-x") || startswith(n, "report-")
     out = [(live, n) for n in readdir(live) if is_folder(n) && !uploaded(n)]
     if !isempty(UPLOADS[]) && isdir(UPLOADS[])
         append!(out, [(UPLOADS[], n) for n in readdir(UPLOADS[]) if uploaded(n) && is_folder(n)])
     end
     return out
 end
-is_run(live, name) = is_folder(name) && isfile(joinpath(live, name, "run.json"))
-stale(live, name) = !haskey(RUNS, name) || RUNS[name].mtime != mtime(joinpath(live, name, "run.json"))
+is_run(live, name) = is_folder(name) && isfile(joinpath(live, name, is_report(name) ? "report.toml" : "run.json"))
+stale(live, name) = is_report(name) ? (!haskey(REPORTS, name) || REPORTS[name].mtime != report_mtime(live, name)) :
+    (!haskey(RUNS, name) || RUNS[name].mtime != mtime(joinpath(live, name, "run.json")))
+
+# A report's spec, `(; title, runs, labels)`, or nothing.
+function report_spec(live, name)
+    try
+        t = TOML.parsefile(joinpath(live, name, "report.toml"))
+        runs = [String(r) for r in get(t, "runs", String[]) if r isa AbstractString && is_folder(r) && !is_report(r)]
+        labels = [String(l) for l in get(t, "labels", String[])]
+        isempty(runs) && return nothing
+        return (; title = String(get(t, "title", name)), runs, labels = [i <= length(labels) ? labels[i] : runs[i] for i in eachindex(runs)])
+    catch
+        return nothing
+    end
+end
+# where a run's folder is: the uploads root for runs made elsewhere, else the live one
+# the live root of the runs (pull requests, master) beside the uploads root, set when building
+const LIVE = Ref("")
+run_root(live, run) = (r = [x for x in [UPLOADS[], LIVE[], live] if !isempty(x) && isdir(joinpath(x, run))]; isempty(r) ? nothing : first(r))
+# a report changes with its spec and with every run in it
+function report_mtime(live, name)
+    spec = report_spec(live, name)
+    t = mtime(joinpath(live, name, "report.toml"))
+    spec === nothing && return t
+    for run in spec.runs
+        root = run_root(live, run)
+        root === nothing || (t = max(t, mtime(joinpath(root, run, "run.json"))))
+    end
+    return t
+end
+
+function build_report(live, site, name)
+    changed = report_mtime(live, name)
+    spec = report_spec(live, name)
+    spec === nothing && error("$name: bad report.toml")
+    first_root = run_root(live, spec.runs[1])
+    first_root === nothing && error("$name: no run $(spec.runs[1])")
+    states = [json_field(read(joinpath(r, run, "run.json"), String), "state") for run in spec.runs for r in (run_root(live, run),) if r !== nothing]
+    write_report(
+        joinpath(site, name), joinpath(first_root, spec.runs[1]);
+        base = with_comparisons(nothing, live, name), reference = nothing, wall = 7200.0,
+        title = "Report $(name[8:end]): $(spec.title)", own_label = spec.labels[1],
+        finished = all(!=("running"), states), assets = "..", live = true,
+    )
+    REPORTS[name] = (; name, title = spec.title, runs = spec.runs, labels = spec.labels, mtime = changed,
+                     updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ"), state = any(==("running"), states) ? "running" : "finished")
+    return
+end
+
+# The reports that show `run`, rebuilt when it has been.
+function build_reports_of(live, site, run)
+    (isempty(UPLOADS[]) || !isdir(UPLOADS[])) && return
+    for name in readdir(UPLOADS[])
+        is_report(name) || continue
+        spec = report_spec(UPLOADS[], name)
+        (spec !== nothing && run in spec.runs && stale(UPLOADS[], name)) || continue
+        try
+            build_report(UPLOADS[], site, name)
+        catch err
+            @warn "$name: the report was not updated" exception = err
+        end
+    end
+    return
+end
 
 function build_run(live, site, name)
+    is_report(name) && return build_report(live, site, name)
     path = joinpath(live, name, "run.json")
     changed, text = mtime(path), read(path, String)
     repository, pr = json_field(text, "repository"), json_field(text, "pr")
@@ -57,13 +125,10 @@ function build_run(live, site, name)
     at = match(r"^pr-\d+-([0-9a-f]{8})$", name)
     title = manual ? (isempty(named) ? name[5:end] : named) : "Pull request #$pr" * (at === nothing ? "" : " at $(at[1])")
     link = manual ? (occursin(r"^[0-9a-f]{40}$", commit) ? "https://github.com/$repository/commit/$commit" : nothing) : "https://github.com/$repository/pull/$pr"
-    # the latest master and the Ipopt reference are shown unless taken away in the app
-    hide = get(comparisons_of(name), "hide", String[])
-    base = with_comparisons("master" in hide ? nothing : latest_merged(live, name), live, name)
+    # a run's page shows the run alone (Sungho): comparing runs is what reports are for
     counts = write_report(
         joinpath(site, name), joinpath(live, name);
-        base,
-        reference = "ipopt" in hide ? nothing : ipopt_reference(benchmark_version(joinpath(live, name))), wall = 7200.0,
+        base = nothing, reference = nothing, wall = 7200.0,
         # a job over a subset of the instances is compared over that subset
         only = (m = match(r"\"only\"\s*:\s*\[([^\]]*)\]", text); m === nothing ? nothing : Set(x[1] for x in eachmatch(r"\"([A-Za-z0-9_.+-]+)\"", m[1]))),
         title, link,
@@ -71,6 +136,7 @@ function build_run(live, site, name)
     )
     updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
     RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed, counts.done, counts.total, counts.devices)
+    build_reports_of(live, site, name)
     return
 end
 
@@ -98,6 +164,12 @@ end
 
 function comparisons_of(name)
     entry = Dict{String, Any}()
+    # a report: every run after the first is a column of it
+    if is_report(name) && !isempty(UPLOADS[])
+        spec = report_spec(UPLOADS[], name)
+        spec === nothing && return entry
+        return Dict{String, Any}("with" => spec.runs[2:end], "names" => spec.labels[2:end])
+    end
     for file in (COMPARISONS[], app_comparisons())
         isfile(file) || continue
         try
@@ -117,10 +189,12 @@ function with_comparisons(base, live, name)
     entry = comparisons_of(name)
     others, names = get(entry, "with", String[]), get(entry, "names", String[])
     isempty(others) && return base
-    own = from_directory(joinpath(live, name), "")
+    # a report's own columns are its first run's
+    own_dir = is_report(name) ? (spec = report_spec(live, name); r = spec === nothing ? nothing : run_root(live, spec.runs[1]); r === nothing ? joinpath(live, name) : joinpath(r, spec.runs[1])) : joinpath(live, name)
+    own = from_directory(own_dir, "")
     for (i, other) in enumerate(others)
         is_folder(other) || continue
-        roots = filter(r -> isdir(joinpath(r, other)), [live; isempty(UPLOADS[]) ? String[] : [UPLOADS[]]])
+        roots = filter(r -> isdir(joinpath(r, other)), filter(!isempty, [live, LIVE[], UPLOADS[]]))
         isempty(roots) && continue
         root = first(roots)
         rs = from_directory(joinpath(root, other), other)
@@ -145,7 +219,7 @@ end
 
 # The list of benchmarks, and `status.json` for the check that watches running benchmarks.
 function publish(site; repository = DEFAULT_REPOSITORY)
-    write_index(site, collect(values(RUNS)); repository)
+    write_index(site, collect(values(RUNS)); repository, reports = collect(values(REPORTS)))
     entries = ["\"$(r.name)\":{\"state\":\"$(r.state)\",\"updated\":\"$(r.updated)\",\"done\":$(get(r, :done, 0)),\"total\":$(get(r, :total, 0))}" for r in sort!(collect(values(RUNS)); by = r -> r.name)]
     write_atomic(joinpath(site, "status.json"), "{", join(entries, ","), "}\n")
     return
@@ -181,6 +255,7 @@ function write_reference_instances(site)
 end
 
 function build_all(live, site; repository = DEFAULT_REPOSITORY)
+    LIVE[] = live
     names = [(root, name) for (root, name) in folders(live) if is_run(root, name)]
     for (root, name) in names
         try
@@ -233,7 +308,7 @@ function watch_run(live, site, name; repository = DEFAULT_REPOSITORY)
         # the copy is complete when run.json has been replaced
         try
             built = time()
-            while first(watch_folder(joinpath(live, name))) != "run.json"
+            while first(watch_folder(joinpath(live, name))) ∉ ("run.json", "report.toml")
             end
             # at most one rebuild every REBUILD_EVERY seconds: a job of many nodes replaces run.json
             # with each of their uploads, and what arrives meanwhile goes into the next rebuild
@@ -256,6 +331,7 @@ Build every report, then rebuild a report whenever its `run.json` is replaced. D
 """
 function serve(live, site; repository = DEFAULT_REPOSITORY)
     FETCH[] = false
+    LIVE[] = live
     mkpath(site)
     APP_CHOSEN[] = read_app_comparisons()
     build_all(live, site; repository)

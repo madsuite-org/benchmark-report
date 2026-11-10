@@ -1413,151 +1413,97 @@ def commits_panel(cfg, q, name):
     return f'<div class="container mt-2"><div class="alert alert-info py-2 mb-0">{" ".join(out)}</div></div>' if out else ""
 
 
-REPORT = re.compile(r"(pr-\d+(-[0-9a-f]{8})?|run-[a-z0-9-]+|master-[0-9a-f]{8})")
-
-
-def comparisons_file(cfg):
-    return os.path.join(cfg.uploads, "comparisons.toml") if cfg.uploads else ""
-
-
-def load_comparisons(cfg):
-    """The columns people chose: report folder => {"with": [...], "names": [...]}."""
-    import tomllib
-    try:
-        return tomllib.load(open(comparisons_file(cfg), "rb"))
-    except (OSError, ValueError):
-        return {}
-
-
-def save_comparisons(cfg, data):
-    """Written whole and replaced in one step; the builder rebuilds the reports when it changes."""
-    q = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
-    lines = ["# Columns chosen in the app; written by it."]
-    for report in sorted(data):
-        entry = data[report]
-        if not entry.get("with") and not entry.get("hide"):
-            continue
-        lines += [f"[{q(report)}]", "with = [" + ", ".join(q(w) for w in entry.get("with", [])) + "]",
-                  "names = [" + ", ".join(q(n) for n in entry.get("names", [])) + "]"]
-        lines += (["hide = [" + ", ".join(q(h) for h in entry["hide"]) + "]"] if entry.get("hide") else []) + [""]
-    tmp = comparisons_file(cfg) + ".tmp"
-    with open(tmp, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    os.replace(tmp, comparisons_file(cfg))
-
-
-# The columns every report has unless taken away: the latest master's results and the Ipopt reference.
-DEFAULT_COLUMNS = {"master": "latest master", "ipopt": "Ipopt"}
-
-
-def change_comparison(cfg, report, add=None, remove=None, label=""):
-    """Add a run as a column of a report, or take it away; `master` and `ipopt` are the default
-    columns, which can be taken away and brought back. Why not, or None."""
-    root = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/")) if cfg.site else ""
-    exists = lambda n: bool(n) and REPORT.fullmatch(n) is not None and os.path.isdir(os.path.join(root, n))
-    if not cfg.uploads or not exists(report):
-        return "No such report."
-    if label and not re.fullmatch(r"[A-Za-z0-9 #()._+-]{1,40}", label):
-        return "A name has letters, digits, spaces and # ( ) . _ + - only, up to 40."
-    data = load_comparisons(cfg)
-    entry = data.setdefault(report, {"with": [], "names": []})
-    if add in DEFAULT_COLUMNS or remove in DEFAULT_COLUMNS:
-        hide = set(entry.get("hide", []))
-        (hide.discard if add else hide.add)(add or remove)
-        entry["hide"] = sorted(hide)
-        save_comparisons(cfg, data)
-        return None
-    names = dict(zip(entry.get("with", []), entry.get("names", []) + [""] * len(entry.get("with", []))))
-    if add:
-        if not exists(add) or add == report:
-            return "No such report to compare with."
-        names[add] = label or names.get(add, "")
-    if remove:
-        names.pop(remove, None)
-    entry["with"] = list(names)
-    # a name for each column, the folder's own if none was given
-    entry["names"] = [names[w] or w for w in entry["with"]]
-    save_comparisons(cfg, data)
-    return None
+REPORT = re.compile(r"(pr-\d+(-[0-9a-f]{8})?|run-[a-z0-9-]+|master-[0-9a-f]{8}|report-\d+)")
 
 
 LABEL = re.compile(r"[A-Za-z0-9 #()._+-]{1,40}")
 
 
-def column_label(j):
-    """What a job's results are called as a column of another report: its label, else `job <id>`."""
-    return j.get("label") or f"job {j['id']}"
-
-
 def set_label(cfg, q, j, label):
-    """A job's label, and its column renamed wherever it is shown. Why not, or None."""
+    """A job's label: its title, and its column's name in a report unless the report names it. Why
+    not, or None."""
     label = " ".join(str(label or "").split())
     if label and not LABEL.fullmatch(label):
         return "A label has letters, digits, spaces and # ( ) . _ + - only, up to 40."
     with q.changed:
         j["label"] = label
         q.save()
-        if cfg.uploads:
-            data = load_comparisons(cfg)
-            for entry in data.values():
-                entry["names"] = [column_label(j) if w == folder(j) else n for w, n in zip(entry.get("with", []), entry.get("names", []))]
-            save_comparisons(cfg, data)
+    if j.get("external"):
+        write_run_json(cfg, j)
     return None
 
 
-def compare_jobs(cfg, q, j, against):
-    """An A/B: `j`'s report shows each job of `against` (ids) as a column, and each of theirs shows
-    `j`, named `job <id>`. Why not, or None. The reports need not be built yet."""
-    if not cfg.uploads:
-        return "Uploads are not set up on this server."
-    if not isinstance(against, list) or not 1 <= len(against) <= 4 or not all(isinstance(i, int) for i in against):
-        return "against is a list of up to 4 job numbers."
-    others = []
-    for i in against:
-        o = next((x for x in q.data["jobs"] if x["id"] == i), None)
-        if o is None or not (o.get("sha") or o.get("folder")) or o["id"] == j["id"]:
-            return f"There is no job {i} with a report to compare with."
-        others.append(o)
-    with q.changed:
-        data = load_comparisons(cfg)
-        for a, b in [(j, o) for o in others] + [(o, j) for o in others]:
-            entry = data.setdefault(folder(a), {"with": [], "names": []})
-            names = dict(zip(entry.get("with", []), entry.get("names", []) + [""] * len(entry.get("with", []))))
-            names[folder(b)] = column_label(b)
-            entry["with"], entry["names"] = list(names), [names[w] or w for w in names]
-        # what a job is compared against takes the place of the latest master, the default (Sungho)
-        own = data[folder(j)]
-        own["hide"] = sorted(set(own.get("hide", [])) | {"master"})
-        save_comparisons(cfg, data)
-        j["against"] = sorted(set(j.get("against", [])) | {o["id"] for o in others})
-        q.save()
-    return None
+# Reports: compositions of runs (Sungho), made and changed through the API. Kept in the uploads
+# root, reports.json, each with a folder report-<id> whose report.toml the builder reads.
+def reports_file(cfg):
+    return os.path.join(cfg.uploads, "reports.json") if cfg.uploads else ""
 
 
-def compare_panel(cfg, login, name):
-    """On a report, for members: the runs shown beside it, and a way to add or remove one."""
-    if not cfg.uploads or not cfg.site:
-        return ""
-    e = html.escape
-    root = os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"))
-    entry = load_comparisons(cfg).get(name, {})
-    hidden = f'<input type="hidden" name="csrf" value="{sign(cfg, "csrf|" + login)}"><input type="hidden" name="report" value="{e(name)}">'
-    chips = "".join(f'<form method="post" action="{e(cfg.base)}/compare" class="d-inline">{hidden}<input type="hidden" name="remove" value="{e(w)}">'
-                    f'<button class="btn btn-sm btn-outline-secondary" title="Remove this column">{e(n)} ×</button></form> '
-                    for w, n in [(k, v) for k, v in DEFAULT_COLUMNS.items() if k not in entry.get("hide", [])]
-                    + list(zip(entry.get("with", []), entry.get("names", []))))
+def load_reports(cfg):
     try:
-        others = sorted(n for n in os.listdir(root) if REPORT.fullmatch(n) and n != name and n not in entry.get("with", []))
-    except OSError:
-        others = []
-    options = "".join(f'<option value="{e(k)}">{e(v)}</option>' for k, v in DEFAULT_COLUMNS.items() if k in entry.get("hide", []))
-    options += "".join(f'<option value="{e(n)}">{e(n)}</option>' for n in others)
-    return (f'<div class="container mt-2"><div class="jobbar"><span class="m">Compared with:</span> {chips or "<span class=m>nothing else</span>"}'
-            f'<form method="post" action="{e(cfg.base)}/compare" class="d-inline-flex gap-1">{hidden}'
-            f'<select name="add" class="form-select form-select-sm" style="width:auto">{options}</select>'
-            '<input name="name" class="form-control form-control-sm" style="width:10em" placeholder="column name">'
-            '<button class="btn btn-sm btn-outline-primary">Add column</button></form>'
-            '<span class="m">A run on another machine compares in solves and iterations only.</span></div></div>')
+        return json.load(open(reports_file(cfg)))
+    except (OSError, ValueError):
+        return {"next": 1, "reports": {}}
+
+
+def save_reports(cfg, data):
+    tmp = reports_file(cfg) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, reports_file(cfg))
+
+
+def write_report_spec(cfg, r):
+    """report.toml for the builder: its title, the runs' folders and their columns' labels."""
+    q = lambda v: '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    target = os.path.join(cfg.uploads, f"report-{r['id']}")
+    os.makedirs(target, mode=0o755, exist_ok=True)
+    text = (f"title = {q(r['title'])}\nruns = [{', '.join(q(c['folder']) for c in r['runs'])}]\n"
+            f"labels = [{', '.join(q(c['label']) for c in r['runs'])}]\n")
+    tmp = os.path.join(target, ".report.toml")
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, os.path.join(target, "report.toml"))
+
+
+def report_runs(q, given):
+    """The columns of a report from what was given, [{job, label}] or job numbers: ([{job, folder,
+    label}], None) or (None, problem). Every job must have a report of its own (a run)."""
+    if not isinstance(given, list) or not 1 <= len(given) <= 12:
+        return None, "runs is a list of 1 to 12 jobs, a number or {\"job\": N, \"label\": \"...\"} each."
+    out = []
+    for g in given:
+        job, label = (g, "") if isinstance(g, int) else (g.get("job"), str(g.get("label") or "")) if isinstance(g, dict) else (None, "")
+        j = next((x for x in q.data["jobs"] if isinstance(job, int) and x["id"] == job), None)
+        if j is None or not (j.get("sha") or j.get("folder")) or j["state"] == "waiting":
+            return None, f"There is no run of job {job}."
+        label = " ".join(label.split()) or j.get("label") or f"job {j['id']}"
+        if not LABEL.fullmatch(label):
+            return None, "A label has letters, digits, spaces and # ( ) . _ + - only, up to 40."
+        out.append({"job": j["id"], "folder": folder(j), "label": label})
+    if len({c["label"] for c in out}) != len(out):
+        return None, "Two columns have the same label."
+    return out, None
+
+
+def public_report(cfg, r, links=None):
+    out = {k: r[k] for k in ("id", "title", "runs", "by", "created")}
+    out["url"] = f"{cfg.reports}/report-{r['id']}/"
+    if links is not None and links.path:
+        name = "report-" + str(r["id"])
+        out["link"] = f"{cfg.reports.rstrip('/')}/r/{links.token_of(name)}/"
+    return out
+
+
+def report_details(cfg, q, name):
+    """On a report, what it is made of: each column and the run it comes from."""
+    e = html.escape
+    r = load_reports(cfg)["reports"].get(name.removeprefix("report-"))
+    if not r:
+        return ""
+    cols = " · ".join(f'<span class="m">{e(c["label"])}</span> <a href="../{e(c["folder"])}/">job {c["job"]}</a>' for c in r["runs"])
+    return f'<div>{cols}</div><div class="m">made by {e(r["by"])}, {when(r["created"])} UTC</div>'
 
 
 def header_panel(cfg, q, login, name, member, report, links):
@@ -1580,9 +1526,8 @@ def header_panel(cfg, q, login, name, member, report, links):
                                       j.get("ended") and f"ended {when(j['ended'])}") if x)
         more = (f'<div>Job <a href="{e(cfg.base)}/job/{j["id"]}">{j["id"]}</a> {badge(j, cfg)}</div>' if member else "") + \
             f'<div>{job_details(cfg, j)}</div><div class="m">{times} UTC</div>'
-    if member:
-        compare = compare_panel(cfg, login, name)
-        more += compare.removeprefix('<div class="container mt-2">').removesuffix("</div>")
+    if name.startswith("report-"):
+        more += report_details(cfg, q, name)
     return (f'<div class="container mt-2"><div class="jobbar jobhead">{line}'
             f'<details class="more"><summary>Details</summary>{more}</details></div></div>')
 
@@ -2127,7 +2072,7 @@ def handler(cfg, q):
                 return reply(200, {"login": login, "permission": permission, "can_run": permission in WRITE})
             if permission not in WRITE:
                 return reply(403, {"error": f"{login} has no write access to {cfg.repo}."})
-            if method == "POST" and self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            if method in ("POST", "PATCH") and self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
                 # a form on another site cannot send this without the browser asking first
                 return reply(415, {"error": "Send JSON, with Content-Type: application/json."})
             try:
@@ -2140,7 +2085,7 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
-                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", "against", "label", *DEFAULTS})
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", "label", *DEFAULTS})
                 if unknown:
                     # a field this app does not know would otherwise be ignored without a word
                     return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
@@ -2178,11 +2123,6 @@ def handler(cfg, q):
                         problem = set_label(cfg, q, job, data["label"])
                         if problem:
                             return reply(400, {"error": f"Job {job['id']} is created, but has no label: {problem}", "id": job["id"], "token": token})
-                    if data.get("against") is not None:
-                        against = data["against"] if isinstance(data["against"], list) else [data["against"]]
-                        problem = compare_jobs(cfg, q, job, against)
-                        if problem:
-                            return reply(400, {"error": f"Job {job['id']} is created, but not compared: {problem}", "id": job["id"], "token": token})
                     return reply(201, public(cfg, job) | {"token": token, "files": f"{cfg.base}/api/jobs/{job['id']}/files",
                                                           "claim": f"{cfg.base}/api/jobs/{job['id']}/claim"})
                 node = str(data.get("node") or "")
@@ -2237,26 +2177,59 @@ def handler(cfg, q):
                     q.save()
                 write_run_json(cfg, j)
                 return reply(200, public(cfg, j))
-            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "against" and method == "POST":
-                # an A/B made afterwards: the reports of the job and the ones given show each other
+            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "label" and method == "POST":
+                # a run's label: its column's name in a report, unless the report names it
                 j = find(parts[1])
                 if j is None:
                     return reply(404, {"error": "There is no such job."})
-                against = data.get("against")
-                problem = set_label(cfg, q, j, data["label"]) if "label" in data else None
-                problem = problem or (compare_jobs(cfg, q, j, against if isinstance(against, list) else [against]) if against is not None else None)
+                problem = set_label(cfg, q, j, data.get("label"))
                 return reply(400, {"error": problem}) if problem else reply(200, public(cfg, j))
+            if parts[:1] == ["reports"]:
+                # reports, apart from runs (Sungho): compositions of runs, each a column with a label
+                if not cfg.uploads:
+                    return reply(503, {"error": "Uploads are not set up on this server."})
+                with q.changed:
+                    store = load_reports(cfg)
+                    r = store["reports"].get(parts[1]) if len(parts) == 2 else None
+                    if parts == ["reports"] and method == "GET":
+                        return reply(200, {"reports": [public_report(cfg, x) for x in sorted(store["reports"].values(), key=lambda x: -x["id"])]})
+                    if parts == ["reports"] and method == "POST" or (len(parts) == 2 and method == "PATCH"):
+                        if len(parts) == 2 and r is None:
+                            return reply(404, {"error": "There is no such report."})
+                        unknown = sorted(set(data) - {"title", "runs"})
+                        if unknown:
+                            return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
+                        title = " ".join(str(data.get("title") or (r or {}).get("title") or "").split())
+                        if not 1 <= len(title) <= 120:
+                            return reply(400, {"error": "Give a title, up to 120 characters."})
+                        runs, problem = report_runs(q, data["runs"]) if "runs" in data or r is None else (r["runs"], None)
+                        if problem:
+                            return reply(400, {"error": problem})
+                        if r is None:
+                            r = {"id": store["next"], "by": login, "created": int(time.time())}
+                            store["next"] += 1
+                        r.update(title=title, runs=runs)
+                        store["reports"][str(r["id"])] = r
+                        save_reports(cfg, store)
+                        write_report_spec(cfg, r)
+                        return reply(201 if method == "POST" else 200, public_report(cfg, r, links))
+                    if len(parts) == 2 and method == "GET":
+                        return reply(200, public_report(cfg, r, links)) if r else reply(404, {"error": "There is no such report."})
+                    if len(parts) == 2 and method == "DELETE":
+                        if r is None:
+                            return reply(404, {"error": "There is no such report."})
+                        if r["by"].lower() != login.lower() and permission != "admin":
+                            return reply(403, {"error": "Only who made the report can delete it."})
+                        del store["reports"][parts[1]]
+                        save_reports(cfg, store)
+                        shutil.rmtree(os.path.join(cfg.uploads, f"report-{r['id']}"), ignore_errors=True)
+                        return reply(200, {"deleted": r["id"]})
+                return reply(405, {"error": "Not a method of reports."})
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "cancel" and method == "POST":
                 j = find(parts[1])
                 if j is None:
                     return reply(404, {"error": "There is no such job."})
                 return reply(200, public(cfg, j)) if q.cancel(j["id"], login) else reply(403, {"error": "That job cannot be cancelled by you."})
-            if parts == ["compare"]:
-                if method == "GET":
-                    report = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("report", [""])[0]
-                    return reply(200, load_comparisons(cfg).get(report, {"with": [], "names": []}))
-                problem = change_comparison(cfg, str(data.get("report", "")), add=data.get("add"), remove=data.get("remove"), label=str(data.get("name", "")))
-                return reply(400, {"error": problem}) if problem else reply(200, load_comparisons(cfg).get(data.get("report"), {}))
             if parts == ["nodes"] and method == "GET":
                 return reply(200, {"nodes": [{"name": n["name"], "down": q.down(n["name"])} for n in cfg.nodes]})
             if len(parts) == 3 and parts[0] == "nodes" and parts[2] == "up" and method == "POST":
@@ -2423,6 +2396,17 @@ def handler(cfg, q):
                 return self.send(200, json.dumps({"cancel": asked()}), kind="application/json")
             return self.report_page(path, login)
 
+        def do_PATCH(self):
+            body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))
+            if self.path.startswith("/queue/api/"):
+                return self.api("PATCH", self.path.partition("?")[0], body)
+            return self.send(405, "Method not allowed", kind="text/plain; charset=utf-8")
+
+        def do_DELETE(self):
+            if self.path.startswith("/queue/api/"):
+                return self.api("DELETE", self.path.partition("?")[0], b"")
+            return self.send(405, "Method not allowed", kind="text/plain; charset=utf-8")
+
         def do_POST(self):
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))
             if self.path.startswith("/queue/api/results"):
@@ -2501,12 +2485,6 @@ def handler(cfg, q):
                 if not problem:
                     q.place([j for j in q.jobs("waiting") if j.get("pr") == int(what)][-1], node)
                 return self.send(400, new_page(cfg, q, login, problem)) if problem else self.redirect(cfg.base + "/")
-            if self.path == "/queue/compare":
-                report = get("report")
-                problem = change_comparison(cfg, report, add=get("add") or None, remove=get("remove") or None, label=get("name").strip())
-                if problem:
-                    return self.send(400, shell(cfg, login, "Compare", f"<p>{html.escape(problem)}</p>"))
-                return self.redirect(f"{cfg.reports}/{report}/")
             if self.path == "/queue/update":
                 pr = get("pr")
                 if not pr.isdigit():

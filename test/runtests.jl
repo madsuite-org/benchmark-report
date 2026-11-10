@@ -297,7 +297,7 @@ function live_run(live, name, state)
     return mv(joinpath(dir, "run.json.tmp"), joinpath(dir, "run.json"); force = true)
 end
 
-reset_runs() = empty!(BenchmarkReport.RUNS)
+reset_runs() = (empty!(BenchmarkReport.RUNS); empty!(BenchmarkReport.REPORTS))
 
 @testset "first build after a start" begin
     mktempdir() do root
@@ -391,9 +391,8 @@ end
         reset_runs()
         BenchmarkReport.build_all(live, site)
         report = read(joinpath(site, "pr-1", "index.html"), String)
-        @test occursin(">master (GPU) &lt;script&gt;", report)   # the column names its device and what master ran, escaped
+        @test !occursin(">master (GPU)", report)            # a run's page shows the run alone; reports compare
         @test !occursin("<script>alert", report)
-        @test occursin("from #7", report)
     end
 end
 
@@ -517,7 +516,7 @@ end
     end
 end
 
-@testset "another run as a column, its times only on the same machine" begin
+@testset "a report shows the runs it is made of, its times only on the same machine" begin
     mktempdir() do root
         _, clone, _ = archive_clone(root)
         BenchmarkReport.REPOSITORY[] = clone
@@ -530,34 +529,26 @@ end
             write(meta, replace(read(meta, String), "host = \"<script>alert(3)</script>\"" => "host = \"$host\""))
             write(joinpath(d, "run.json"), """{"repository":"o/r","pr":"","title":"$name","commit":"","state":"finished"}""")
         end
-        file = joinpath(root, "comparisons.toml")
-        write(file, "[\"run-new\"]\nwith = [\"run-old\"]\n")
-        BenchmarkReport.COMPARISONS[] = file
+        uploads = mkpath(joinpath(root, "uploads"))
+        write(joinpath(mkpath(joinpath(uploads, "report-1")), "report.toml"), "title = \"new vs old\"\nruns = [\"run-new\", \"run-old\"]\nlabels = [\"new\", \"the old one\"]\n")
+        BenchmarkReport.UPLOADS[] = uploads
         try
             reset_runs()
             BenchmarkReport.build_all(live, site)
-            page = read(joinpath(site, "run-new", "smoke.html"), String)
-            @test occursin("<a href=\"../run-old/\">run-old (005) † (GPU)</a>", page)   # linked to its report, its device in its name
+            page = read(joinpath(site, "report-1", "smoke.html"), String)
+            @test occursin("new (GPU)", page)                                                       # the first run, by its label
+            @test occursin("<a href=\"../run-old/\">the old one (005) † (GPU)</a>", page)            # the others linked to their runs
             @test occursin("its times are of different hardware", page)
-            # its SGM and SSGM are shown all the same
-            summary = read(joinpath(site, "run-new", "index.html"), String)
-            @test !occursin("<td>–</td><td>–</td>", summary)
-            @test !occursin("run-old (005) †", read(joinpath(site, "run-old", "index.html"), String))   # only where asked
-            # columns chosen in the app, in the uploads root, come on top
-            uploads = mkpath(joinpath(root, "uploads"))
-            write(joinpath(uploads, "comparisons.toml"), "[\"run-old\"]\nwith = [\"run-new\"]\nnames = [\"the new one\"]\n")
-            BenchmarkReport.UPLOADS[] = uploads
-            reset_runs()
-            BenchmarkReport.build_all(live, site)
-            @test occursin("the new one (001) †", read(joinpath(site, "run-old", "index.html"), String))
-            # the default columns can be taken away
-            write(joinpath(uploads, "comparisons.toml"), "[\"run-old\"]\nwith = []\nnames = []\nhide = [\"ipopt\", \"master\"]\n")
-            reset_runs()
-            BenchmarkReport.build_all(live, site)
-            @test BenchmarkReport.comparisons_of("run-old")["hide"] == ["ipopt", "master"]
-            BenchmarkReport.UPLOADS[] = ""
+            @test occursin("Report 1: new vs old", read(joinpath(site, "index.html"), String))       # listed
+            @test !occursin("the old one", read(joinpath(site, "run-new", "index.html"), String))    # runs alone
+            # a change of a run rebuilds the report
+            before = BenchmarkReport.REPORTS["report-1"].mtime
+            sleep(1.1)
+            touch(joinpath(live, "run-old", "run.json"))
+            BenchmarkReport.build_run(live, site, "run-old")
+            @test BenchmarkReport.REPORTS["report-1"].mtime > before
         finally
-            BenchmarkReport.COMPARISONS[] = ""
+            BenchmarkReport.UPLOADS[] = ""
         end
     end
 end

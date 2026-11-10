@@ -64,16 +64,16 @@ is_reference(s) = s.key[2] == "ipopt"
 # a column of this run itself, not the base, the Ipopt reference or another run compared with it
 is_own(s) = !s.base && !is_reference(s) && !startswith(s.key[2], "cmp:")
 
-function report_sides(cand, base)
+function report_sides(cand, base; own = "current")
     suffix(key) = key[2] == "default" ? "" : " " * key[2]
     cmp(key) = match(r"^cmp:(.*):([^:]*)$", key[2])
     label(key, name) = key[2] == "ipopt" ? "Ipopt" : cmp(key) !== nothing ? cmp(key)[1] : name * suffix(key)
     keys_of(rs) = rs === nothing ? [] : sort!(unique!([(k[1], k[3]) for k in keys(rs.rows)]); by = k -> (k[1] != "cpu", k))
     sides = [(label(k, "master"), k, true) for k in keys_of(base) if k[2] != "ipopt"]
-    append!(sides, [(label(k, "current"), k, false) for k in keys_of(cand)])
+    append!(sides, [(label(k, own), k, false) for k in keys_of(cand)])
     sort!(sides; by = s -> s[2][2] != "ipopt")
-    others = sort!(unique!([l for (l, _, _) in sides if l ∉ ("Ipopt", "current", "master")]))
-    color(l, device) = l == "Ipopt" ? REFERENCE_COLOR : l == "current" ? device_color(device) : l == "master" ? COLORS[2] : COLORS[mod1(3 + findfirst(==(l), others), length(COLORS))]
+    others = sort!(unique!([l for (l, _, _) in sides if l ∉ ("Ipopt", own, "master")]))
+    color(l, device) = l == "Ipopt" ? REFERENCE_COLOR : l == own ? device_color(device) : l == "master" ? COLORS[2] : COLORS[mod1(3 + findfirst(==(l), others), length(COLORS))]
     # the device is part of a solver's name, so that host and GPU solvers sit side by side (Sungho)
     named(l, k) = l * " (" * (k[2] == "ipopt" ? "CPU" : device_name(k[1])) * ")"
     return [Side(named(l, k), color(l, k[1]), k, b) for (l, k, b) in sides]
@@ -582,7 +582,7 @@ escape_url(s) = replace(s, r"[^A-Za-z0-9_.~+-]" => c -> join(["%" * uppercase(st
 # The config of the Ipopt reference when it is a column beside a run of Ipopt itself.
 const REFERENCE_IPOPT = "cmp:Ipopt reference:ipopt"
 
-function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished, only = nothing)
+function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP benchmark", link = nothing, reference = nothing, finished::Bool = false, assets = ".", live = !finished, only = nothing, own_label = "current")
     mkpath(site)
     chmod(site, 0o755)
     assets == "." && write_assets(site)
@@ -635,7 +635,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
         mergewith!((mine, _) -> mine, cand.revs, reference.revs)
         mergewith!((mine, _) -> mine, cand.harness, reference.harness)
     end
-    sides = report_sides(cand, base)
+    sides = report_sides(cand, base; own = own_label)
     set_titles!(sides, cand, base, repository === nothing ? nothing : repository[1])
     walls = device_walls(root, wall)
     sets = sort!(unique!([k[2] for k in keys(cand.rows)]))
@@ -713,10 +713,19 @@ and the archived results. `runs` holds `(; name, pr, title, commit, state, updat
 # " at <sha8>" for the folder of one commit of a pull request
 at_commit(name) = (m = match(r"^pr-\d+-([0-9a-f]{8})$", name); m === nothing ? "" : " at " * m[1])
 
-function write_index(site, runs; repository)
+function write_index(site, runs; repository, reports = [])
     write_assets(site)
     code = "https://github.com/" * repository
     io = IOBuffer()
+    # reports first: compositions of runs, made through the API (Sungho)
+    if !isempty(reports)
+        println(io, "<h2>Reports</h2><div class=\"wide\"><table id=\"reports\" class=\"table table-sm\"><thead><tr><th>report</th><th class=\"l\">columns</th><th class=\"l\">state</th><th>updated (UTC)</th></tr></thead><tbody>")
+        for r in sort(reports; by = r -> parse(Int, r.name[8:end]), rev = true)
+            cols = join(escape_html.(r.labels), ", ")
+            println(io, "<tr><td><a class=\"trunc\" href=\"$(escape_html(r.name))/\" title=\"$(escape_html(r.title))\">Report $(r.name[8:end]): $(escape_html(r.title))</a></td><td class=\"l\"><span class=\"trunc\" title=\"$cols\">$cols</span></td><td class=\"l\">$(state_badge(r.state))</td><td>$(escape_html(replace(first(r.updated, 16), "T" => " ")))</td></tr>")
+        end
+        println(io, "</tbody></table></div>")
+    end
     # One list of every run, however it was started (Sungho): pull requests, master, runs on the
     # queue's machines or on clusters, the archived results and the Ipopt references. Running first,
     # then the newest.

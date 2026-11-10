@@ -683,26 +683,32 @@ class TestServer(Base):
         self.cfg.upload_limit = 10
         self.assertEqual(self.post_upload(self.make_tar(good), "try-3")[0], 413)
 
-    def test_an_ab_names_what_it_is_against(self):
+    def test_reports_are_made_of_runs(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
         code, a = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu", "label": "GMRES"}, token="tok-alice")
         self.assertEqual((code, a["label"]), (201, "GMRES"), a)
-        code, b = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu", "options": "tol=1e-6",
-                                                            "label": "CG", "against": [a["id"]]}, token="tok-alice")
-        self.assertEqual((code, b["against"]), (201, [a["id"]]), b)
+        code, b = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu", "options": "tol=1e-6"}, token="tok-alice")
+        self.assertEqual(code, 201, b)
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "against": [a["id"]]}, token="tok-alice")[0], 400)   # no more
         fa, fb = (app.folder(next(j for j in self.q.data["jobs"] if j["id"] == x["id"])) for x in (a, b))
-        c = app.load_comparisons(self.cfg)
-        self.assertEqual((c[fb]["with"], c[fb]["names"]), ([fa], ["GMRES"]))     # each report shows the other
-        self.assertEqual((c[fa]["with"], c[fa]["names"]), ([fb], ["CG"]))
-        self.assertEqual((c[fb].get("hide"), c[fa].get("hide")), (["master"], None))   # B's baseline is A, not the latest master
-        # a label changed afterwards renames the column
-        code, _ = self.call_api("POST", f"/queue/api/jobs/{a['id']}/against", {"label": "GMRES (baseline)"}, token="tok-alice")
-        self.assertEqual(code, 200)
-        self.assertEqual(app.load_comparisons(self.cfg)[fb]["names"], ["GMRES (baseline)"])
-        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{a['id']}/against", {"against": [999]}, token="tok-alice")[0], 400)
-        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{a['id']}/against", {"label": "x;rm"}, token="tok-alice")[0], 400)
-        code, out = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "against": 12345}, token="tok-alice")
-        self.assertEqual(code, 400); self.assertIn("is created, but not compared", out["error"])
+        code, r = self.call_api("POST", "/queue/api/reports", {"title": "CG vs GMRES", "runs": [a["id"], {"job": b["id"], "label": "CG"}]}, token="tok-alice")
+        self.assertEqual(code, 201, r)
+        self.assertEqual([(c["folder"], c["label"]) for c in r["runs"]], [(fa, "GMRES"), (fb, "CG")])   # a run's own label by default
+        self.assertTrue(r["url"].endswith(f"/report-{r['id']}/"))
+        spec = open(os.path.join(self.cfg.uploads, f"report-{r['id']}", "report.toml")).read()
+        self.assertIn(f'runs = ["{fa}", "{fb}"]', spec); self.assertIn('labels = ["GMRES", "CG"]', spec)
+        # changed: a column renamed
+        code, r2 = self.call_api("PATCH", f"/queue/api/reports/{r['id']}", {"runs": [{"job": a["id"], "label": "GMRES (base)"}, b["id"]]}, token="tok-alice")
+        self.assertEqual((code, [c["label"] for c in r2["runs"]], r2["title"]), (200, ["GMRES (base)", f"job {b['id']}"], "CG vs GMRES"))
+        self.assertEqual([x["id"] for x in self.call_api("GET", "/queue/api/reports", token="tok-alice")[1]["reports"]], [r["id"]])
+        for bad in ({"title": "x", "runs": [999]}, {"title": "x", "runs": []}, {"runs": [a["id"]]}, {"title": "x", "runs": [a["id"], a["id"]]},
+                    {"title": "x", "runs": [{"job": a["id"], "label": "x;rm"}]}, {"title": "x", "runs": [a["id"]], "with": 1}):
+            self.assertEqual(self.call_api("POST", "/queue/api/reports", bad, token="tok-alice")[0], 400, bad)
+        self.assertEqual(self.call_api("DELETE", f"/queue/api/reports/{r['id']}", token="tok-alice")[0], 200)
+        self.assertFalse(os.path.exists(os.path.join(self.cfg.uploads, f"report-{r['id']}")))
+        # a run's label
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{b['id']}/label", {"label": "CG"}, token="tok-alice")[1]["label"], "CG")
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{b['id']}/label", {"label": "x;rm"}, token="tok-alice")[0], 400)
 
     def test_a_job_run_elsewhere_on_two_nodes(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
@@ -1101,30 +1107,6 @@ class TestSite(Base):
         page = self.get("/queue/new", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
         self.assertIn("Starting a job", page)
         self.assertIn("/run.sh | bash -s -- new master", page)
-
-    def test_columns_from_the_app(self):
-        import tomllib
-        self.cfg.uploads = os.path.join(self.dir, "uploads"); os.makedirs(self.cfg.uploads)
-        for n in ("run-new", "run-old"):
-            os.makedirs(os.path.join(self.cfg.site, "madnlp", n))
-            open(os.path.join(self.cfg.site, "madnlp", n, "index.html"), "w").write('<html><header class="site">' + app.NAV + '</header><main class="container"></main></html>')
-        self.assertIsNone(app.change_comparison(self.cfg, "run-new", add="run-old", label='#708 "shifted"'[:0] + "#708 shifted"))
-        data = tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb"))
-        self.assertEqual(data["run-new"], {"with": ["run-old"], "names": ["#708 shifted"]})
-        for bad in (dict(add="../x"), dict(add="run-new"), dict(add="run-nope")):
-            self.assertIsNotNone(app.change_comparison(self.cfg, "run-new", **bad), bad)
-        self.assertIsNotNone(app.change_comparison(self.cfg, "run-new", add="run-old", label='x"]\n[evil'))
-        page = self.get("/madnlp/run-new/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
-        self.assertIn("#708 shifted ×", page)
-        self.assertNotIn("Compared with", self.get("/madnlp/run-new/")[2])          # members only
-        self.assertIn("latest master ×", page)                                       # the default columns, which can go
-        self.assertIsNone(app.change_comparison(self.cfg, "run-new", remove="master"))
-        self.assertEqual(tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb"))["run-new"]["hide"], ["master"])
-        self.assertNotIn("latest master ×", self.get("/madnlp/run-new/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2])
-        self.assertIsNone(app.change_comparison(self.cfg, "run-new", add="master"))
-        self.assertNotIn("hide", tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb"))["run-new"])
-        self.assertIsNone(app.change_comparison(self.cfg, "run-new", remove="run-old"))
-        self.assertNotIn("run-new", tomllib.load(open(os.path.join(self.cfg.uploads, "comparisons.toml"), "rb")))   # nothing left to say
 
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")
