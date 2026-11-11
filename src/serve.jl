@@ -86,9 +86,11 @@ function build_report(live, site, name)
     first_root = run_root(live, spec.runs[1])
     first_root === nothing && error("$name: no run $(spec.runs[1])")
     states = [json_field(read(joinpath(r, run, "run.json"), String), "state") for run in spec.runs for r in (run_root(live, run),) if r !== nothing]
+    base = with_comparisons(nothing, live, name)
+    COLUMN_REPORTS[spec.labels[1]] = spec.runs[1]   # the first column links to its run too
     write_report(
         joinpath(site, name), joinpath(first_root, spec.runs[1]);
-        base = with_comparisons(nothing, live, name), reference = nothing, wall = 7200.0,
+        base, reference = nothing, wall = 7200.0,
         title = "Report $(name[8:end]): $(spec.title)", own_label = spec.labels[1],
         finished = all(!=("running"), states), assets = "..", live = true, tiles = false,
     )

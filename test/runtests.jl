@@ -536,7 +536,7 @@ end
             reset_runs()
             BenchmarkReport.build_all(live, site)
             page = read(joinpath(site, "report-1", "smoke.html"), String)
-            @test occursin("new (GPU)", page)                                                       # the first run, by its label
+            @test occursin("<a href=\"../run-new/\">new (GPU)</a>", page)                           # the first run, by its label, linked
             @test occursin("<a href=\"../run-old/\">the old one (005) † (GPU)</a>", page)            # the others linked to their runs
             @test occursin("its times are of different hardware", page)
             @test occursin("<b>Factorizations</b>", page) && occursin("<b>Hessian evaluations</b>", page)   # profiles of the counts too
