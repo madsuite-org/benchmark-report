@@ -1145,7 +1145,58 @@ def solved_already(cfg, j, device, set_name, case, configs):
     return done
 
 
-SUBSET_TERM = re.compile(r"(size)=((?:small|medium|large)(?:\+(?:small|medium|large))*)|(constrained)=(yes|no)|(failed|solved|resto)=(ipopt|[a-z0-9-]{1,60})")
+SUBSET_TERM = re.compile(r"(size)=((?:small|medium|large)(?:\+(?:small|medium|large))*)|(constrained)=(yes|no)|(failed|solved|resto)=(ipopt|[a-z0-9-]{1,60})|(suspects)")
+
+_SUSPECTS = {"key": None, "data": {}}
+
+
+def usual_suspects(cfg, device, top=0.25):
+    """The usual suspects on `device` (Sungho): of the finished, full runs of jobs run elsewhere, each
+    configuration ranked by how many instances it solved (solved, or to the acceptable level), the
+    union of the instances that the best `top` of them failed at least once. Only configurations
+    with nearly every instance (90% of the most any has) are ranked, so that a partial run does not
+    count. {"set/case": (failed by how many of them, how many of them)}."""
+    if not cfg.uploads:
+        return {}
+    import csv as _csv, glob as _glob
+    runs = sorted(_glob.glob(os.path.join(cfg.uploads, "run-x*", "run.json")))
+    key = tuple((r, os.stat(r).st_mtime_ns) for r in runs)
+    if _SUSPECTS["key"] != key:
+        configs = []   # (device, run, config, solved, failed instances, instances)
+        for r in runs:
+            folder_ = os.path.dirname(r)
+            try:
+                doc = json.load(open(r))
+            except (OSError, ValueError):
+                continue
+            if doc.get("state") != "finished" or doc.get("only"):
+                continue
+            rows = {}
+            for f in _glob.glob(os.path.join(folder_, "*", "*_*.csv")):
+                m = re.fullmatch(r"([a-z]+)_(.+)\.csv", os.path.basename(f))
+                if not m or m[2] == "ipopt":
+                    continue
+                try:
+                    meta = open(f + ".meta.toml").read()
+                    dev = (re.search(r'^device\s*=\s*"([a-z]+)"', meta, re.M) or [None, ""])[1]
+                    for row in _csv.DictReader(open(f)):
+                        rows.setdefault((dev, m[2]), {})[f"{m[1]}/{row['case']}"] = row["status"] in ("1", "2")
+                except (OSError, KeyError, ValueError):
+                    continue
+            for (dev, config), got in rows.items():
+                configs.append((dev, os.path.basename(folder_), config, sum(got.values()), {k for k, ok in got.items() if not ok}, len(got)))
+        _SUSPECTS.update(key=key, data=configs)
+    mine = [c for c in _SUSPECTS["data"] if c[0] == device]
+    if not mine:
+        return {}
+    most = max(c[5] for c in mine)
+    full = sorted((c for c in mine if c[5] >= 0.9 * most), key=lambda c: -c[3])
+    best = full[:max(1, round(top * len(full)))]
+    out = {}
+    for c in best:
+        for k in c[4]:
+            out[k] = (out.get(k, (0, 0))[0] + 1, len(best))
+    return {k: (v[0], len(best)) for k, v in out.items()}
 
 
 def resolve_subset(cfg, subset, instances, sets, device):
@@ -1174,8 +1225,11 @@ def resolve_subset(cfg, subset, instances, sets, device):
     for term in [t for t in (subset or "").split(",") if t]:
         m = SUBSET_TERM.fullmatch(term)
         if not m:
-            return None, f"Not a subset term: {term[:60]}. Use size=, constrained=, failed=, solved=, resto=."
-        if m[1]:
+            return None, f"Not a subset term: {term[:60]}. Use size=, constrained=, failed=, solved=, resto=, suspects."
+        if m[7]:
+            # the usual suspects of this device, of the job's sets
+            chosen &= {k.split("/", 1)[1] for k in usual_suspects(cfg, device) if k.split("/", 1)[0] in sets}
+        elif m[1]:
             chosen = {c for c in chosen if known[c].get("class") in m[2].split("+")}
         elif m[3]:
             chosen = {c for c in chosen if known[c].get("constrained") == (m[4] == "yes")}
@@ -2346,6 +2400,15 @@ def handler(cfg, q):
                     return reply(404, {"error": "There is no such job."})
                 problem = set_label(cfg, q, j, data.get("label"))
                 return reply(400, {"error": problem}) if problem else reply(200, public(cfg, j))
+            if parts == ["suspects"] and method == "GET":
+                # the usual suspects, for a device: what MadNLP fails in most runs, with how often
+                args_ = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                device = (args_.get("device") or ["cuda"])[0]
+                if device not in ("cpu", "cuda"):
+                    return reply(400, {"error": "device is cpu or cuda."})
+                found = usual_suspects(cfg, device)
+                return reply(200, {"device": device, "rule": "failed at least once by the best quarter of the finished full runs' configurations, ranked by instances solved",
+                                   "suspects": [{"instance": k, "failed": f_, "runs": n_} for k, (f_, n_) in sorted(found.items(), key=lambda kv: (-kv[1][0] / kv[1][1], kv[0]))]})
             if parts[:1] == ["reports"]:
                 # reports, apart from runs (Sungho): compositions of runs, each a column with a label
                 if not cfg.uploads:

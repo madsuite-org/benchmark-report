@@ -683,6 +683,26 @@ class TestServer(Base):
         self.cfg.upload_limit = 10
         self.assertEqual(self.post_upload(self.make_tar(good), "try-3")[0], 413)
 
+    def test_usual_suspects(self):
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        head = "case,status,iters\n"
+        # eight finished runs, run i failing instance f<i> for i < 4 (the best solve all but one),
+        # the worst four failing more; and a running one, which does not count
+        for i in range(9):
+            d = os.path.join(self.cfg.uploads, f"run-x{i}-aaaaaaaa", "GPU")
+            os.makedirs(d)
+            json.dump({"state": "finished" if i < 8 else "running"}, open(os.path.join(d, "..", "run.json"), "w"))
+            fails = {f"f{i}"} if i < 4 else {f"f{i}", "g", "h"}
+            rows = "".join(f"{c},{-1 if c in fails else 1},10\n" for c in [f"f{k}" for k in range(9)] + ["g", "h", "ok"])
+            open(os.path.join(d, "acopf_default.csv"), "w").write(head + rows)
+            open(os.path.join(d, "acopf_default.csv.meta.toml"), "w").write('device = "cuda"\n')
+        found = app.usual_suspects(self.cfg, "cuda")
+        self.assertEqual(sorted(found), ["acopf/f0", "acopf/f1"])     # the best quarter: 2 of 8 configurations
+        self.assertEqual(found["acopf/f0"], (1, 2))
+        self.assertEqual(app.usual_suspects(self.cfg, "cpu"), {})
+        code, out = self.call_api("GET", "/queue/api/suspects?device=cuda", token="tok-alice")
+        self.assertEqual((code, len(out["suspects"])), (200, 2))
+
     def test_reports_are_made_of_runs(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
         code, a = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu", "label": "GMRES"}, token="tok-alice")
