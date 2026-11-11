@@ -786,6 +786,17 @@ class TestServer(Base):
         self.assertIn("the log of node n1", page); self.assertIn("a&#x27;s log", page)
         page = app.workers_page(self.cfg, "alice", folder, self.q, {"log": ["H200|acopf/x"]})
         self.assertIn("the solver log of acopf/x", page); self.assertIn("iter  objective", page)
+        # streamed as it is written, every few seconds, newer than the upload
+        def stream(node, files):
+            body = self.make_tar(files)
+            code, _, data = self.request("POST", f"/queue/api/jobs/{the_job[0]}/stream?node={node}", body, {"Authorization": "Bearer " + token, "Content-Length": str(len(body))})
+            return code
+        time.sleep(0.01)
+        self.assertEqual(stream("a", {"H200/logs/acopf/x__default.txt": "iter  objective  inf_pr\n  12  live line", "job.log": "a's live log"}), 200)
+        self.assertIn("12  live line", app.workers_page(self.cfg, "alice", folder, self.q, {"log": ["H200|acopf/x"]}))
+        self.assertIn("a&#x27;s live log", app.workers_page(self.cfg, "alice", folder, self.q, {"node": ["a"]}))
+        self.assertEqual(stream("a", {"../evil.txt": "x"}), 400)
+        self.assertEqual(stream("a", {"H200/results.csv": "x"}), 400)               # logs only
         page = app.workers_page(self.cfg, "alice", folder, self.q, {"log": ["../..|acopf/x"]})
         self.assertNotIn("the solver log", page)                                          # nothing outside the run
         send("a", {"H200/summary.md": "```\nworker 1: solving acopf/x for 5 s, 1.0 GB\n```\n"})

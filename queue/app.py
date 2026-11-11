@@ -1719,6 +1719,46 @@ def nodes_table(j):
             '<th class="l">state</th><th>last heard</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>" if rows else ""))
 
 
+STREAM_LIMIT = 1 << 20
+
+
+def read_stream(data):
+    """The logs in a node's stream, {path: text}: a .tar.gz of at most 200 files, each one of its
+    logs (`<machine>/logs/<set>/<case>__<config>.txt`) or its own (`job.log`), or None."""
+    import io as _io
+    try:
+        tar = tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz")
+    except (tarfile.TarError, OSError, EOFError):
+        return None
+    out = {}
+    with tar:
+        for m in tar:
+            path = m.name.removeprefix("./").strip("/")
+            if m.isdir() or not path:
+                continue
+            if (not m.isreg() or len(out) >= 200 or ".." in path.split("/")
+                    or not (path == "job.log" or re.fullmatch(r"[A-Za-z0-9_.+-]{1,100}/logs/[a-z]+/[A-Za-z0-9_.+-]{1,100}\.txt", path))):
+                return None
+            out[path] = tar.extractfile(m).read()[-16384:].decode(errors="replace")
+    return out
+
+
+def streamed(q, j, path, node=None):
+    """The newest streamed copy of a log of job `j` (from `node`, or any), (time, text) or None."""
+    if q is None or j is None:
+        return None
+    found = [v[path] for (jid, n), v in q.__dict__.get("streams", {}).items() if jid == j["id"] and (node is None or n == node) and path in v]
+    return max(found) if found else None
+
+
+def streamed_prefix(q, j, prefix):
+    """The newest streamed copy of any log of job `j` whose path starts with `prefix`."""
+    if q is None or j is None:
+        return None
+    found = [t for (jid, _), v in q.__dict__.get("streams", {}).items() if jid == j["id"] for p, t in v.items() if p.startswith(prefix)]
+    return max(found) if found else None
+
+
 def workers_page(cfg, login, name, q=None, view=None):
     """What every worker of a run is on, read from its live folder when asked."""
     e = html.escape
@@ -1798,10 +1838,16 @@ def workers_page(cfg, login, name, q=None, view=None):
             except OSError:
                 found = []
             text = log_tail(os.path.join(folder_, found[0])) if found else None
+            # a streamed copy is newer than the last upload
+            live = streamed_prefix(q, j, f"{mach}/logs/{set_name}/{case}__")
+            if live is not None and (not found or live[0] >= os.stat(os.path.join(folder_, found[0])).st_mtime):
+                text = "\n".join(live[1].splitlines()[-80:])
             shown = (f"the solver log of {inst}", text if text else "No solver log yet: a node sends it as it writes it, so it may come only when the instance ends.")
     elif want_node and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", want_node):
         host = ((j or {}).get("nodes", {}).get(want_node) or {}).get("host", want_node)
-        shown = (f"the log of node {host}", log_tail(os.path.join(root, "nodes", f"{want_node}.log")) or "No log from this node yet.")
+        live = streamed(q, j, "job.log", want_node)
+        text = "\n".join(live[1].splitlines()[-80:]) if live else log_tail(os.path.join(root, "nodes", f"{want_node}.log"))
+        shown = (f"the log of node {host}", text or "No log from this node yet.")
     if shown:
         body += f'<h2>Log</h2><p class="m">The last lines of {e(shown[0])}. <a href="?">The latest log of the run</a></p><pre class="log">{e(shown[1])}</pre>'
     elif logs:
@@ -2098,6 +2144,26 @@ def handler(cfg, q):
                                    "sets": j.get("sets", "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
                                    "files": f"{cfg.base}/api/jobs/{j['id']}/files", "claim": f"{cfg.base}/api/jobs/{j['id']}/claim",
                                    "report": f"{cfg.reports}/{folder(j)}/"})
+            if what == "stream":
+                # the ends of the logs a node is writing, every few seconds: kept in memory only, for
+                # the workers page to show as they come (Sungho); results go through .../files
+                node = query.get("node", [""])[0]
+                if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", node):
+                    return reply(400, {"error": "Give node."})
+                if len(first) > STREAM_LIMIT:
+                    return reply(413, {"error": "The stream is too large."})
+                logs = read_stream(first)
+                if logs is None:
+                    return reply(400, {"error": "The stream is not a .tar.gz of logs."})
+                q.seen(j, node)
+                streams = q.__dict__.setdefault("streams", {})
+                with q.changed:
+                    held = streams.setdefault((j["id"], node), {})
+                    now_ = time.time()
+                    held.update({k: (now_, v) for k, v in logs.items()})
+                    for k in [k for k, (t, _) in held.items() if now_ - t > 600]:
+                        del held[k]
+                return reply(200, {"cancel": j["state"] != "running"})
             if what == "retry":
                 # a node done with its own pass asks for an instance that failed for a machine reason
                 try:
@@ -2510,7 +2576,7 @@ def handler(cfg, q):
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))
             if self.path.startswith("/queue/api/results"):
                 return self.upload(body)
-            m = re.fullmatch(r"/queue/api/jobs/(\d+)/(files|claim|retry|spec)", self.path.partition("?")[0])
+            m = re.fullmatch(r"/queue/api/jobs/(\d+)/(files|claim|retry|spec|stream)", self.path.partition("?")[0])
             if m:
                 return self.from_node(int(m[1]), m[2], body)
             if self.path.startswith("/queue/api/"):
