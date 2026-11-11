@@ -780,6 +780,16 @@ class TestServer(Base):
         self.assertEqual(open(os.path.join(root, "H200", "acopf_default.csv")).read(), head + "x,1,11\nz,2,30\n")
         self.assertIn("node n1 (a):", open(os.path.join(root, "H200", "summary.md")).read())
         self.assertEqual(open(os.path.join(root, "job.log")).read(), "a's log")
+        self.assertEqual(open(os.path.join(root, "nodes", "a.log")).read(), "a's log")    # each node's own log too
+        send("a", {"H200/logs/acopf/x__default.txt": "iter  objective  inf_pr"})
+        page = app.workers_page(self.cfg, "alice", folder, self.q, {"node": ["a"]})
+        self.assertIn("the log of node n1", page); self.assertIn("a&#x27;s log", page)
+        page = app.workers_page(self.cfg, "alice", folder, self.q, {"log": ["H200|acopf/x"]})
+        self.assertIn("the solver log of acopf/x", page); self.assertIn("iter  objective", page)
+        page = app.workers_page(self.cfg, "alice", folder, self.q, {"log": ["../..|acopf/x"]})
+        self.assertNotIn("the solver log", page)                                          # nothing outside the run
+        send("a", {"H200/summary.md": "```\nworker 1: solving acopf/x for 5 s, 1.0 GB\n```\n"})
+        self.assertIn('href="?log=H200%7Cacopf/x', app.workers_page(self.cfg, "alice", folder, self.q))
         doc = json.load(open(os.path.join(root, "run.json")))
         self.assertEqual((doc["state"], doc["commit"], doc["job"]), ("running", "9" * 40, job))
         self.assertEqual(doc["title"], f"Job {job}: master 99999999")         # short; the rest is in its details

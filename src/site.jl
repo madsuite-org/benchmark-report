@@ -109,7 +109,15 @@ side_device(side) = side.key[2] == "ipopt" ? "cpu" : side.key[1]
 page_rows(side, cand, base, set, device, wall) = capped(side_rows(side, cand, base, set), device_wall(side_device(side), wall))
 
 # What a performance profile compares, each on its own.
-const PROFILE_METRICS = ["Wall time" => (r -> max(r.t_total, 1.0e-3)), "Iterations" => (r -> max(r.iters, 1))]
+# Each with the count it reads, if any: a solver that never records it (Ipopt counts no
+# factorizations here) is left out of that profile, as its zeros would make it the best everywhere.
+const PROFILE_METRICS = [
+    ("Wall time", r -> max(r.t_total, 1.0e-3), nothing), ("Iterations", r -> max(r.iters, 1), nothing),
+    ("Factorizations", r -> max(r.n_fact, 1), :n_fact), ("Linear solves", r -> max(r.n_backsolve, 1), :n_backsolve),
+    ("Objective evaluations", r -> max(r.n_obj, 1), :n_obj), ("Gradient evaluations", r -> max(r.n_grad, 1), :n_grad),
+    ("Constraint evaluations", r -> max(r.n_con, 1), :n_con), ("Jacobian evaluations", r -> max(r.n_jac, 1), :n_jac),
+    ("Hessian evaluations", r -> max(r.n_hess, 1), :n_hess),
+]
 
 # Per side the ratios to the best side on the instances that every side has a result for; a
 # failure has no ratio.
@@ -196,13 +204,13 @@ function device_profile(io, set, device, sides, cand, base, wall)
     println(io, "<p>", join([key(s) for s in sides[kept]]), "</p>")
     n > 0 || return
     println(io, "<div class=\"profiles\">")
-    for (name, value) in PROFILE_METRICS
+    for (name, value, field) in PROFILE_METRICS
         # a run on another machine is shown in the times too, marked (Sungho)
-        use = kept
+        use = field === nothing ? kept : [i for i in kept if any(r -> hasproperty(r, field) && getproperty(r, field) > 0, values(rows[i]))]
         length(use) < 2 && continue
         _, ratios = profile(rows[use], value)
-        println(io, "<div class=\"prof\"><p><b>", name, "</b></p>")
-        profile_svg(io, "$name profile of $set on $device", sides[use], n, ratios)
+        println(io, "<div class=\"prof\"><p><b>", name, "</b>", length(use) < length(kept) ? " <span class=\"m\">(not every solver counts these)</span>" : "", "</p>")
+        profile_svg(io, "$name profile of $set on $device", sides[use], length(reduce(intersect, [Set(keys(r)) for r in rows[use]])), ratios)
         println(io, "</div>")
     end
     any(i -> untimed(sides[i].label), kept) && println(io, "<p class=\"m\">† ran on another machine: its times are of different hardware.</p>")

@@ -539,6 +539,7 @@ end
             @test occursin("new (GPU)", page)                                                       # the first run, by its label
             @test occursin("<a href=\"../run-old/\">the old one (005) † (GPU)</a>", page)            # the others linked to their runs
             @test occursin("its times are of different hardware", page)
+            @test occursin("<b>Factorizations</b>", page) && occursin("<b>Hessian evaluations</b>", page)   # profiles of the counts too
             @test occursin("Report 1: new vs old", read(joinpath(site, "index.html"), String))       # listed
             @test !occursin("the old one", read(joinpath(site, "run-new", "index.html"), String))    # runs alone
             # a change of a run rebuilds the report

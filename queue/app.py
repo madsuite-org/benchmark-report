@@ -1262,7 +1262,13 @@ def receive_job_files(cfg, q, j, node, archive_path, state):
                 # each node's workers in a file of its own; summary.md is all of them
                 dest = os.path.join(target, parts[0], "workers", f"{node}.md")
             elif len(parts) == 1 and path.endswith(".log"):
-                dest = os.path.join(target, "job.log")       # the log of the node that sent last
+                # each node's log of its own, for the workers page; job.log is the one that sent last
+                nodes_dir = os.path.join(target, "nodes")
+                os.makedirs(nodes_dir, mode=0o755, exist_ok=True)
+                with open(os.path.join(nodes_dir, f".{node}.log.tmp"), "wb") as out:
+                    out.write(data)
+                os.replace(os.path.join(nodes_dir, f".{node}.log.tmp"), os.path.join(nodes_dir, f"{node}.log"))
+                dest = os.path.join(target, "job.log")
             elif path.endswith(".complete"):
                 continue                                       # a node does not know the whole job
             else:
@@ -1706,14 +1712,14 @@ def nodes_table(j):
         quiet = now - v.get("seen", v.get("joined", now))
         state = v.get("state", "")
         heard = f"{quiet} s ago" if quiet < 120 else f"{quiet // 60} min ago"
-        rows.append(f'<tr><td class="l">{e(v.get("host", "") or "?")}</td><td class="l"><code>{e(k)}</code></td>'
+        rows.append(f'<tr><td class="l"><a href="?node={e(k)}">{e(v.get("host", "") or "?")}</a></td><td class="l"><code>{e(k)}</code></td>'
                     f'<td class="l">{e(NODE_SAY.get(state, state))}</td><td>{heard}</td></tr>')
     note = f'<p class="m">{done} node{"s" * (done != 1)} finished or released, no longer listed.</p>' if done else ""
     return (f'<h2>Nodes</h2>{note}' + ('<div class="wide"><table class="table table-sm"><thead><tr><th class="l">host</th><th class="l">node</th>'
             '<th class="l">state</th><th>last heard</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>" if rows else ""))
 
 
-def workers_page(cfg, login, name, q=None):
+def workers_page(cfg, login, name, q=None, view=None):
     """What every worker of a run is on, read from its live folder when asked."""
     e = html.escape
     root = live_dir(cfg, name)
@@ -1729,7 +1735,15 @@ def workers_page(cfg, login, name, q=None):
     else:
         note = ""
     body = f'<h1>Workers</h1><p class="m">Read live from the run, every few seconds. <a href="./">Back to the report</a></p>{note}'
-    body += nodes_table(job_of(q, name)) if q is not None and name.startswith("run-x") else ""
+    j = job_of(q, name) if q is not None and name.startswith("run-x") else None
+    body += nodes_table(j) if j else ""
+    view = view or {}
+    want_node, want_log = (view.get("node") or [""])[0], (view.get("log") or [""])[0]
+    # the full name of a node from what the status shows of it, `host (abcd)`
+    def node_id(shown):
+        m = re.search(r"\(([0-9a-f]{4})\)$", shown)
+        ids = [k for k in (j or {}).get("nodes", {}) if m and k.startswith(m[1])]
+        return ids[0] if len(ids) == 1 else ""
     for machine in sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))):
         try:
             text = open(os.path.join(root, machine, "summary.md")).read()
@@ -1748,8 +1762,15 @@ def workers_page(cfg, login, name, q=None):
                 continue
             w = WORKER.search(line)
             if w:
-                rows.append("<tr>" + (f'<td class="l">{e(node)}</td>' if nodes else "")
-                            + "".join(f'<td{" class=l" if i in (1, 2) else ""}>{e(x)}</td>' for i, x in enumerate(w.groups())) + "</tr>")
+                # a node shows its log, a worker the solver log of what it solves (Sungho)
+                nid = node_id(node)
+                node_cell = (f'<a href="?node={e(nid)}">{e(node)}</a>' if nid else e(node))
+                inst = w[3]
+                inst_cell = (f'<a href="?log={e(urllib.parse.quote(machine + "|" + inst))}{"&node=" + e(nid) if nid else ""}">{e(inst)}</a>'
+                             if re.fullmatch(r"[a-z]+/[A-Za-z0-9_.+-]+", inst) else e(inst))
+                cells = [e(w[1]), e(w[2]), inst_cell, e(w[4]), e(w[5])]
+                rows.append("<tr>" + (f'<td class="l">{node_cell}</td>' if nodes else "")
+                            + "".join(f'<td{" class=l" if i in (1, 2) else ""}>{x}</td>' for i, x in enumerate(cells)) + "</tr>")
             elif line.strip():
                 notes.append(f'<p class="m">{e(node + ": ") if node else ""}{e(line.strip())}</p>')
         body += (f'<h2>{e(machine.replace("_", " "))}</h2><p class="m">updated {age} s ago</p>' + "".join(notes)
@@ -1765,9 +1786,28 @@ def workers_page(cfg, login, name, q=None):
             continue
         if st.st_size:
             logs.append((st.st_mtime, log, what))
-    if logs:
+    shown = None
+    if want_log:
+        # a solver log: <machine>/logs/<set>/<case>__<config>.txt, as the node sends it
+        mach, _, inst = want_log.partition("|")
+        if re.fullmatch(r"[A-Za-z0-9_.+-]+", mach) and re.fullmatch(r"[a-z]+/[A-Za-z0-9_.+-]+", inst):
+            set_name, case = inst.split("/")
+            folder_ = os.path.join(root, mach, "logs", set_name)
+            try:
+                found = sorted(f for f in os.listdir(folder_) if f.startswith(case + "__") and f.endswith(".txt"))
+            except OSError:
+                found = []
+            text = log_tail(os.path.join(folder_, found[0])) if found else None
+            shown = (f"the solver log of {inst}", text if text else "No solver log yet: a node sends it as it writes it, so it may come only when the instance ends.")
+    elif want_node and re.fullmatch(r"[A-Za-z0-9_-]{1,40}", want_node):
+        host = ((j or {}).get("nodes", {}).get(want_node) or {}).get("host", want_node)
+        shown = (f"the log of node {host}", log_tail(os.path.join(root, "nodes", f"{want_node}.log")) or "No log from this node yet.")
+    if shown:
+        body += f'<h2>Log</h2><p class="m">The last lines of {e(shown[0])}. <a href="?">The latest log of the run</a></p><pre class="log">{e(shown[1])}</pre>'
+    elif logs:
         _, log, what = max(logs)
-        body += f'<h2>Log</h2><p class="m">The last lines of {what} ({log}).</p><pre class="log">{e(log_tail(os.path.join(root, log)) or "")}</pre>'
+        body += (f'<h2>Log</h2><p class="m">The last lines of {what} ({log}), from the node that sent last. Click a node for its log, an instance for its solver log.</p>'
+                 f'<pre class="log">{e(log_tail(os.path.join(root, log)) or "")}</pre>')
     page = shell(cfg, login, f"Workers of {name}", body)
     # the page takes itself again, as the reports do
     return page.replace("<body>", '<body><meta name="live" content="1"><div id="live">', 1).replace(f"</main>{LOCAL_TIMES}</body>", f'</main></div><script src="{e(cfg.reports)}/report.js"></script></body>', 1)
@@ -2328,7 +2368,7 @@ def handler(cfg, q):
                 return self.send(200 if not login else 403, signin(cfg, "" if not login else f"{login} has no write access to {cfg.repo}."))
             m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/(pr-\d+|master-[0-9a-f]{8}|run-[a-z0-9-]+)/workers\.html", path)
             if m and live_dir(cfg, m[1]) and os.path.isdir(live_dir(cfg, m[1])):
-                return self.send(200, workers_page(cfg, login, m[1], q))
+                return self.send(200, workers_page(cfg, login, m[1], q, urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)))
             target = site_file(cfg, path)
             m = re.fullmatch(re.escape(urllib.parse.urlsplit(cfg.reports).path) + r"/pr-(\d+)/?", path)
             if target is None and m:
