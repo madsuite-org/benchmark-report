@@ -220,7 +220,9 @@ end
 
 # The banner of every page: the site, where this page is in it, and a line about what is shown.
 function banner(home, trail, line = "", menus = "")
-    return "<header class=\"site\"><div class=\"container\"><a class=\"brand\" href=\"/\">MadSuite benchmarks</a><span class=\"trail\"><a href=\"$home\">MadNLP</a></span>$trail<nav class=\"app\"><details class=\"menu\"><summary aria-label=\"Menu\">☰</summary><div><a href=\"/queue/\">Sign in</a><button id=\"theme\" type=\"button\">Light or dark</button></div></details></nav></div></header>" *
+    # the MadSuite logo (madsuite-org/madsuite-logos, its white wordmark for the dark header), beside the site's files as index.html is
+    logo = replace(home, r"index\.html$" => "madsuite-logo.svg")
+    return "<header class=\"site\"><div class=\"container\"><a class=\"brand\" href=\"/\"><img src=\"$logo\" alt=\"MadSuite\" class=\"logo\"> benchmarks</a><span class=\"trail\"><a href=\"$home\">MadNLP</a></span>$trail<nav class=\"app\"><details class=\"menu\"><summary aria-label=\"Menu\">☰</summary><div><a href=\"/queue/\">Sign in</a><button id=\"theme\" type=\"button\">Light or dark</button></div></details></nav></div></header>" *
         "<div class=\"bar\"><div class=\"container\"><div class=\"line\">$line</div>$menus</div></div>"
 end
 # a time in UTC (`2026-11-10T13:30:02Z`), shown in the reader's own time zone by report.js (Sungho)
@@ -239,7 +241,7 @@ function page(path, title, content, bar; refresh = false, assets = ".")
         tmp, "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\">",
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex, nofollow\">",
         refresh ? "<meta name=\"live\" content=\"1\">" : "",
-        "<title>", escape_html(title), "</title><script src=\"", assets, "/theme.js\"></script><link rel=\"stylesheet\" href=\"", assets, "/bootstrap.min.css\"><link rel=\"stylesheet\" href=\"", assets, "/style.css\"><body><div id=\"live\">",
+        "<title>", escape_html(title), "</title><link rel=\"icon\" href=\"", assets, "/favicon.ico\" sizes=\"any\"><link rel=\"icon\" type=\"image/png\" href=\"", assets, "/favicon-512.png\"><script src=\"", assets, "/theme.js\"></script><link rel=\"stylesheet\" href=\"", assets, "/bootstrap.min.css\"><link rel=\"stylesheet\" href=\"", assets, "/style.css\"><body><div id=\"live\">",
         bar, "<main class=\"container\">", content, "</main></div><script src=\"", assets, "/report.js\"></script></body></html>\n",
     )
     chmod(tmp, 0o644)

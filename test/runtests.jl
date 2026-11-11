@@ -36,7 +36,7 @@ function hostile_results(root)
     return
 end
 
-markup(page) = occursin(r"<(img|b>x|iframe|script>)", read(page, String))
+markup(page) = occursin(r"<(img src=x|b>x|iframe|script>)", read(page, String))   # the hostile fixture's, not the logo
 
 mktempdir() do root
     results, site = mkpath(joinpath(root, "results")), joinpath(root, "site")

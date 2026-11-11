@@ -1394,9 +1394,9 @@ def shell(cfg, login, title, body, message=""):
     e, r = html.escape, html.escape(cfg.reports)
     note = f'<div class="alert alert-warning">{e(message)}</div>' if message else ""
     return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{e(title)}: MadSuite benchmarks</title><script src="{r}/theme.js"></script>'
+            f'<title>{e(title)}: MadSuite benchmarks</title><link rel="icon" href="{r}/favicon.ico" sizes="any"><script src="{r}/theme.js"></script>'
             f'<link rel="stylesheet" href="{r}/bootstrap.min.css"><link rel="stylesheet" href="{r}/style.css"><body>'
-            f'<header class="site"><div class="container"><a class="brand" href="{e(cfg.base)}/">MadSuite benchmarks</a>'
+            f'<header class="site"><div class="container"><a class="brand" href="{e(cfg.base)}/"><img src="{r}/madsuite-logo.svg" alt="MadSuite" class="logo"> benchmarks</a>'
             f'{app_nav(cfg, login)}</div></header>'
             f'<main class="container py-3">{note}{body}</main>{LOCAL_TIMES}</body></html>')
 
