@@ -517,7 +517,7 @@ class TestServer(Base):
         self.hook("issue_comment", self.comment("alice", "@MadSuiteBenchmarkBot benchmark", number=8))
         self.assertEqual(self.q.jobs("waiting"), [])      # a fork
         self.hook("issue_comment", self.comment("alice", "@MadSuiteBenchmarkBot benchmark"))
-        self.assertEqual([j["pr"] for j in self.q.jobs("waiting")], [7])
+        self.assertEqual(self.q.jobs("waiting"), [])      # no comment queues a run on the app's machine any more
 
     def test_push_to_master(self):
         self.hook("push", {"ref": "refs/heads/master", "after": "c" * 40, "repository": {"full_name": REPO}})
@@ -525,7 +525,7 @@ class TestServer(Base):
         self.cfg.auto_master = True
         self.hook("push", {"ref": "refs/heads/master", "after": "d" * 40, "repository": {"full_name": REPO}})
         self.hook("push", {"ref": "refs/heads/other", "after": "e" * 40, "repository": {"full_name": REPO}})
-        self.assertEqual([j["sha"] for j in self.q.jobs("waiting")], ["d" * 40])
+        self.assertEqual(self.q.jobs("waiting"), [])        # nor a push to master
 
     def test_runner(self):
         auth = {"Authorization": "Bearer runtok"}
@@ -621,20 +621,17 @@ class TestServer(Base):
         self.gh.members = set(); self.q.perms.clear()
         self.assertEqual(self.call_api("GET", "/queue/api/jobs", token="tok-eve")[0], 403)
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": 7}, token="tok-alice", kind="text/plain")[0], 415)
-        code, job = self.call_api("POST", "/queue/api/jobs", {"pr": 7, "keep": False}, token="tok-alice")
-        self.assertEqual((code, job["pr"], job["state"], job["keep"], job["by"]), (201, 7, "waiting", False, "alice"))
-        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": 8}, token="tok-alice")[0], 400)   # a fork
-        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": "7"}, token="tok-alice")[0], 400)
-        self.assertIn("Unknown machine", self.call_api("POST", "/queue/api/jobs", {"pr": 7, "node": "999"}, token="tok-alice")[1]["error"])
-        self.assertIn("Unknown fields: harnes", self.call_api("POST", "/queue/api/jobs", {"pr": 7, "harnes": "x"}, token="tok-alice")[1]["error"])
-        code, master = self.call_api("POST", "/queue/api/jobs", {"master": True}, token="tok-alice")
-        self.assertEqual((code, master["sha"]), (201, "9" * 40))
-        code, listed = self.call_api("GET", "/queue/api/jobs", token="tok-alice")
-        self.assertEqual([j["id"] for j in listed["jobs"]], [master["id"], job["id"]])   # master first
+        # jobs run where their creator starts nodes: the app runs none itself (Sungho)
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        code, out = self.call_api("POST", "/queue/api/jobs", {"pr": 7, "keep": False}, token="tok-alice")
+        self.assertEqual(code, 400); self.assertIn("external", out["error"])
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"master": True}, token="tok-alice")[0], 400)
+        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 8}, token="tok-alice")[0], 400)   # a fork
+        self.assertIn("Unknown fields: harnes", self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 7, "harnes": "x"}, token="tok-alice")[1]["error"])
+        code, job = self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 7}, token="tok-alice")
+        self.assertEqual((code, job["pr"], job["state"], job["by"]), (201, 7, "running", "alice"))
         self.assertEqual(self.call_api("GET", f"/queue/api/jobs/{job['id']}", token="tok-alice")[1]["title"], "Seven")
         self.assertEqual(self.call_api("GET", "/queue/api/jobs/99", token="tok-alice")[0], 404)
-        code, updated = self.call_api("POST", "/queue/api/pulls/7/update", {"keep": True}, token="tok-alice")
-        self.assertEqual((code, updated["jobs"][0]["keep"]), (200, True))
         self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{job['id']}/cancel", {}, token="tok-alice")[1]["state"], "cancelled")
         self.assertEqual(self.call_api("GET", "/queue/api/nothing", token="tok-alice")[0], 404)
         # the session of the app works too

@@ -2324,6 +2324,9 @@ def handler(cfg, q):
                 problem = settings_problem(cfg, settings)
                 if problem:
                     return reply(400, {"error": problem})
+                if not data.get("external"):
+                    return reply(400, {"error": "A job runs where you start its nodes: create it with \"external\": true "
+                                                "(runner/publish.sh new does), then run runner/publish.sh run on your machines."})
                 if data.get("external"):
                     # run on a machine of the caller's: it publishes through /queue/api/jobs/<id>/files
                     if not cfg.uploads:
@@ -2665,20 +2668,15 @@ def handler(cfg, q):
                 event, data = self.headers.get("X-GitHub-Event"), json.loads(body or b"{}")
                 if (data.get("repository") or {}).get("full_name") != cfg.repo:
                     return self.send(204, kind="text/plain")
-                if event == "issue_comment" and data.get("action") == "created" and "pull_request" in (data.get("issue") or {}) \
-                        and command(cfg, (data.get("comment") or {}).get("body")):
-                    login = data["comment"]["user"]["login"]
-                    if q.permission(login) in WRITE:
-                        q.add_pr(int(data["issue"]["number"]), login)
-                elif event == "push" and data.get("ref") == "refs/heads/master" and not data.get("deleted"):
+                # a /benchmark comment no longer queues a run on the app's machine: jobs run where their
+                # creator starts nodes (Sungho)
+                if event == "push" and data.get("ref") == "refs/heads/master" and not data.get("deleted"):
                     if cfg.master_pushed:
                         try:
                             with open(cfg.master_pushed, "a"):
                                 os.utime(cfg.master_pushed)
                         except OSError:
                             pass
-                    if cfg.auto_master:
-                        q.add_master(data["after"])
                 return self.send(204, kind="text/plain")
             if self.path == "/queue/runner/status":
                 if not self.runner():
@@ -2758,8 +2756,8 @@ def handler(cfg, q):
 if __name__ == "__main__":
     cfg = Config()
     q = Queue(cfg, GitHub(cfg))
-    for node in cfg.nodes:
-        threading.Thread(target=Dispatcher(cfg, q, node).serve, daemon=True).start()
+    # the app runs no jobs itself any more (Sungho, 2026-11-12): a job runs where its creator starts
+    # nodes, so nobody's code runs on the app's machines
     if cfg.builder:
         threading.Thread(target=Builder(cfg).serve, daemon=True).start()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port), handler(cfg, q))
