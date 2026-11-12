@@ -12,7 +12,8 @@ machine and nothing here polls. Standard library only; the GitHub App's tokens a
 import base64, email.utils, hashlib, hmac, html, http.server, json, mimetypes, os, re, secrets, shlex, shutil, subprocess, tarfile, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 
-WRITE = ("admin", "maintain", "write")
+# who may use the app: write access to the repository, or membership of its organization (Sungho)
+WRITE = ("admin", "maintain", "write", "member")
 
 
 def read(path):
@@ -346,6 +347,19 @@ class Queue:
             p = self.gh.api("GET", f"/repos/{self.cfg.repo}/collaborators/{login}/permission").get("permission", "none")
         except urllib.error.HTTPError:
             p = "none"
+        if p not in WRITE:
+            # a member of the repository's organization may use the app too (Sungho): GitHub answers
+            # 204 for a member, 404 for anyone else. Private memberships need the App's organization
+            # permission Members: read; without it (403) only public members are seen
+            org = self.cfg.repo.split("/")[0]
+            for path in (f"/orgs/{org}/members/{login}", f"/orgs/{org}/public_members/{login}"):
+                try:
+                    self.gh.api("GET", path)
+                    p = "member"
+                    break
+                except urllib.error.HTTPError as err:
+                    if err.code not in (302, 403, 404):
+                        print(f"membership of {login} not read: {err.code}", flush=True)
         self.perms[login.lower()] = (p, time.time() + 300)
         return p
 
@@ -1403,8 +1417,8 @@ def shell(cfg, login, title, body, message=""):
 
 def signin(cfg, message=""):
     body = ('<div class="card mx-auto mt-4" style="max-width:32em"><div class="card-body"><h1 class="h4">Sign in</h1>'
-            '<p>Sign in with GitHub to see the benchmark runs and jobs. Anyone with write access to '
-            f'{html.escape(cfg.repo)} can. A report is open to anyone given its link.</p>'
+            f'<p>Sign in with GitHub to see the benchmark runs and jobs. Any member of {html.escape(cfg.repo.split("/")[0])}, '
+            f'and anyone with write access to {html.escape(cfg.repo)}, can. A report is open to anyone given its link.</p>'
             f'<a class="btn btn-primary" href="{html.escape(cfg.base)}/login">Sign in with GitHub</a></div></div>')
     return shell(cfg, None, "Sign in", body, message)
 

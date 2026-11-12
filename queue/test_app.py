@@ -41,6 +41,10 @@ class FakeGitHub:
             return {"status": status, "base_commit": {"sha": sha}}
         if "/collaborators/" in path:
             return {"permission": self.perms.get(path.split("/")[-2], "none")}
+        if "/members/" in path or "/public_members/" in path:
+            if path.rsplit("/", 1)[1] in getattr(self, "members", set()):
+                return {}
+            raise urllib.error.HTTPError(path, 404, "", {}, None)
         if path.startswith(f"/repos/{REPO}/pulls?"):
             return getattr(self, "open", [])
         if path == f"/repos/{REPO}/commits/master":
@@ -611,6 +615,10 @@ class TestServer(Base):
         self.assertEqual(self.call_api("GET", "/queue/api/jobs")[0], 401)
         self.assertEqual(self.call_api("GET", "/queue/api/jobs", token="forged")[0], 401)
         self.assertEqual(self.call_api("GET", "/queue/api/me", token="tok-eve")[1], {"login": "eve", "permission": "read", "can_run": False})
+        # a member of the organization may use it too (Sungho)
+        self.gh.members = {"eve"}; self.q.perms.clear()
+        self.assertEqual(self.call_api("GET", "/queue/api/me", token="tok-eve")[1], {"login": "eve", "permission": "member", "can_run": True})
+        self.gh.members = set(); self.q.perms.clear()
         self.assertEqual(self.call_api("GET", "/queue/api/jobs", token="tok-eve")[0], 403)
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"pr": 7}, token="tok-alice", kind="text/plain")[0], 415)
         code, job = self.call_api("POST", "/queue/api/jobs", {"pr": 7, "keep": False}, token="tok-alice")
