@@ -1099,6 +1099,9 @@ class TestSite(Base):
         self.assertEqual(self.get("/madnlp/r/style.css")[2], "body{}")           # ../style.css from a page under a long address
         self.assertIn("Sign in", self.get("/madnlp/r/run-new/")[2])              # and a report there under the usual rules
         self.assertEqual(self.get(f"/madnlp/r/{share[2]}")[0], 303)
+        code, _, helped = self.get("/queue/help")                                   # how it works, for anyone
+        self.assertEqual(code, 200); self.assertIn("How it works", helped); self.assertIn("MadNLPBenchmark.jl", helped)
+        self.assertIn("/queue/help", self.get("/madnlp/run-new/")[2])                 # linked from the sign-in page
         code, _, robots = self.get("/robots.txt")
         self.assertEqual((code, robots), (200, "User-agent: *\nDisallow: /\n"))
         # a report's solver logs and raw data, linked by its long address so that a copied link opens for anyone

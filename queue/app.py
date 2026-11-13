@@ -858,10 +858,10 @@ def app_nav(cfg, login):
     theme = '<button id="theme" type="button">Light or dark</button>'
     if not login:
         return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">☰</summary><div>'
-                f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a>{theme}</div></details></nav>')
+                f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a><a href="{e(cfg.base)}/help">How it works</a>{theme}</div></details></nav>')
     csrf = sign(cfg, "csrf|" + login)
     return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">{e(login)} ☰</summary><div>'
-            f'<a href="{e(cfg.reports)}/">Dashboard</a>{theme}'
+            f'<a href="{e(cfg.reports)}/">Dashboard</a><a href="{e(cfg.base)}/help">How it works</a>{theme}'
             f'<form method="post" action="{e(cfg.base)}/logout"><input type="hidden" name="csrf" value="{csrf}"><button>Sign out</button></form>'
             '</div></details></nav>')
 
@@ -1415,10 +1415,55 @@ def shell(cfg, login, title, body, message=""):
             f'<main class="container py-3">{note}{body}</main>{LOCAL_TIMES}</body></html>')
 
 
+def help_page(cfg, login):
+    """How the site works, for anyone: who may use it, running a benchmark, runs and reports, the API.
+    How to run a node is MadNLPBenchmark.jl's, linked from here."""
+    e, org = html.escape, html.escape(cfg.repo.split("/")[0])
+    harness = "https://github.com/madsuite-org/MadNLPBenchmark.jl#readme"
+    api = [("GET me", "who you are and whether you can run jobs"),
+           ("GET jobs, GET jobs/&lt;id&gt;", "jobs, with each node's state (setup, running, ...) and the seconds since it was heard from (quiet)"),
+           ('POST jobs {"external": true, "branch"|"pr"|"commit"|"master": ..., "devices", "options", "sets", "subset", "instances", "note", "label"}',
+            "create a job (what runner/publish.sh new does); answers its number and its token"),
+           ("POST jobs/&lt;id&gt;/cancel, …/note, …/label, …/reopen", "cancel a job; change its note or label; run a failed job again, keeping its results"),
+           ('GET reports, POST reports {"title", "runs": [JOB, {"job": JOB, "label": "..."}]}', "list or make reports: the first run is the first column; up to 12"),
+           ("GET, PATCH, DELETE reports/&lt;id&gt;", "read, change (title, runs) or delete a report"),
+           ("GET suspects?device=cpu|cuda", "the usual suspects: of the finished full runs, each configuration ranked by instances solved, what the best quarter of them failed at least once")]
+    rows = "".join(f"<tr><td class=\"l\"><code>{a}</code></td><td class=\"l\">{b}</td></tr>" for a, b in api)
+    body = f'''<h1>How it works</h1>
+<p>This site coordinates benchmark jobs of <a href="https://github.com/{e(cfg.repo)}">{e(cfg.repo)}</a>, collects their results and
+shows them as runs and reports. It runs no benchmark itself: <b>a job runs on the machines its creator starts nodes on</b>; the site
+hands out the instances, merges the results and builds the pages.</p>
+<h2>Who can use it</h2>
+<p>Any member of {org}, and anyone with write access to {e(cfg.repo)}, signs in with GitHub to see the runs and reports and to make
+jobs and reports. A run or a report is open to anyone given its link (<i>Copy link</i> on its page); nothing else is public, and the
+site is not indexed.</p>
+<h2>Running a benchmark</h2>
+<ol>
+<li><b>Push the code</b> to a branch of {e(cfg.repo)} (no fork, no unpushed branch), or use master, a pull request or a commit.</li>
+<li><b>Create a job</b> with <code>runner/publish.sh new</code> of <a href="{harness}">MadNLPBenchmark.jl</a>: it fixes the commit, the device
+(CPU or GPU, one per job), the MadNLP options and the instances, and writes a job file.</li>
+<li><b>Start nodes</b> with <code>runner/publish.sh run --job-file=…</code> on as many machines as you like, at once or later. Each asks
+the site for instances, sends results as it goes, and leaves when nothing is left.</li>
+</ol>
+<p>Everything about the nodes (options, subsets of instances, clusters and preemption, the HSL library) is in
+<a href="{harness}">MadNLPBenchmark.jl's README</a>.</p>
+<p>A job's page shows its progress and, under <i>Workers</i>, each node and what it solves: click a node for its log, an instance for
+its solver log, as it is written.</p>
+<h2>Runs and reports</h2>
+<p>A <b>run</b> is a job's results; its page shows that run alone. A <b>report</b> compares runs: its columns are the runs it is made of,
+each named by a label (a job's <code>--label</code> by default), and every table counts only the instances that every column has.
+Make one with <i>Add column</i> on a report's page or through the API below, and share it by its link.</p>
+<h2>API</h2>
+<p><code>{e(cfg.base)}/api/</code>, with <code>Authorization: Bearer &lt;GitHub token&gt;</code>; JSON in and out.</p>
+<div class="wide"><table class="table table-sm"><tbody>{rows}</tbody></table></div>'''
+    return shell(cfg, login, "How it works", body)
+
+
 def signin(cfg, message=""):
     body = ('<div class="card mx-auto mt-4" style="max-width:32em"><div class="card-body"><h1 class="h4">Sign in</h1>'
             f'<p>Sign in with GitHub to see the benchmark runs and jobs. Any member of {html.escape(cfg.repo.split("/")[0])}, '
-            f'and anyone with write access to {html.escape(cfg.repo)}, can. A report is open to anyone given its link.</p>'
+            f'and anyone with write access to {html.escape(cfg.repo)}, can. A report is open to anyone given its link. '
+            f'<a href="{html.escape(cfg.base)}/help">How it works</a></p>'
             f'<a class="btn btn-primary" href="{html.escape(cfg.base)}/login">Sign in with GitHub</a></div></div>')
     return shell(cfg, None, "Sign in", body, message)
 
@@ -2590,6 +2635,9 @@ def handler(cfg, q):
                 return self.send(200, "User-agent: *\nDisallow: /\n", kind="text/plain; charset=utf-8")
             if path == "/queue/run.sh":
                 return self.send(200, run_script(cfg), kind="text/x-shellscript; charset=utf-8")
+            if path == "/queue/help":
+                # public: how the site works, which tells nothing about any run
+                return self.send(200, help_page(cfg, login))
             if path == "/queue/version":
                 # which code this app runs, to tell when a deploy has reached it
                 return self.send(200, json.dumps({"commit": CODE_COMMIT}), kind="application/json")
@@ -2598,7 +2646,7 @@ def handler(cfg, q):
                 if not login:
                     return self.send(200, signin(cfg))
                 if not member:
-                    return self.send(403, shell(cfg, login, "No access", f"<p>{html.escape(login)} has no write access to {html.escape(cfg.repo)}, so cannot see or start jobs.</p>"))
+                    return self.send(403, shell(cfg, login, "No access", f"<p>{html.escape(login)} is not a member of {html.escape(cfg.repo.split('/')[0])} and has no write access to {html.escape(cfg.repo)}, so cannot see or start jobs. <a href=\"{html.escape(cfg.base)}/help\">How it works</a></p>"))
                 if path == "/queue/new":
                     return self.send(200, new_page(cfg, q, login))
                 if path.startswith("/queue/job/"):
