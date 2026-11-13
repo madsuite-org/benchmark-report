@@ -24,3 +24,7 @@ A pull request from this repository gets a preview on GitHub Pages, linked in a 
 built by `bin/preview.jl` from the results in `sample/`, which are a copy of real results.
 
 The theme is in `assets/`, with Bootstrap bundled, so the pages load nothing from elsewhere.
+
+## Deploy
+
+A push to `main` whose Test workflow passes deploys itself: `deploy/launcher.sh`, installed once by root on the server as `/srv/benchmark-report/deploy/deploy.sh`, finds that commit and runs its `deploy/deploy.sh`. Changes to the deploy are ordinary pushes; whoever can push to `main` decides what the deploy runs.
