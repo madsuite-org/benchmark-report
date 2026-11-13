@@ -858,7 +858,7 @@ def app_nav(cfg, login):
     theme = '<button id="theme" type="button">Light or dark</button>'
     if not login:
         return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">☰</summary><div>'
-                f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a><a href="{e(cfg.base)}/help">How it works</a>{theme}</div></details></nav>')
+                f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a>{theme}</div></details></nav>')
     csrf = sign(cfg, "csrf|" + login)
     return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">{e(login)} ☰</summary><div>'
             f'<a href="{e(cfg.reports)}/">Dashboard</a><a href="{e(cfg.base)}/help">How it works</a>{theme}'
@@ -1462,8 +1462,7 @@ Make one with <i>Add column</i> on a report's page or through the API below, and
 def signin(cfg, message=""):
     body = ('<div class="card mx-auto mt-4" style="max-width:32em"><div class="card-body"><h1 class="h4">Sign in</h1>'
             f'<p>Sign in with GitHub to see the benchmark runs and jobs. Any member of {html.escape(cfg.repo.split("/")[0])}, '
-            f'and anyone with write access to {html.escape(cfg.repo)}, can. A report is open to anyone given its link. '
-            f'<a href="{html.escape(cfg.base)}/help">How it works</a></p>'
+            f'and anyone with write access to {html.escape(cfg.repo)}, can. A report is open to anyone given its link.</p>'
             f'<a class="btn btn-primary" href="{html.escape(cfg.base)}/login">Sign in with GitHub</a></div></div>')
     return shell(cfg, None, "Sign in", body, message)
 
@@ -2636,7 +2635,11 @@ def handler(cfg, q):
             if path == "/queue/run.sh":
                 return self.send(200, run_script(cfg), kind="text/x-shellscript; charset=utf-8")
             if path == "/queue/help":
-                # public: how the site works, which tells nothing about any run
+                # for those who may use the site (Sungho), as every page of the app
+                if not login:
+                    return self.send(200, signin(cfg))
+                if not member:
+                    return self.send(403, shell(cfg, login, "No access", f"<p>{html.escape(login)} is not a member of {html.escape(cfg.repo.split('/')[0])} and has no write access to {html.escape(cfg.repo)}.</p>"))
                 return self.send(200, help_page(cfg, login))
             if path == "/queue/version":
                 # which code this app runs, to tell when a deploy has reached it
@@ -2646,7 +2649,7 @@ def handler(cfg, q):
                 if not login:
                     return self.send(200, signin(cfg))
                 if not member:
-                    return self.send(403, shell(cfg, login, "No access", f"<p>{html.escape(login)} is not a member of {html.escape(cfg.repo.split('/')[0])} and has no write access to {html.escape(cfg.repo)}, so cannot see or start jobs. <a href=\"{html.escape(cfg.base)}/help\">How it works</a></p>"))
+                    return self.send(403, shell(cfg, login, "No access", f"<p>{html.escape(login)} is not a member of {html.escape(cfg.repo.split('/')[0])} and has no write access to {html.escape(cfg.repo)}, so cannot see or start jobs.</p>"))
                 if path == "/queue/new":
                     return self.send(200, new_page(cfg, q, login))
                 if path.startswith("/queue/job/"):
