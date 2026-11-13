@@ -227,6 +227,10 @@ function banner(home, trail, line = "", menus = "")
 end
 # a time in UTC (`2026-11-10T13:30:02Z`), shown in the reader's own time zone by report.js (Sungho)
 local_time(t) = occursin(r"^\d{4}-\d\d-\d\dT\d\d:\d\d", t) ? "<time class=\"lt\" datetime=\"$(escape_html(t))\">$(escape_html(replace(first(t, 16), "T" => " "))) UTC</time>" : escape_html(t)
+# code that is not a commit of the repository (Sungho): local code, or a fork's pull request, marked
+# wherever its run shows; the app names such a run "Local: ..." or "Fork: ..."
+origin_badge(title) = startswith(title, "Local:") ? "<span class=\"origin\" title=\"code from the creator's machine, not on GitHub: not reproducible by others\">local code</span> " :
+    startswith(title, "Fork:") ? "<span class=\"origin\" title=\"a pull request from a fork\">fork</span> " : ""
 state_badge(state) = "<span class=\"state $(state == "running" ? "on" : "off")\">$(escape_html(state))</span>"
 
 # A run that says it is running but has not written for an hour has stopped without saying so (its
@@ -680,7 +684,7 @@ function write_report(site, root; base = nothing, wall = 7200.0, title = "MadNLP
     gh = link === nothing ? nothing : match(r"/(pull|commit)/([0-9a-f]+|\d+)", link)
     ref = gh === nothing ? "" : " <a class=\"m\" href=\"" * escape_html(link) * "\">" * (gh[1] == "pull" ? "#" * gh[2] : first(gh[2], 8)) * "</a>"
     trail = "<span class=\"trail\">" * escape_html(crumb) * "</span>"
-    line = (isempty(subtitle) ? "" : "<span class=\"subtitle\">" * escape_html(subtitle) * "</span>") * ref * " " *
+    line = origin_badge(subtitle) * (isempty(subtitle) ? "" : "<span class=\"subtitle\">" * escape_html(subtitle) * "</span>") * ref * " " *
         state_badge(finished ? "finished" : "running") * " <span class=\"m\">updated <span class=\"ago\" data-t=\"$(replace(stamp, " " => "T"))Z\">$stamp UTC</span></span>"
     bar = banner(assets == "." ? "index.html" : "$assets/index.html", trail, line, menu)
     for set in sets
@@ -762,7 +766,7 @@ function write_index(site, runs; repository, reports = [])
     # a long name (a job's title, its nodes) is cut to the column's width; the whole of it on hover
     short(text, href) = "<a class=\"trunc\" href=\"$href\" title=\"$(escape_html(text))\">$(escape_html(text))</a>"
     live_row(r) = row(
-        isempty(r.pr) ? short(replace(r.title, r"^Manual run: " => ""), escape_html(r.name) * "/") :
+        isempty(r.pr) ? origin_badge(replace(r.title, r"^Job \d+: " => "")) * short(replace(r.title, r"^Manual run: " => ""), escape_html(r.name) * "/") :
             "<a href=\"$(escape_html(r.name))/\">#" * escape_html(r.pr) * at_commit(r.name) * "</a>",
         devices_of(r),
         isempty(r.pr) ? "–" : "<a href=\"$code/pull/$(escape_html(r.pr))\">#$(escape_html(r.pr))</a>",

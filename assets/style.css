@@ -74,3 +74,4 @@ pre.log{max-height:60vh;overflow:auto;background:var(--card);border:1px solid va
 .tiles .statusbar{flex:1 1 100%;width:100%}
 .reportcols{flex-basis:100%;display:flex;flex-wrap:wrap;gap:.3em;align-items:center}.addcol summary{list-style:none}.addcol summary::-webkit-details-marker{display:none}
 .site .brand img.logo{height:1.5em;vertical-align:-.3em;margin-right:.15em}
+.origin{display:inline-block;padding:0 .45em;border-radius:4px;background:#b45309;color:#fff;font-size:.8em;font-weight:600;text-transform:uppercase;letter-spacing:.03em}

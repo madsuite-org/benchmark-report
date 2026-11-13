@@ -234,12 +234,21 @@ class Queue:
         """A job run outside the app's machines by `login`, who publishes its results through the API
         with the token returned here. `what` is {"master": true}, {"pr": N}, {"branch": name} or
         {"commit": sha}. Returns (job, token) or (None, problem)."""
-        title = ""
-        if what.get("pr"):
-            p, problem = self.pull(int(what["pr"]))
+        title, fork = "", self.cfg.repo
+        if what.get("local"):
+            # local code: not on GitHub, so not looked up; marked as such everywhere it shows
+            loc = what["local"]
+            kind, pr, ref, sha = "local", None, str(loc.get("name") or ""), loc["commit"]
+            changes = str(loc.get("changes") or "")
+            title = f"Local: {ref + ' ' if ref else ''}{sha[:8]}{' + uncommitted changes' if changes else ''}"
+        elif what.get("pr"):
+            p, problem = self.pull(int(what["pr"]), forks=True)
             if problem:
                 return None, problem
             kind, pr, ref, sha, title = "pr", int(what["pr"]), None, p["head"]["sha"], p.get("title", "")
+            fork = ((p.get("head") or {}).get("repo") or {}).get("full_name") or "a deleted fork"
+            if fork != self.cfg.repo:
+                title = f"Fork: {fork}, #{pr} {title}"
         else:
             kind, pr = ("branch" if what.get("branch") else "commit"), None
             ref = what.get("branch") or what.get("commit") or "master"
@@ -255,6 +264,8 @@ class Queue:
         token = secrets.token_urlsafe(32)
         with self.changed:
             job = {"id": self.data["next"], "kind": kind, "pr": pr, "ref": ref, "sha": sha, "title": title, "by": login,
+                   **({"local": True, "changes": changes} if kind == "local" else {}),
+                   **({"fork": fork} if kind == "pr" and fork != self.cfg.repo else {}),
                    "state": "running", "queued": int(time.time()), "started": int(time.time()), "keep": True,
                    "external": True, "node": "external", "nodes": {}, "token_hash": hashlib.sha256(token.encode()).hexdigest(), **settings}
             self.data["jobs"].append(job)
@@ -363,7 +374,7 @@ class Queue:
         self.perms[login.lower()] = (p, time.time() + 300)
         return p
 
-    def pull(self, pr):
+    def pull(self, pr, forks=False):
         """The head of open pull request `pr` from a branch of the repository, else a reason not to run it."""
         try:
             p = self.gh.api("GET", f"/repos/{self.cfg.repo}/pulls/{pr}")
@@ -371,9 +382,10 @@ class Queue:
             return None, "There is no such pull request."
         if p.get("state") != "open":
             return None, "That pull request is not open."
-        if ((p.get("head") or {}).get("repo") or {}).get("full_name") != self.cfg.repo:
-            # the benchmark machine runs the code: never from a fork
+        if not forks and ((p.get("head") or {}).get("repo") or {}).get("full_name") != self.cfg.repo:
             return None, "Only pull requests from branches of the repository can be benchmarked."
+        # a job run elsewhere may take a fork's pull request (Sungho): its nodes fetch it from this
+        # repository, as refs/pull/<N>/head, which GitHub keeps there even if the fork changes or goes
         return p, None
 
     def add_pr(self, pr, by, keep=True, settings=None):
@@ -617,7 +629,8 @@ def folder(job):
         return job["folder"]
     if job.get("external"):
         # run where its users chose, published through the API: a folder of its own, never master's
-        target = (f"pr{job['pr']}" if job["kind"] == "pr" else
+        target = (f"local-{(job.get('sha') or '')[:8]}" if job["kind"] == "local" else
+                  f"pr{job['pr']}" if job["kind"] == "pr" else
                   re.sub(r"[^a-z0-9]+", "-", (job.get("ref") or "").lower()).strip("-")[:16] if job["kind"] == "branch" else (job.get("sha") or "")[:8])
         return f"run-x{job['id']}-{target}"[:48].rstrip("-")
     v = variant(job)
@@ -1272,6 +1285,16 @@ def resolve_subset(cfg, subset, instances, sets, device):
     return sorted(chosen), None
 
 
+def display_name(j):
+    """A job's short name: its label, else what it runs; local code and a fork's pull request say so
+    first, wherever the name shows (Sungho)."""
+    name = j.get("label") or j.get("title") or folder(j)
+    for flag, mark in (("local", "Local: "), ("fork", "Fork: ")):
+        if j.get(flag) and not name.startswith(mark):
+            name = mark + name
+    return name
+
+
 def write_run_json(cfg, j):
     """The run.json of an external job's report folder; replacing it is what makes the builder rebuild."""
     target = os.path.join(cfg.uploads, folder(j))
@@ -1282,8 +1305,12 @@ def write_run_json(cfg, j):
     what = ", ".join(x for x in (st["config"] if st["config"] != "default" else "", st["options"],
                                  f"{len(j['only'])} instances: {j.get('subset', '')}" if j.get("only") else "") if x)
     # short: the job's label, else what it runs; its note, settings and hosts are in its details (Sungho)
-    title = f"Job {j['id']}: {j.get('label') or j.get('title') or folder(j)}"
+    title = f"Job {j['id']}: {display_name(j)}"
     doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
+    if j.get("local"):
+        doc["local"] = True          # code not on GitHub: marked everywhere, never a reference
+    if j.get("fork"):
+        doc["fork"] = j["fork"]      # a fork's pull request: marked, never a reference
     if j.get("only"):
         doc["only"] = j["only"]      # a subset: the report compares over these instances only
     tmp = os.path.join(target, ".run.json")
@@ -1711,14 +1738,15 @@ def job_details(cfg, j):
     settings, its subset, its harness, who started it and when."""
     e = html.escape
     st = settings_of(j)
-    what = (f'pull request <a href="https://github.com/{cfg.repo}/pull/{j["pr"]}">#{j["pr"]}</a>' if j["kind"] == "pr" else
+    what = ("<b>local code</b>, not on GitHub" + (", with uncommitted changes" if j.get("changes") else "") if j["kind"] == "local" else
+            f'pull request <a href="https://github.com/{cfg.repo}/pull/{j["pr"]}">#{j["pr"]}</a>' + (f' <b>from the fork {e(j["fork"])}</b>' if j.get("fork") else "") if j["kind"] == "pr" else
             f'branch <a href="https://github.com/{cfg.repo}/tree/{urllib.parse.quote(j.get("ref") or "", safe="/")}">{e(j.get("ref") or "")}</a>' if j["kind"] == "branch" else
             "master" if j["kind"] == "master" or (j.get("title") or "").startswith("master ") else "commit")
     sha = j.get("sha") or ""
     fields = [("label", e(j["label"])) if j.get("label") else None,
               ("note", e(j["purpose"])) if j.get("purpose") else None,
               ("against", ", ".join(f"job {int(i)}" for i in j["against"])) if j.get("against") else None,
-              ("runs", what + (f' at <a href="https://github.com/{cfg.repo}/commit/{sha}"><code>{sha[:8]}</code></a>' if sha else "")),
+              ("runs", what + ((f' at <code>{sha[:8]}</code>' if j.get("local") else f' at <a href="https://github.com/{cfg.repo}/commit/{sha}"><code>{sha[:8]}</code></a>') if sha else "")),
               ("device", e(st["devices"].replace("cuda", "GPU").replace("cpu", "CPU"))),
               ("configuration", e(st["config"])),
               ("options", f"<code>{e(st['options'])}</code>") if st["options"] else None,
@@ -2003,7 +2031,7 @@ def jobs_section(cfg, q, login=None):
     def row(j):
         # the columns and styles of the list of runs below (Sungho): run, device, GitHub, commit,
         # state, time, raw data
-        short = j.get("label") or j.get("title", "") or name(cfg, j)
+        short = display_name(j)
         started = j.get("sha") and j["state"] != "waiting"
         target = f'{e(cfg.reports)}/{folder(j)}/' if started else f'{e(cfg.base)}/job/{j["id"]}'
         devices = " ".join(f'<span class="tag {d}">{d.upper()}</span>' for d in settings_of(j)["devices"].split(","))
@@ -2253,6 +2281,8 @@ def handler(cfg, q):
             if what == "spec":
                 # what a node runs: everything about the job is the server's, set when it was created
                 return reply(200, {"id": j["id"], "sha": j["sha"], "repository": cfg.repo, "state": j["state"],
+                                   **({"local": "true", "changes": j.get("changes", "")} if j.get("local") else {}),
+                                   **({"pull": str(j["pr"])} if j.get("pr") else {}),
                                    "sets": j.get("sets", "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
                                    "files": f"{cfg.base}/api/jobs/{j['id']}/files", "claim": f"{cfg.base}/api/jobs/{j['id']}/claim",
                                    "report": f"{cfg.reports}/{folder(j)}/"})
@@ -2359,7 +2389,7 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
-                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", "label", *DEFAULTS})
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", "label", "local", *DEFAULTS})
                 if unknown:
                     # a field this app does not know would otherwise be ignored without a word
                     return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
@@ -2375,7 +2405,7 @@ def handler(cfg, q):
                     # run on a machine of the caller's: it publishes through /queue/api/jobs/<id>/files
                     if not cfg.uploads:
                         return reply(503, {"error": "Uploads are not set up on this server."})
-                    what = {k: data[k] for k in ("master", "pr", "branch", "commit") if data.get(k)}
+                    what = {k: data[k] for k in ("master", "pr", "branch", "commit", "local") if data.get(k)}
                     purpose = " ".join(str(data.get("note") or "").split())
                     if len(purpose) > 200:
                         return reply(400, {"error": "A note is up to 200 characters."})
@@ -2392,7 +2422,15 @@ def handler(cfg, q):
                             return reply(400, {"error": problem})
                         settings = settings | {"only": only, "subset": str(data.get("subset") or "") + (" + listed instances" if given else "")}
                     if len(what) != 1 or ("pr" in what and not str(what["pr"]).isdigit()):
-                        return reply(400, {"error": "Give one of master, pr, branch or commit."})
+                        return reply(400, {"error": "Give one of master, pr, branch, commit or local."})
+                    if "local" in what:
+                        # code on the creator's machines only (Sungho): the commit of a checkout there,
+                        # and a hash of its uncommitted changes, if any; its nodes check both
+                        loc = what["local"]
+                        if not (isinstance(loc, dict) and re.fullmatch(r"[0-9a-f]{40}", str(loc.get("commit", "")))
+                                and re.fullmatch(r"([0-9a-f]{40})?", str(loc.get("changes") or ""))
+                                and re.fullmatch(r"[A-Za-z0-9 ._/+-]{0,60}", str(loc.get("name") or ""))):
+                            return reply(400, {"error": 'local is {"commit": <40 hex>, "changes": <40 hex of the uncommitted diff, or "">, "name": <up to 60 characters>}.'})
                     job, token = q.add_external(login, {k: (int(v) if k == "pr" else v) for k, v in what.items()}, settings | ({"purpose": purpose} if purpose else {}))
                     if job is None:
                         return reply(400, {"error": token})

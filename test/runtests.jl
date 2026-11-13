@@ -541,6 +541,14 @@ end
             @test occursin("its times are of different hardware", page)
             @test occursin("<b>Factorizations</b>", page) && occursin("<b>Hessian evaluations</b>", page)   # profiles of the counts too
             @test occursin("Report 1: new vs old", read(joinpath(site, "index.html"), String))       # listed
+            # local code in a report says so in its column, and in its own run's bar and the list
+            run_json = joinpath(live, "run-old", "run.json")
+            write(run_json, replace(read(run_json, String), "\"title\":\"run-old\"" => "\"title\":\"Job 9: Local: try\",\"local\":true"))
+            reset_runs()
+            BenchmarkReport.build_all(live, site)
+            @test occursin("the old one [local]", read(joinpath(site, "report-1", "smoke.html"), String))
+            @test occursin("local code</span>", read(joinpath(site, "run-old", "index.html"), String))
+            @test occursin("local code</span>", read(joinpath(site, "index.html"), String))
             @test !occursin("the old one", read(joinpath(site, "run-new", "index.html"), String))    # runs alone
             # a change of a run rebuilds the report
             before = BenchmarkReport.REPORTS["report-1"].mtime

@@ -626,7 +626,6 @@ class TestServer(Base):
         code, out = self.call_api("POST", "/queue/api/jobs", {"pr": 7, "keep": False}, token="tok-alice")
         self.assertEqual(code, 400); self.assertIn("external", out["error"])
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"master": True}, token="tok-alice")[0], 400)
-        self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 8}, token="tok-alice")[0], 400)   # a fork
         self.assertIn("Unknown fields: harnes", self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 7, "harnes": "x"}, token="tok-alice")[1]["error"])
         code, job = self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 7}, token="tok-alice")
         self.assertEqual((code, job["pr"], job["state"], job["by"]), (201, 7, "running", "alice"))
@@ -687,6 +686,29 @@ class TestServer(Base):
         self.gh_tokens = None
         self.cfg.upload_limit = 10
         self.assertEqual(self.post_upload(self.make_tar(good), "try-3")[0], 413)
+
+    def test_local_code_and_forks_are_marked(self):
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        sha, diff = "a" * 40, "b" * 40
+        code, job = self.call_api("POST", "/queue/api/jobs", {"external": True, "local": {"commit": sha, "changes": diff, "name": "my-idea"}, "label": "try"}, token="tok-alice")
+        self.assertEqual(code, 201, job)
+        j = next(x for x in self.q.data["jobs"] if x["id"] == job["id"])
+        self.assertTrue(app.folder(j).startswith(f"run-x{job['id']}-local-aaaaaaaa"))
+        doc = json.load(open(os.path.join(self.cfg.uploads, app.folder(j), "run.json")))
+        self.assertEqual((doc["local"], doc["title"]), (True, f"Job {job['id']}: Local: try"))      # marked, even with a label
+        self.assertIn("local code", app.job_details(self.cfg, j)); self.assertNotIn("/commit/", app.job_details(self.cfg, j))
+        code, _, spec = self.request("GET", f"/queue/api/jobs/{job['id']}/spec", headers={"Authorization": "Bearer " + job["token"]})
+        self.assertEqual((json.loads(spec)["local"], json.loads(spec)["changes"]), ("true", diff))
+        for bad in ({"commit": "x"}, {"commit": sha, "changes": "zz"}, "abc"):
+            self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True, "local": bad}, token="tok-alice")[0], 400, bad)
+        # a fork's pull request: allowed, fetched by its number, marked
+        code, fj = self.call_api("POST", "/queue/api/jobs", {"external": True, "pr": 8}, token="tok-alice")
+        self.assertEqual(code, 201, fj)
+        f = next(x for x in self.q.data["jobs"] if x["id"] == fj["id"])
+        self.assertTrue(f["fork"] and f["title"].startswith("Fork:"))
+        self.assertIn("from the fork", app.job_details(self.cfg, f))
+        code, _, spec = self.request("GET", f"/queue/api/jobs/{fj['id']}/spec", headers={"Authorization": "Bearer " + fj["token"]})
+        self.assertEqual(json.loads(spec)["pull"], "8")
 
     def test_usual_suspects(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
