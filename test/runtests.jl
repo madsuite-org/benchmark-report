@@ -651,3 +651,14 @@ end
         @test !occursin("was not updated", read(log, String))
     end
 end
+
+@testset "the time breakdown shows the symbolic share where it is timed" begin
+    row(t_sym) = (; case = "a", status = 1, t_total = 10.0, t_linsolve = 6.0, t_eval = 1.0, t_init = 1.0, t_symbolic = t_sym)
+    old = (; case = "a", status = 1, t_total = 10.0, t_linsolve = 6.0, t_eval = 1.0, t_init = 1.0)
+    sides = [BenchmarkReport.Side("new", "red", ("cuda", "default"), false), BenchmarkReport.Side("old", "blue", ("cuda", "default"), true)]
+    io = IOBuffer()
+    BenchmarkReport.breakdown(io, sides, [Dict("a" => row(3.0)), Dict("a" => old)])
+    html = String(take!(io))
+    @test occursin("<td>30.0%</td>", html)            # 3 s of 10
+    @test occursin("<td>–</td>", html)                # not timed apart in the older file
+end

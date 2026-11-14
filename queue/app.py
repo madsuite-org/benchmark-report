@@ -1041,11 +1041,22 @@ def merge_rows(path, lines):
     if not lines or not lines[0].startswith("case,status"):
         return False
     rows = {}
+    head = lines[0]
     if os.path.exists(path):
         with open(path) as f:
             old = f.read().splitlines()
         if old and old[0] != lines[0]:
-            return False
+            # a later version of the benchmark adds columns at the end (t_symbolic): the file takes
+            # them, its rows given NaN for them; any other difference is refused
+            new_cols, old_cols = lines[0].split(","), old[0].split(",")
+            if new_cols[:len(old_cols)] == old_cols:
+                pad = ",NaN" * (len(new_cols) - len(old_cols))
+                old = [lines[0]] + [x + pad for x in old[1:]]
+            elif old_cols[:len(new_cols)] == new_cols:
+                head = old[0]          # a node of the earlier version, into a file of the later one
+                lines = [old[0]] + [x + ",NaN" * (len(old_cols) - len(new_cols)) for x in lines[1:]]
+            else:
+                return False
         for line in old[1:]:
             rows[line.split(",", 1)[0]] = line
     for line in lines[1:]:
@@ -1053,7 +1064,7 @@ def merge_rows(path, lines):
             rows[line.split(",", 1)[0]] = line
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        f.write(lines[0] + "\n" + "".join(r + "\n" for r in rows.values()))
+        f.write(head + "\n" + "".join(r + "\n" for r in rows.values()))
     os.chmod(tmp, 0o644)
     os.replace(tmp, path)
     return True

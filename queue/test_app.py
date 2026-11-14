@@ -754,6 +754,15 @@ class TestServer(Base):
         code, _, spec = self.request("GET", f"/queue/api/jobs/{fj['id']}/spec", headers={"Authorization": "Bearer " + fj["token"]})
         self.assertEqual(json.loads(spec)["pull"], "8")
 
+    def test_result_files_take_added_columns(self):
+        path = os.path.join(self.dir, "r.csv")
+        self.assertTrue(app.merge_rows(path, ["case,status", "a,1"]))
+        self.assertTrue(app.merge_rows(path, ["case,status,t_symbolic", "b,1,0.5"]))        # a later harness
+        self.assertEqual(open(path).read(), "case,status,t_symbolic\na,1,NaN\nb,1,0.5\n")
+        self.assertTrue(app.merge_rows(path, ["case,status", "c,6"]))                    # an earlier one
+        self.assertIn("c,6,NaN", open(path).read())
+        self.assertFalse(app.merge_rows(path, ["case,iters", "d,1"]))                    # anything else
+
     def test_usual_suspects(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
         head = "case,status,iters\n"

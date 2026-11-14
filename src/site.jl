@@ -391,14 +391,19 @@ end
 
 # Where the time goes, over the instances with a breakdown. Ipopt reports none.
 function breakdown(io, sides, rows)
-    println(io, "<div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>solver</th><th>total (s)</th><th>linear solver</th><th>evaluations</th><th>initialization</th><th>other</th></tr></thead><tbody>")
+    # the linear solver's reordering and symbolic factorization, where the solver times them apart
+    # (t_symbolic, part of the linear solver's share): what differs most between machines' CPUs
+    println(io, "<div class=\"wide\"><table class=\"table table-sm\"><thead><tr><th>solver</th><th>total (s)</th><th>linear solver</th><th title=\"reordering and symbolic factorization, part of the linear solver\">of which symbolic</th><th>evaluations</th><th>initialization</th><th>other</th></tr></thead><tbody>")
+    symbolic(x) = hasproperty(x, :t_symbolic) && x.t_symbolic isa Real && isfinite(x.t_symbolic) ? x.t_symbolic : NaN
     for (s, r) in zip(sides, rows)
         known = [x for x in values(r) if isfinite(x.t_linsolve) && x.t_total > 0]
         isempty(known) && continue
         total = sum(x -> x.t_total, known)
         share(f) = 100 * sum(f, known) / total
         lin, eval, init = share(x -> x.t_linsolve), share(x -> x.t_eval), share(x -> x.t_init)
-        @printf(io, "<tr><td>%s</td><td>%.1f</td><td>%.1f%%</td><td>%.1f%%</td><td>%.1f%%</td><td>%.1f%%</td></tr>\n", key(s), total, lin, eval, init, 100 - lin - eval - init)
+        timed = [x for x in known if !isnan(symbolic(x))]
+        sym = isempty(timed) ? "–" : @sprintf("%.1f%%", 100 * sum(symbolic, timed) / sum(x -> x.t_total, timed))
+        @printf(io, "<tr><td>%s</td><td>%.1f</td><td>%.1f%%</td><td>%s</td><td>%.1f%%</td><td>%.1f%%</td><td>%.1f%%</td></tr>\n", key(s), total, lin, sym, eval, init, 100 - lin - eval - init)
     end
     println(io, "</tbody></table></div>")
     return
