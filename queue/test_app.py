@@ -687,6 +687,50 @@ class TestServer(Base):
         self.cfg.upload_limit = 10
         self.assertEqual(self.post_upload(self.make_tar(good), "try-3")[0], 413)
 
+    def test_a_bad_node_is_put_aside_and_its_results_rerun(self):
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        code, job = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cuda"}, token="tok-alice")
+        jid, tok = job["id"], job["token"]
+        j = next(x for x in self.q.data["jobs"] if x["id"] == jid)
+        root = os.path.join(self.cfg.uploads, app.folder(j))
+        head, meta = "case,status,iters\n", 'device = "cuda"\n'
+        def send(node, csv, state="running"):
+            body = self.make_tar({"G/acopf_default.csv": head + csv, "G/acopf_default.csv.meta.toml": meta})
+            code, _, data = self.request("POST", f"/queue/api/jobs/{jid}/files?node={node}&state={state}&host=h{node}", body,
+                                         {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})
+            return json.loads(data)
+        def ask(what, body):
+            raw = json.dumps(body).encode()
+            return json.loads(self.request("POST", f"/queue/api/jobs/{jid}/{what}", raw, {"Authorization": "Bearer " + tok, "Content-Length": str(len(raw))})[2])
+        send("good", "ok1,1,5\n")
+        send("bad", "w,1,9\n")                                                    # fine at first
+        out = send("bad", "w,1,9\nx,-101,0\ny,-101,0\n")
+        self.assertFalse(out["quarantined"])
+        out = send("bad", "w,1,9\nx,-101,0\ny,-101,0\nz,-100,0\n")              # the third in a row
+        self.assertTrue(out["quarantined"] and out["cancel"])
+        self.assertEqual(j["nodes"]["bad"]["state"], "quarantined")
+        rows = open(os.path.join(root, "G", "acopf_default.csv")).read()
+        self.assertIn("w,1,9", rows); self.assertNotIn("x,", rows); self.assertNotIn("z,", rows)   # since its first failure, gone
+        self.assertEqual(sorted(j["requeue"]), ["cuda/acopf/x/default", "cuda/acopf/y/default", "cuda/acopf/z/default"])
+        self.assertEqual(ask("claim", {"node": "bad", "device": "cuda", "set": "acopf", "case": "q", "configs": ["default"]})["todo"], [])
+        send("bad", "w,1,9\nx,-101,0\nq,1,1\n")                                  # sends nothing more
+        self.assertNotIn("q,", open(os.path.join(root, "G", "acopf_default.csv")).read())
+        got = ask("retry", {"node": "good", "device": "cuda"})
+        self.assertEqual((got["case"], got["configs"]), ("x", ["default"]))      # handed out again, first
+        send("good", "ok1,1,5\nx,1,12\n")
+        self.assertNotIn("cuda/acopf/x/default", j["requeue"])
+        prov = app.load_provenance(self.cfg, j)
+        self.assertEqual(prov["cuda/acopf/x/default"][:2], ["good", "hgood"])     # who sent each result
+        self.assertIn("put aside", app.nodes_table(j))
+        # a rerun by hand: the row thrown away, not taken again from the same node's file
+        code, out = self.call_api("POST", f"/queue/api/jobs/{jid}/rerun", {"instances": ["ok1"]}, token="tok-alice")
+        self.assertEqual((code, out["rerun"]), (200, 1))
+        send("good", "ok1,1,5\nx,1,12\n")
+        self.assertNotIn("ok1,", open(os.path.join(root, "G", "acopf_default.csv")).read())
+        send("good", "ok1,1,6\nx,1,12\n")                                         # its new result is taken
+        self.assertIn("ok1,1,6", open(os.path.join(root, "G", "acopf_default.csv")).read())
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{jid}/rerun", {"instances": ["nothing"]}, token="tok-alice")[0], 400)
+
     def test_local_code_and_forks_are_marked(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
         sha, diff = "a" * 40, "b" * 40

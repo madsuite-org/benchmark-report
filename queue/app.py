@@ -318,6 +318,8 @@ class Queue:
         final = {"finished", "failed", "cancelled"}
         with self.changed:
             n = j["nodes"].setdefault(node, {"host": "", "joined": int(time.time())})
+            if n.get("state") == "quarantined":
+                state = "quarantined"        # put aside for good, whatever it says
             changed = n.get("state") != state
             n["state"] = state
             # the job ends when a node has finished it and every node still there is done too; a node
@@ -1068,14 +1070,28 @@ def note_failures(cfg, q, j, node, target, r, lines):
     """For rows a node sent: which node a machine failure happened on, and, for an instance that now
     has a row of another kind, its failure rows from other machines taken away (a retry elsewhere)."""
     try:
-        device = re.search(r'^device\s*=\s*"([a-z]+)"', open(os.path.join(target, r[0], f"{r[2]}_{r[3]}.csv.meta.toml")).read(), re.M)[1]
+        device = re.search(r'^device\s*=\s*"([a-z]+)"', open(os.path.join(target, r[1], f"{r[2]}_{r[3]}.csv.meta.toml")).read(), re.M)[1]
     except (OSError, TypeError):
         device = j.get("devices", "cpu")
     failed_on, fixed = j.setdefault("failed_on", {}), set()
+    prov = load_provenance(cfg, j)
+    streak, bad_since = j.setdefault("streak", {}), j.setdefault("bad_since", {})
+    requeued = set(j.get("requeue", []))
+    now = time.time()                # to the fraction: what came before a node's first failure is kept
     for line in lines[1:]:
         f = line.split(",", 2)
         if len(f) < 2:
             continue
+        key = f"{device}/{r[2]}/{f[0]}/{r[3]}"
+        # every row's node and time (Vole, Sungho), and a node's machine failures in a row
+        if prov.get(key, [None, None, None, None])[0:1] != [node] or prov[key][3] != f[1]:
+            prov[key] = [node, host_of(j, node), now, f[1]]
+            requeued.discard(key)
+            if f[1] in MACHINE_FAILURES:
+                streak[node] = streak.get(node, 0) + 1
+                bad_since.setdefault(node, now)
+            else:
+                streak[node] = 0
         if f[1] in MACHINE_FAILURES:
             failed_on[f"{device}/{r[2]}/{f[0]}/{r[3]}"] = node
             # a retry that failed again lets go of the instance, for another node to try
@@ -1084,6 +1100,10 @@ def note_failures(cfg, q, j, node, target, r, lines):
                 retrying.pop(f"{device}/{r[2]}/{f[0]}")
         else:
             fixed.add(f[0])
+    j["requeue"] = sorted(requeued)
+    save_provenance(cfg, j, prov)
+    if streak.get(node, 0) >= QUARANTINE_AFTER and j["nodes"].get(node, {}).get("state") != "quarantined":
+        quarantine(cfg, q, j, node)
     if not fixed:
         return
     for m in os.listdir(target):
@@ -1098,6 +1118,144 @@ def note_failures(cfg, q, j, node, target, r, lines):
                 out.write("".join(x + "\n" for x in keep))
             os.chmod(tmp, 0o644)
             os.replace(tmp, other)
+
+
+# A node whose solves fail for a machine reason this many times in a row is put aside (a GPU already
+# full, a broken driver): it is given no more instances and told to leave, and what it sent since its
+# first such failure is handed out again to the others (Vole, Sungho).
+QUARANTINE_AFTER = 3
+
+
+def host_of(j, node):
+    return (j.get("nodes", {}).get(node) or {}).get("host", "")
+
+
+def provenance_file(cfg, j):
+    return os.path.join(cfg.uploads, folder(j), "provenance.json")
+
+
+def load_provenance(cfg, j):
+    """Which node sent each result of a job, and when: {"device/set/case/config": [node, host, time, status]}."""
+    try:
+        return json.load(open(provenance_file(cfg, j)))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_provenance(cfg, j, prov):
+    path = provenance_file(cfg, j)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(prov, f)
+    os.replace(tmp, path)
+
+
+def discarded_file(cfg, j):
+    return os.path.join(cfg.uploads, folder(j), "discarded.json")
+
+
+def without_discarded(cfg, j, target, r, lines):
+    """A node's rows less the ones discarded by a rerun: a node sends its whole result file again with
+    each new row, so a discarded row would come back; a new row of the instance is taken."""
+    try:
+        gone = json.load(open(discarded_file(cfg, j)))
+    except (OSError, ValueError):
+        return lines
+    try:
+        device = re.search(r'^device\s*=\s*"([a-z]+)"', open(os.path.join(target, r[1], f"{r[2]}_{r[3]}.csv.meta.toml")).read(), re.M)[1]
+    except (OSError, TypeError):
+        return lines
+    return lines[:1] + [x for x in lines[1:] if gone.get(f"{device}/{r[2]}/{x.split(',', 1)[0]}/{r[3]}") != x]
+
+
+def result_keys(cfg, j):
+    """Every result of a job, as (device, set, case, config), read from its result files."""
+    root = os.path.join(cfg.uploads, folder(j))
+    out = []
+    try:
+        machines = [m for m in os.listdir(root) if os.path.isdir(os.path.join(root, m))]
+    except OSError:
+        return out
+    for m in machines:
+        for fname in os.listdir(os.path.join(root, m)):
+            rm = RESULT_FILE.fullmatch(f"{m}/{fname}")
+            if not rm:
+                continue
+            try:
+                dev = re.search(r'^device\s*=\s*"([a-z]+)"', open(os.path.join(root, m, fname) + ".meta.toml").read(), re.M)[1]
+                out += [(dev, rm[2], x.split(",", 1)[0], rm[3]) for x in open(os.path.join(root, m, fname)).read().splitlines()[1:] if x]
+            except (OSError, TypeError):
+                continue
+    return out
+
+
+def requeue(cfg, q, j, keys):
+    """Hand instances out again, {"device/set/case/config"}: their rows taken out of the job's result
+    files, on every machine, and the instances given to the next node that asks."""
+    keys = set(keys)
+    if not keys:
+        return 0
+    root = os.path.join(cfg.uploads, folder(j))
+    try:
+        gone = json.load(open(discarded_file(cfg, j)))
+    except (OSError, ValueError):
+        gone = {}
+    for m in os.listdir(root):
+        mdir = os.path.join(root, m)
+        if not os.path.isdir(mdir):
+            continue
+        for fname in os.listdir(mdir):
+            rm = RESULT_FILE.fullmatch(f"{m}/{fname}")
+            if not rm:
+                continue
+            try:
+                dev = re.search(r'^device\s*=\s*"([a-z]+)"', open(os.path.join(mdir, fname) + ".meta.toml").read(), re.M)[1]
+            except (OSError, TypeError):
+                continue
+            path = os.path.join(mdir, fname)
+            rows = open(path).read().splitlines()
+            for x in rows[1:]:
+                k = f"{dev}/{rm[2]}/{x.split(',', 1)[0]}/{rm[3]}"
+                if k in keys:
+                    gone[k] = x
+            keep = rows[:1] + [x for x in rows[1:] if f"{dev}/{rm[2]}/{x.split(',', 1)[0]}/{rm[3]}" not in keys]
+            if len(keep) != len(rows):
+                tmp = path + ".tmp"
+                with open(tmp, "w") as out:
+                    out.write("".join(x + "\n" for x in keep))
+                os.chmod(tmp, 0o644)
+                os.replace(tmp, path)
+    tmp = discarded_file(cfg, j) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(gone, f)
+    os.replace(tmp, discarded_file(cfg, j))
+    prov = load_provenance(cfg, j)
+    for k in keys:
+        prov.pop(k, None)
+    save_provenance(cfg, j, prov)
+    with q.changed:
+        j["requeue"] = sorted(set(j.get("requeue", [])) | keys)
+        tries = j.setdefault("retries", {})
+        for k in keys:
+            tries.pop(k, None)
+        retrying = q.__dict__.get("retrying", {}).get(j["id"], {})
+        for k in keys:
+            retrying.pop(k.rsplit("/", 1)[0], None)
+        q.save()
+    return len(keys)
+
+
+def quarantine(cfg, q, j, node):
+    """Put `node` aside: no more instances, told to leave, and what it sent since its first machine
+    failure handed out again."""
+    since = j.get("bad_since", {}).get(node, 0)
+    prov = load_provenance(cfg, j)
+    keys = {k for k, (n, _, t, _) in prov.items() if n == node and t >= since}
+    with q.changed:
+        j["nodes"].setdefault(node, {})["state"] = "quarantined"
+        q.save()
+    requeue(cfg, q, j, keys)
+    print(f"job {j['id']}: node {node} ({host_of(j, node)}) quarantined, {len(keys)} results handed out again", flush=True)
 
 
 def failure_rows(cfg, j, device):
@@ -1128,6 +1286,17 @@ def next_retry(cfg, q, j, node, device):
     """An instance for `node` to try again, {"set", "case", "configs"}, or None: one whose row is a
     machine failure, tried fewer than RETRIES more times, held by no node still alive, and not failed
     on this node, unless no other node is left to take it."""
+    if j["nodes"].get(node, {}).get("state") == "quarantined":
+        return None
+    # what was handed out again (a rerun, a node put aside) comes first
+    by_case = {}
+    for k in j.get("requeue", []):
+        dev, set_name, case, config = k.split("/", 3)
+        if dev == device:
+            by_case.setdefault((set_name, case), []).append(config)
+    for (set_name, case), configs in by_case.items():
+        if q.claim(j, node, f"{device}/{set_name}/{case}", again=True):
+            return {"set": set_name, "case": case, "configs": configs}
     tries, failed_on = j.setdefault("retries", {}), j.setdefault("failed_on", {})
     others = any(k != node and v.get("state") not in ("finished", "failed", "cancelled") and q.alive(j, k) for k, v in j["nodes"].items())
     by_case = {}
@@ -1348,8 +1517,11 @@ def receive_job_files(cfg, q, j, node, archive_path, state):
             parts = path.split("/")
             r = RESULT_FILE.fullmatch(path)
             if r:
+                # a node put aside sends nothing more to the results
+                if j.get("nodes", {}).get(node, {}).get("state") == "quarantined":
+                    continue
                 os.makedirs(os.path.join(target, parts[0]), mode=0o755, exist_ok=True)
-                lines = data.decode(errors="replace").splitlines()
+                lines = without_discarded(cfg, j, target, r, data.decode(errors="replace").splitlines())
                 merge_rows(os.path.join(target, path), lines)
                 note_failures(cfg, q, j, node, target, r, lines)
                 continue
@@ -1836,7 +2008,8 @@ def log_tail(path, lines=80, limit=1 << 20):
 
 
 NODE_STATES = ("setup", "running", "interrupted", "finished", "failed", "cancelled")
-NODE_SAY = {"setup": "setting up: cloning, installing, precompiling", "running": "solving", "interrupted": "stopped (preempted?)"}
+NODE_SAY = {"setup": "setting up: cloning, installing, precompiling", "running": "solving", "interrupted": "stopped (preempted?)",
+            "quarantined": "put aside: machine failures in a row; its results since are handed out again"}
 
 
 def nodes_table(j):
@@ -2330,7 +2503,7 @@ def handler(cfg, q):
                 if not (re.fullmatch(r"[A-Za-z0-9_-]{1,40}", node) and device in ("cpu", "cuda") and re.fullmatch(r"[a-z]+", set_name)
                         and re.fullmatch(r"[A-Za-z0-9_.+-]{1,100}", case) and all(re.fullmatch(r"[A-Za-z0-9_.+-]{1,100}", c) for c in configs)):
                     return reply(400, {"error": "Give node, device, set, case and configs."})
-                if j["state"] != "running":
+                if j["state"] != "running" or j["nodes"].get(node, {}).get("state") == "quarantined":
                     return reply(200, {"todo": [], "cancel": True})
                 q.seen(j, node)
                 todo = [c for c in configs if c not in solved_already(cfg, j, device, set_name, case, configs)]
@@ -2364,7 +2537,9 @@ def handler(cfg, q):
                 os.remove(path)
             if problem:
                 return reply(400, {"error": problem})
-            return reply(200, {"cancel": j["state"] == "cancelled", "state": j["state"], "report": f"{cfg.reports}/{folder(j)}/"})
+            # a node put aside is told to stop, as for a cancelled job
+            out_ = j.get("nodes", {}).get(node, {}).get("state") == "quarantined"
+            return reply(200, {"cancel": j["state"] == "cancelled" or out_, "quarantined": out_, "state": j["state"], "report": f"{cfg.reports}/{folder(j)}/"})
 
         def api(self, method, path, body):
             reply = lambda code, data: self.send(code, json.dumps(data), kind="application/json")
@@ -2492,6 +2667,36 @@ def handler(cfg, q):
                     q.save()
                 write_run_json(cfg, j)
                 return reply(200, public(cfg, j))
+            if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "rerun" and method == "POST":
+                # results thrown away and the instances handed out again (Vole, Sungho): by instance
+                # ("set/case" or "case"), or everything a node sent; a finished job runs again for them
+                j = find(parts[1])
+                if j is None or not j.get("external"):
+                    return reply(404, {"error": "There is no such job run elsewhere."})
+                if j["by"].lower() != login.lower() and permission != "admin":
+                    return reply(403, {"error": "Only who started the job can rerun its instances."})
+                names, node = data.get("instances") or [], str(data.get("node") or "")
+                if not isinstance(names, list) or not all(isinstance(x, str) for x in names) or not (names or node):
+                    return reply(400, {"error": 'Give "instances": ["set/case" or "case", ...] or "node": "<node>".'})
+                prov = load_provenance(cfg, j)
+                keys = {k for k, (n, *_rest) in prov.items() if (node and n == node)
+                        or any(k.split("/", 1)[1].rsplit("/", 1)[0] == x or k.split("/")[2] == x for x in names)}
+                # results sent before nodes were recorded are found in the result files themselves
+                keys |= {f"{dev}/{set_name}/{case}/{config}" for dev, set_name, case, config in result_keys(cfg, j)
+                         if any(x in (case, f"{set_name}/{case}") for x in names)}
+                if not keys:
+                    return reply(400, {"error": "No results of this job match."})
+                n_ = requeue(cfg, q, j, keys)
+                if node and j["nodes"].get(node):
+                    with q.changed:
+                        j["nodes"][node]["state"] = "quarantined"
+                        q.save()
+                if j["state"] != "running":
+                    with q.changed:
+                        j["state"], j["ended"] = "running", None
+                        q.save()
+                write_run_json(cfg, j)
+                return reply(200, public(cfg, j) | {"rerun": n_, "note": "start a node (runner/publish.sh run) if none is running"})
             if len(parts) == 3 and parts[0] == "jobs" and parts[2] == "label" and method == "POST":
                 # a run's label: its column's name in a report, unless the report names it
                 j = find(parts[1])
