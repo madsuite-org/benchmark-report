@@ -312,7 +312,8 @@ reset_runs() = (empty!(BenchmarkReport.RUNS); empty!(BenchmarkReport.REPORTS))
         status = read(joinpath(site, "status.json"), String)
         @test occursin("pr-1", status) && occursin("pr-2", status)
         index = read(joinpath(site, "index.html"), String)
-        @test occursin("pr-1/", index) && occursin("pr-2/", index)
+        # a running run is among the app's current jobs, not in the list of past ones (Sungho)
+        @test !occursin("pr-1/", index) && occursin("pr-2/", index)
         version = read(joinpath(site, "version.json"), String)
         @test occursin("\"commit\":\"$(BenchmarkReport.code_commit())\"", version)
         @test occursin("\"complete\":true", version)
@@ -409,7 +410,7 @@ end
         reset_runs()
         BenchmarkReport.build_all(live, site)
         index = read(joinpath(site, "index.html"), String)
-        @test occursin("<h2>Runs</h2>", index) && occursin("href=\"run-try-this/\"", index)   # one list of every run
+        @test occursin("<h2>Past jobs</h2>", index) && occursin("href=\"run-try-this/\"", index)   # one list of every run
         @test !occursin("Manual run", index)
         @test occursin("<th class=\"l\">device</th>", index) && occursin("<span class=\"tag cuda\">CUDA</span>", index)   # the device, a column
         @test occursin("id=\"runsearch\"", index) && occursin("id=\"runpages\"", index) && occursin("class=\"trunc\"", index)   # search, pages, long names cut

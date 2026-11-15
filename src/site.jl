@@ -788,7 +788,8 @@ function write_index(site, runs; repository, reports = [])
     # job first, by its number; others by when they last changed
     job_number(r) = (m = match(r"^run-x(\d+)-", r.name); m === nothing ? 0 : parse(Int, m[1]))
     order(rs) = sort(rs; by = r -> (job_number(r), r.updated), rev = true)
-    rows = [live_row(r) for r in vcat(order(running), order(finished))]
+    # the running ones are the app's current jobs, above this list (Sungho: reports, current jobs, past jobs)
+    rows = [live_row(r) for r in order(finished)]
     paths = split(archive_git("ls-tree", "-r", "--name-only", "origin/$ARCHIVE_BRANCH"), '\n'; keepempty = false)
     archived = [match(r"^([^/]+)/([0-9a-f]{40})/summary\.md$", p) for p in paths]
     filter!(!isnothing, archived)
@@ -803,7 +804,7 @@ function write_index(site, runs; repository, reports = [])
     for v in versions
         push!(rows, row("<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">Ipopt reference, benchmark $(escape_html(v))</a>", device_tag("cpu"), "–", "–", state_badge("reference"), "", "<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">files</a>"))
     end
-    println(io, "<h2>Runs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, user, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">PR</th><th class=\"l\">commit</th><th class=\"l\">by</th><th class=\"l\">state</th><th>updated</th><th class=\"l\">raw data</th></tr></thead><tbody>")
+    println(io, "<h2>Past jobs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, user, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">PR</th><th class=\"l\">commit</th><th class=\"l\">by</th><th class=\"l\">state</th><th>updated</th><th class=\"l\">raw data</th></tr></thead><tbody>")
     foreach(r -> println(io, r), rows)
     println(io, "</tbody></table></div><nav id=\"runpages\" class=\"pages\" aria-label=\"Pages of runs\"></nav>")
     line = "<span class=\"m\">$(length(running)) running, $(length(finished)) finished, $(length(commits)) archived</span>"

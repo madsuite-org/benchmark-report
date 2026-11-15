@@ -1901,7 +1901,10 @@ def report_runs(q, given):
 
 def public_report(cfg, r, links=None):
     out = {k: r[k] for k in ("id", "title", "runs", "by", "created")}
-    out["url"] = f"{cfg.reports}/report-{r['id']}/"
+    out["url"] = f"{exa_base(cfg) if r.get('project') == 'examodels' else cfg.reports}/report-{r['id']}/"
+    if r.get("project") == "examodels":
+        out["project"] = "examodels"
+        return out
     if links is not None and links.path:
         name = "report-" + str(r["id"])
         out["link"] = f"{cfg.reports.rstrip('/')}/r/{links.token_of(name)}/"
@@ -2310,26 +2313,6 @@ JOB_HEAD = ('<div class="wide"><table class="table table-sm"{id}><thead><tr><th>
             '<th class="l">commit</th><th class="l">by</th><th class="l">state</th><th>started</th><th class="l">raw data</th></tr></thead><tbody>')
 
 
-def exa_reports_path(cfg):
-    return os.path.join(cfg.uploads, "exa-reports.json") if cfg.uploads else ""
-
-
-def load_exa_reports(cfg):
-    """ExaModels' reports: a run compared with another, `{"next", "reports": {id: {id, title, runs, by, created}}}`."""
-    try:
-        with open(exa_reports_path(cfg)) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {"next": 1, "reports": {}}
-
-
-def save_exa_reports(cfg, store):
-    tmp = exa_reports_path(cfg) + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(store, f)
-    os.replace(tmp, exa_reports_path(cfg))
-
-
 RUN_SEARCH = ("<script>(()=>{const tb=document.querySelector('#runs'),q=document.querySelector('#runsearch'),nav=document.querySelector('#runpages');"
               "if(!tb||!q||!nav)return;let page=0;const per=10,show=()=>{const v=q.value.toLowerCase(),rows=[...tb.tBodies[0].rows],"
               "hit=rows.filter(r=>r.textContent.toLowerCase().includes(v)),pages=Math.max(1,Math.ceil(hit.length/per));page=Math.min(page,pages-1);"
@@ -2339,22 +2322,43 @@ RUN_SEARCH = ("<script>(()=>{const tb=document.querySelector('#runs'),q=document
               "q.addEventListener('input',()=>{page=0;show()});show()})()</script>")
 
 
+def origin_badge(title):
+    """Local code and forks' pull requests, marked as on MadNLP's pages (src/site.jl)."""
+    return ('<span class="origin" title="code from the creator\'s machine, not on GitHub: not reproducible by others">local code</span> ' if title.startswith("Local:") else
+            '<span class="origin" title="a pull request from a fork">fork</span> ' if title.startswith("Fork:") else "")
+
+
+def exa_shell(cfg, login, title, crumb, line, menu, content, live):
+    """A page of ExaModels' runs and reports in the shell of MadNLP's (src/site.jl `page`, `banner`): the
+    banner with its trail, the bar with the page's line and tabs, and report.js, which refreshes a live
+    page in place."""
+    e, r = html.escape, html.escape(cfg.reports)
+    return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<meta name="robots" content="noindex, nofollow">' + ('<meta name="live" content="1">' if live else "") +
+            f'<title>{e(title)}: ExaModels benchmarks</title><link rel="icon" href="{r}/favicon.ico" sizes="any"><script src="{r}/theme.js"></script>'
+            f'<link rel="stylesheet" href="{r}/bootstrap.min.css"><link rel="stylesheet" href="{r}/style.css"><body><div id="live">'
+            f'<header class="site"><div class="container"><a class="brand" href="/"><img src="{r}/madsuite-logo.svg" alt="MadSuite" class="logo"> benchmarks</a>'
+            f'<span class="trail"><a href="{e(exa_base(cfg))}/">ExaModels</a></span><span class="trail">{e(crumb)}</span>{app_nav(cfg, login)}</div></header>'
+            f'<div class="bar"><div class="container"><div class="line">{line}</div>{menu}</div></div>'
+            f'<main class="container">{content}</main></div><script src="{r}/report.js"></script></body></html>')
+
+
 def exa_dashboard(cfg, q, login):
     """ExaModels' dashboard, as MadNLP's (Sungho): reports, the current jobs, the past ones, with the
     same tables, tags and search."""
     e = html.escape
     jobs = {j["id"]: j for j in q.data["jobs"] if is_exa(j)}
-    reports = sorted(load_exa_reports(cfg)["reports"].values(), key=lambda r: -r["id"])
+    reports = sorted((r for r in load_reports(cfg)["reports"].values() if r.get("project") == "examodels"), key=lambda r: -r["id"])
     def report_row(r):
-        cols = " vs ".join(e(display_name(jobs[i])) if i in jobs else f"job {int(i)}" for i in r["runs"])
-        states = {jobs[i]["state"] for i in r["runs"] if i in jobs}
+        cols = ", ".join(e(c["label"]) for c in r["runs"])
+        states = {jobs[c["job"]]["state"] for c in r["runs"] if c["job"] in jobs}
         state = "running" if "running" in states else "finished"
         return (f'<tr><td><a class="trunc" href="report-{r["id"]}/">{e(r["title"])}</a></td><td class="l">{cols}</td><td class="l">{e(r.get("by", ""))}</td>'
                 f'<td class="l"><span class="state {"on" if state == "running" else "off"}">{state}</span></td><td>{when(r.get("created"))}</td></tr>')
     body = ('<h1 class="h3">ExaModels benchmarks</h1>'
             f'<p class="m">Model construction and callback times of <a href="https://github.com/{exa.REPO}">ExaModels.jl</a>, run with '
             f'<a href="{exa.HARNESS}#readme">ExaModelsBenchmark.jl</a>. A run is compared with the newest run of main on the same machine; a report compares two runs.</p>')
-    body += '<h2>Reports</h2>' + ('<div class="wide"><table id="reports" class="table table-sm"><thead><tr><th>report</th><th class="l">runs</th>'
+    body += '<h2>Reports</h2>' + ('<div class="wide"><table id="reports" class="table table-sm"><thead><tr><th>report</th><th class="l">columns</th>'
                                   '<th class="l">by</th><th class="l">state</th><th>made</th></tr></thead><tbody>' + "".join(map(report_row, reports)) + "</tbody></table></div>"
                                   if reports else '<p class="m">No reports yet.</p>')
     current = sorted((j for j in jobs.values() if j["state"] in ("running", "waiting")), key=lambda j: -j["id"])
@@ -2373,13 +2377,9 @@ def jobs_section(cfg, q, login=None):
         return f'<h2>{title}</h2>' + (JOB_HEAD.format(id="") + "".join(job_row(cfg, j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     # MadNLP's only: ExaModels' jobs are on its own pages (Sungho)
     queue = [j for j in q.jobs("running") + sorted(q.jobs("waiting"), key=order) if not is_exa(j)]
-    bot = e(cfg.bots[0]) if cfg.bots else ""
     # jobs start through the API (Sungho), so the dashboard has no form for them: it says how
-    return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2></div>'
-            # finished runs are in the one list of runs below, with the rest (Sungho)
-            # how to start one is on the help page (Sungho)
-            + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
-            + f'<p class="m">How to start a job: <a href="{e(cfg.base)}/help">How it works</a>.</p>')
+    # the dashboard's sections, as ExaModels': reports, current jobs, past jobs (Sungho)
+    return table("Current jobs", queue, "Nothing is running or waiting.")
 
 
 def jobs_page(cfg, q, login, message=""):
@@ -2883,37 +2883,6 @@ def handler(cfg, q):
                 found = usual_suspects(cfg, device)
                 return reply(200, {"device": device, "rule": "failed at least once by the best quarter of the finished full runs' configurations, ranked by instances solved",
                                    "suspects": [{"instance": k, "failed": f_, "runs": n_} for k, (f_, n_) in sorted(found.items(), key=lambda kv: (-kv[1][0] / kv[1][1], kv[0]))]})
-            if parts[:2] == ["examodels", "reports"]:
-                # ExaModels' reports: a run compared with another, {"title", "runs": [JOB, JOB]}
-                if not cfg.uploads:
-                    return reply(503, {"error": "Uploads are not set up on this server."})
-                with q.changed:
-                    store = load_exa_reports(cfg)
-                    if len(parts) == 2 and method == "GET":
-                        return reply(200, {"reports": sorted(store["reports"].values(), key=lambda x: -x["id"])})
-                    if len(parts) == 2 and method == "POST":
-                        title = " ".join(str(data.get("title") or "").split())
-                        runs = data.get("runs")
-                        if not 1 <= len(title) <= 120:
-                            return reply(400, {"error": "Give a title, up to 120 characters."})
-                        ids = {j["id"] for j in q.data["jobs"] if is_exa(j)}
-                        if not (isinstance(runs, list) and len(runs) == 2 and all(isinstance(i, int) and i in ids for i in runs) and runs[0] != runs[1]):
-                            return reply(400, {"error": "runs is two ExaModels jobs, [compared, against]."})
-                        r = {"id": store["next"], "title": title, "runs": runs, "by": login, "created": int(time.time())}
-                        store["next"] += 1
-                        store["reports"][str(r["id"])] = r
-                        save_exa_reports(cfg, store)
-                        return reply(201, r | {"url": f"{exa_base(cfg)}/report-{r['id']}/"})
-                    if len(parts) == 3 and method == "DELETE":
-                        r = store["reports"].get(parts[2])
-                        if r is None:
-                            return reply(404, {"error": "There is no such report."})
-                        if r["by"].lower() != login.lower() and permission != "admin":
-                            return reply(403, {"error": "Only who made the report can delete it."})
-                        del store["reports"][parts[2]]
-                        save_exa_reports(cfg, store)
-                        return reply(200, {"deleted": r["id"]})
-                return reply(405, {"error": "GET or POST examodels/reports, DELETE examodels/reports/<id>."})
             if parts[:1] == ["reports"]:
                 # reports, apart from runs (Sungho): compositions of runs, each a column with a label
                 if not cfg.uploads:
@@ -2922,11 +2891,13 @@ def handler(cfg, q):
                     store = load_reports(cfg)
                     r = store["reports"].get(parts[1]) if len(parts) == 2 else None
                     if parts == ["reports"] and method == "GET":
-                        return reply(200, {"reports": [public_report(cfg, x) for x in sorted(store["reports"].values(), key=lambda x: -x["id"])]})
+                        want = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project") or [""])[0]
+                        return reply(200, {"reports": [public_report(cfg, x) for x in sorted(store["reports"].values(), key=lambda x: -x["id"])
+                                                       if not want or x.get("project", "madnlp") == want]})
                     if parts == ["reports"] and method == "POST" or (len(parts) == 2 and method == "PATCH"):
                         if len(parts) == 2 and r is None:
                             return reply(404, {"error": "There is no such report."})
-                        unknown = sorted(set(data) - {"title", "runs"})
+                        unknown = sorted(set(data) - {"title", "runs", "project"})
                         if unknown:
                             return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
                         title = " ".join(str(data.get("title") or (r or {}).get("title") or "").split())
@@ -2935,13 +2906,23 @@ def handler(cfg, q):
                         runs, problem = report_runs(q, data["runs"]) if "runs" in data or r is None else (r["runs"], None)
                         if problem:
                             return reply(400, {"error": problem})
+                        # a report is of one package's runs: MadNLP's (built by the builder) or ExaModels' (exa.py)
+                        project = (r or {}).get("project") or str(data.get("project") or "madnlp")
+                        if project not in ("madnlp", "examodels"):
+                            return reply(400, {"error": "project is madnlp or examodels."})
+                        by_id = {j["id"]: j for j in q.data["jobs"]}
+                        if any(is_exa(by_id.get(c["job"])) != (project == "examodels") for c in runs):
+                            return reply(400, {"error": f"Every run of a report of {project} is a job of {project}."})
                         if r is None:
                             r = {"id": store["next"], "by": login, "created": int(time.time())}
                             store["next"] += 1
                         r.update(title=title, runs=runs)
+                        if project == "examodels":
+                            r["project"] = "examodels"
                         store["reports"][str(r["id"])] = r
                         save_reports(cfg, store)
-                        write_report_spec(cfg, r)
+                        if project != "examodels":
+                            write_report_spec(cfg, r)      # ExaModels' are rendered by the app
                         return reply(201 if method == "POST" else 200, public_report(cfg, r, links))
                     if len(parts) == 2 and method == "GET":
                         return reply(200, public_report(cfg, r, links)) if r else reply(404, {"error": "There is no such report."})
@@ -3040,9 +3021,9 @@ def handler(cfg, q):
                 if member_of(login) and os.path.realpath(target) == os.path.realpath(os.path.join(cfg.site, urllib.parse.urlsplit(cfg.reports).path.strip("/"), "index.html")):
                     # one dashboard: the jobs above the reports
                     # reports first (Sungho), then the queue, then the runs
-                    marker = b"<h2>Runs</h2>" if b"<h2>Runs</h2>" in data else b'<main class="container">'
-                    section = jobs_section(cfg, q, login).encode()
-                    data = data.replace(marker, (section + marker) if marker == b"<h2>Runs</h2>" else (marker + section), 1)
+                    # after the reports, before the past jobs (or at the end, where the page has none)
+                    marker = b"<h2>Past jobs</h2>" if b"<h2>Past jobs</h2>" in data else b"</main>"
+                    data = data.replace(marker, jobs_section(cfg, q, login).encode() + marker, 1)
                 parts = path.strip("/").split("/")
                 age = stalled(cfg, parts[1]) if len(parts) > 1 else None
                 if age is not None:
@@ -3141,81 +3122,73 @@ def handler(cfg, q):
             return self.report_page(path, login)
 
         def exa_page(self, path, login, member, args):
-            """The ExaModels benchmarks (exa.py), for those who may use the site, as MadNLP's runs."""
+            """The ExaModels benchmarks (exa.py): its dashboard, a run's pages and a report's, for those who
+            may use the site, as MadNLP's."""
             if path == "/examodels":
                 return self.redirect(path + "/")
             if not login:
                 return self.send(200, signin(cfg))
             if not member:
                 return self.send(403, shell(cfg, login, "No access", f"<p>{html.escape(login)} is not a member of {html.escape(cfg.repo.split('/')[0])}.</p>"))
-            base = exa_base(cfg)
-            jobs = [j for j in q.data["jobs"] if is_exa(j)]
-            root_of = lambda j: os.path.join(cfg.uploads, folder(j)) if j and cfg.uploads else ""
             parts = path[len("/examodels/"):].split("/")
             if parts in ([""], ["index.html"]):
                 return self.send(200, exa_dashboard(cfg, q, login))
-            # a report: its first run, compared with its second
+            jobs = {j["id"]: j for j in q.data["jobs"] if is_exa(j)}
+            root_of = lambda j: os.path.join(cfg.uploads, folder(j)) if cfg.uploads else ""
             rm = re.fullmatch(r"report-(\d{1,6})", parts[0])
-            report = load_exa_reports(cfg)["reports"].get(rm[1]) if rm else None
-            if report is not None:
-                by_id = {j["id"]: j for j in jobs}
-                first, second = (by_id.get(i) for i in report["runs"])
-                if first is None or second is None:
+            report = load_reports(cfg)["reports"].get(rm[1]) if rm else None
+            if report is not None and report.get("project") == "examodels":
+                runs = [(c["label"], jobs.get(c["job"])) for c in report["runs"]]
+                if any(j is None for _, j in runs):
                     return self.send(404, shell(cfg, login, "Not found", "<p>A run of this report is gone.</p>"))
-                args = {**args, "vs": [folder(second)]}
-                j = first
+                cols = exa.Columns([(label, j, root_of(j)) for label, j in runs])
+                j, crumb, subtitle = None, f"Report {report['id']}", report["title"]
+                running = any(j_["state"] == "running" for _, j_ in runs)
+                commit = ""
             else:
-                j = next((j for j in jobs if folder(j) == parts[0]), None) if exa.is_folder(parts[0]) else None
-            if j is None:
-                return self.send(404, shell(cfg, login, "Not found", "<p>There is no such run.</p>"))
+                j = next((j for j in jobs.values() if folder(j) == parts[0]), None) if exa.is_folder(parts[0]) else None
+                if j is None:
+                    return self.send(404, shell(cfg, login, "Not found", "<p>There is no such run.</p>"))
+                cols = exa.Columns([(j.get("label") or f"job {j['id']}", j, root_of(j))])
+                crumb, subtitle, running, commit = f"Job {j['id']}", display_name(j), j["state"] == "running", exa.commit_link(j)
             if len(parts) == 1:
                 return self.redirect(path + "/")
-            root = root_of(j)
-            refs = exa.reference(j, jobs, root_of)
-            # compared with a run of one's choosing (?vs=<its folder>), on each machine both have
-            vs = (args.get("vs") or [""])[0]
-            other = next((o for o in jobs if folder(o) == vs and o is not j), None) if exa.is_folder(vs) else None
-            if report is not None:
-                vs = ""          # the links of a report's pages stay under the report
-            if other is not None:
-                refs = {m: other for m in exa.results(root) if m in exa.results(root_of(other))}
-            else:
-                vs = ""
-            if parts[1:] in ([""], ["index.html"]):
-                running = j["state"] == "running"
-                extra = f'<div class="mt-2 mb-2">{actions(cfg, q, login, j)}</div>'
-                body = exa.run_page(j, root, refs, root_of, base, display_name, folder, extra, vs)
-                if report is not None:
-                    body = f'<h1 class="h3">{html.escape(report["title"])}</h1>' + body.replace("Compared with", "Against", 1)
-                page = shell(cfg, login, report["title"] if report else f"ExaModels job {j['id']}", body)
-                if running:
-                    page = page.replace("<body>", '<meta http-equiv="refresh" content="30"><body>', 1)
-                return self.send(200, page)
-            if parts[1:] == ["workers.html"]:
+            page = "/".join(parts[1:]) or "index.html"
+            if j is not None and page == "workers.html":
                 return self.send(200, workers_page(cfg, login, parts[0], q, args))
-            if parts[1] == "data":
-                # the raw files: the result files, their metadata and summaries
-                rel = "/".join(parts[2:])
-                target = os.path.realpath(os.path.join(root, rel))
-                if not (target == os.path.realpath(root) or target.startswith(os.path.realpath(root) + os.sep)):
-                    return self.send(404, "Not found", kind="text/plain")
-                if os.path.isdir(target):
-                    if not path.endswith("/"):
-                        return self.redirect(path + "/")
-                    items = sorted(os.listdir(target))
-                    rows = "".join(f'<li><a href="{html.escape(n)}{"/" if os.path.isdir(os.path.join(target, n)) else ""}">{html.escape(n)}</a></li>'
-                                   for n in items if not n.startswith(".") and (os.path.isdir(os.path.join(target, n)) or n.endswith(UPLOAD_KINDS + (".json",))))
-                    return self.send(200, shell(cfg, login, "Files", f'<h1 class="h4">Files of job {j["id"]}: /{html.escape(rel)}</h1><ul>{rows}</ul>'))
-                if not os.path.isfile(target) or not target.endswith(UPLOAD_KINDS + (".json",)):
-                    return self.send(404, "Not found", kind="text/plain")
-                with open(target, "rb") as f:
-                    return self.send(200, f.read().decode("utf-8", "replace"), kind="text/plain; charset=utf-8")
-            m = re.fullmatch(r"([A-Za-z0-9_.+-]{1,100})/([a-z]+)-([a-z0-9_]{1,40})\.html", "/".join(parts[1:]))
-            if m:
-                body = exa.set_page(j, root, m[1], m[2], m[3], refs.get(m[1]), root_of, base, display_name, folder, (args.get("view") or [""])[0], vs)
-                if body is not None:
-                    return self.send(200, shell(cfg, login, f"ExaModels job {j['id']}", body))
-            return self.send(404, shell(cfg, login, "Not found", "<p>There is no such page.</p>"))
+            if j is not None and parts[1] == "data":
+                return self.exa_data(path, login, j, root_of(j), "/".join(parts[2:]))
+            if page == "index.html":
+                content = exa.summary_page(cols)
+            else:
+                m = re.fullmatch(r"([a-z]+)\.html", page)
+                if not (m and m[1] in cols.sets):
+                    return self.send(404, shell(cfg, login, "Not found", "<p>There is no such page.</p>"))
+                content = exa.set_page(cols, m[1])
+            stamp = exa.updated([root for _, _, root in cols.cols])
+            line = (f'{origin_badge(subtitle)}<span class="subtitle">{html.escape(subtitle)}</span> {commit} '
+                    f'<span class="state {"on" if running else "off"}">{"running" if running else "finished"}</span> '
+                    f'<span class="m">updated <span class="ago" data-t="{stamp}">{stamp.replace("T", " ").rstrip("Z")} UTC</span></span>')
+            menu = exa.tabs(cols, workers=j is not None and running, raw=j is not None)
+            panel = f'<div class="jobbar">{job_details(cfg, j)} {actions(cfg, q, login, j)}</div>' if j is not None else ""
+            return self.send(200, exa_shell(cfg, login, subtitle, crumb, line, menu, panel + content, running))
+
+        def exa_data(self, path, login, j, root, rel):
+            """A run's raw files: the result files, their metadata and summaries."""
+            target = os.path.realpath(os.path.join(root, rel))
+            if not (target == os.path.realpath(root) or target.startswith(os.path.realpath(root) + os.sep)):
+                return self.send(404, "Not found", kind="text/plain")
+            if os.path.isdir(target):
+                if not path.endswith("/"):
+                    return self.redirect(path + "/")
+                items = sorted(os.listdir(target))
+                rows = "".join(f'<li><a href="{html.escape(n)}{"/" if os.path.isdir(os.path.join(target, n)) else ""}">{html.escape(n)}</a></li>'
+                               for n in items if not n.startswith(".") and (os.path.isdir(os.path.join(target, n)) or n.endswith(UPLOAD_KINDS + (".json",))))
+                return self.send(200, shell(cfg, login, "Files", f'<h1 class="h4">Files of job {j["id"]}: /{html.escape(rel)}</h1><ul>{rows}</ul>'))
+            if not os.path.isfile(target) or not target.endswith(UPLOAD_KINDS + (".json",)):
+                return self.send(404, "Not found", kind="text/plain")
+            with open(target, "rb") as f:
+                return self.send(200, f.read().decode("utf-8", "replace"), kind="text/plain; charset=utf-8")
 
         def do_PATCH(self):
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))

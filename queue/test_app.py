@@ -585,7 +585,8 @@ class TestServer(Base):
         self.assertIn("&lt;script&gt;", page)
         self.assertNotIn("<script>x", page)
         self.assertNotIn("New job", page)                   # jobs start through the API
-        self.assertIn("How to start a job", page)              # on the help page (Sungho)
+        self.assertIn("<h2>Current jobs</h2>", page)
+        self.assertNotIn("How to start a job", page)          # on the help page (Sungho)
         code, page = self.get("/queue/job/1", "alice")
         self.assertIn("Update, start over", page)
         self.assertEqual(self.get("/queue/job/99", "alice")[0], 404)
@@ -1013,45 +1014,43 @@ class TestServer(Base):
         # the pages: for members only
         self.assertIn("Sign in", self.get("/examodels/")[1])
         self.assertEqual(self.get("/examodels/", "eve")[0], 403)
+        # the dashboard: reports, current jobs, past jobs, with MadNLP's table and search
         code, page = self.get("/examodels/", "alice")
         self.assertEqual(code, 200)
-        self.assertIn(app.folder(j), page)
+        for part in ("<h2>Reports</h2>", "<h2>Current jobs</h2>", "<h2>Past jobs</h2>", 'id="runsearch"', 'class="tag cpu"', "per=10", app.folder(j), '<td class="l">alice</td>'):
+            self.assertIn(part, page)
+        # a run's pages: MadNLP's shell, the run alone
         code, page = self.get(f"/examodels/{app.folder(j)}/", "alice")
         self.assertEqual(code, 200)
-        self.assertIn(f"Job {ref['id']}", page)                         # its reference, main on the same machine
-        self.assertIn("1 / 2", page)                                    # one timed of two
-        self.assertIn("0.50×", page)                                    # jac twice as fast, over the one instance in common
-        self.assertIn("1 common", page)
-        code, page = self.get(f"/examodels/{app.folder(j)}/X/cops-default.html?view=ratio", "alice")
+        for part in ('class="bar"', 'class="tabs"', 'href="cops.html"', "report.js", 'class="table table-sm summary"', "1/2"):
+            self.assertIn(part, page)
+        code, page = self.get(f"/examodels/{app.folder(j)}/cops.html", "alice")
         self.assertEqual(code, 200)
-        self.assertIn("0.50×", page); self.assertIn("error", page)
+        self.assertIn('class="table table-sm table-hover cases"', page); self.assertIn('id="filter"', page); self.assertIn("fail", page)
         code, page = self.get(f"/examodels/{app.folder(j)}/data/X/cops_default.csv", "alice")
         self.assertEqual(code, 200); self.assertTrue(page.startswith("case,status"))
         self.assertEqual(self.get(f"/examodels/{app.folder(j)}/data/../../../etc/passwd", "alice")[0], 404)
+        self.assertEqual(self.get(f"/examodels/{app.folder(j)}/nope.html", "alice")[0], 404)
         self.assertEqual(self.get("/examodels/run-x1-a/", "alice")[0], 404)
-        self.assertEqual(json.load(open(os.path.join(self.cfg.uploads, app.folder(j), "run.json")))["by"], "alice")
-        self.assertIn('<td class="l">alice</td>', self.get("/examodels/", "alice")[1])
-        # the dashboard: reports, current jobs, past jobs, with MadNLP's table and search
-        code, page = self.get("/examodels/", "alice")
-        for part in ("<h2>Reports</h2>", "<h2>Current jobs</h2>", "<h2>Past jobs</h2>", 'id="runsearch"', 'class="tag cpu"', "per=10"):
-            self.assertIn(part, page)
-        # a report: a run against another
-        self.assertEqual(self.call_api("POST", "/queue/api/examodels/reports", {"title": "x", "runs": [new["id"], 999]}, token="tok-alice")[0], 400)
-        code, rep_ = self.call_api("POST", "/queue/api/examodels/reports", {"title": "PR vs main", "runs": [new["id"], ref["id"]]}, token="tok-alice")
-        self.assertEqual(code, 201, rep_)
+        # a report, through MadNLP's reports API: of one package's runs only
+        rep_ = lambda data: self.call_api("POST", "/queue/api/reports", data, token="tok-alice")
+        self.assertEqual(rep_({"title": "x", "runs": [new["id"], ref["id"]]})[0], 400)                   # not MadNLP's
+        self.assertEqual(rep_({"title": "x", "project": "nope", "runs": [new["id"]]})[0], 400)
+        code, made = rep_({"title": "PR vs main", "project": "examodels", "runs": [{"job": new["id"], "label": "PR"}, {"job": ref["id"], "label": "main"}]})
+        self.assertEqual(code, 201, made)
+        self.assertTrue(made["url"].endswith(f"/examodels/report-{made['id']}/"))
+        self.assertFalse(os.path.exists(os.path.join(self.cfg.uploads, f"report-{made['id']}")))   # not the builder's
+        listed = self.call_api("GET", "/queue/api/reports?project=examodels", token="tok-alice")[1]["reports"]
+        self.assertEqual([x["id"] for x in listed], [made["id"]])
         self.assertIn("PR vs main", self.get("/examodels/", "alice")[1])
-        code, page = self.get(f"/examodels/report-{rep_['id']}/", "alice")
+        code, page = self.get(f"/examodels/report-{made['id']}/", "alice")
         self.assertEqual(code, 200)
-        self.assertIn("PR vs main", page); self.assertIn("0.50×", page)
-        code, page = self.get(f"/examodels/report-{rep_['id']}/X/cops-default.html?view=ratio", "alice")
-        self.assertIn("0.50×", page)
-        self.assertEqual(self.call_api("DELETE", f"/queue/api/examodels/reports/{rep_['id']}", token="tok-eve")[0], 403)
-        self.assertEqual(self.call_api("DELETE", f"/queue/api/examodels/reports/{rep_['id']}", token="tok-alice")[0], 200)
-        # compared with a run of one's choosing: the main run against the pull request's
-        code, page = self.get(f"/examodels/{app.folder(ref_job)}/?vs={app.folder(j)}", "alice")
-        self.assertIn("Compared with", page); self.assertIn("2.00×", page); self.assertIn(f"?vs={app.folder(j)}", page)
-        code, page = self.get(f"/examodels/{app.folder(ref_job)}/X/cops-default.html?vs={app.folder(j)}&view=ratio", "alice")
+        self.assertIn("PR vs main", page); self.assertIn("Report", page)
+        self.assertIn("2.00×", page)                        # jac: main twice the PR's, over the one instance both timed
+        self.assertIn("1000", page)                         # create, 1 ms, in microseconds without an exponent
+        code, page = self.get(f"/examodels/report-{made['id']}/cops.html", "alice")
         self.assertIn("2.00×", page)
+        self.assertEqual(self.call_api("DELETE", f"/queue/api/reports/{made['id']}", token="tok-alice")[0], 200)
         # the projects apart: MadNLP's dashboard and API list leave ExaModels' jobs out
         self.assertNotIn(f"Job {new['id']}:", app.jobs_section(self.cfg, self.q, "alice"))
         listed = self.call_api("GET", "/queue/api/jobs?project=madnlp", token="tok-alice")[1]["jobs"]
@@ -1281,9 +1280,9 @@ class TestSite(Base):
         open(os.path.join(self.cfg.site, "madnlp", "index.html"), "w").write('<html><header class="site">' + app.NAV + '</header><main class="container"><h2>Reports</h2></main></html>')
         self.q.add_pr(7, "alice")
         public = self.get("/madnlp/")[2]
-        self.assertNotIn("Queue", public)                       # jobs are for members only
+        self.assertNotIn("Current jobs", public)                # jobs are for members only
         mine = self.get("/madnlp/", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
-        self.assertLess(mine.index("Queue"), mine.index("<h2>Reports</h2>"))
+        self.assertLess(mine.index("<h2>Reports</h2>"), mine.index("Current jobs"))   # reports, current jobs, past jobs
         self.assertNotIn("Recent jobs", mine)                   # finished runs are in the one list of runs
         self.assertIn('<th class="l">device</th>', mine)
         self.assertNotIn('<th class="l">machine</th>', mine)                  # one short line per job
