@@ -1502,6 +1502,20 @@ def display_name(j):
     return name
 
 
+def backfill_by(cfg, q):
+    """Who started each external job, in the run.json of those written before it said so: once, as
+    rewriting one makes the builder rebuild its run."""
+    if not cfg.uploads:
+        return
+    for j in q.data["jobs"]:
+        path = os.path.join(cfg.uploads, folder(j), "run.json")
+        try:
+            if j.get("external") and j.get("sha") and '"by"' not in open(path).read():
+                write_run_json(cfg, j)
+        except OSError:
+            pass
+
+
 def write_run_json(cfg, j):
     """The run.json of an external job's report folder; replacing it is what makes the builder rebuild."""
     target = os.path.join(cfg.uploads, folder(j))
@@ -1513,7 +1527,7 @@ def write_run_json(cfg, j):
                                  f"{len(j['only'])} instances: {j.get('subset', '')}" if j.get("only") else "") if x)
     # short: the job's label, else what it runs; its note, settings and hosts are in its details (Sungho)
     title = f"Job {j['id']}: {display_name(j)}"
-    doc = {"repository": repo_of(cfg, j), "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
+    doc = {"repository": repo_of(cfg, j), "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"], "by": j.get("by", "")}
     if is_exa(j):
         doc["project"] = "examodels"
     if j.get("local"):
@@ -2259,15 +2273,16 @@ def jobs_section(cfg, q, login=None):
         shown = f'<span class="state {"on" if state == "running" else "off"}">{e(state)}</span>'
         progress = progress_of(cfg, j)
         return (f'<tr><td><a class="trunc" href="{target}" title="{e(j.get("purpose") or short)}">Job {j["id"]}: {e(short)}</a></td>'
-                f'<td class="l">{devices}</td><td class="l">{github}</td><td class="l">{commit}</td>'
+                f'<td class="l">{devices}</td><td class="l">{github}</td><td class="l">{commit}</td><td class="l">{e(j.get("by") or "")}</td>'
                 f'<td class="l">{shown}{" <span class=m>" + e(progress) + "</span>" if progress else ""}</td>'
                 f'<td>{when(j.get("started") or j["queued"])}</td>'
                 f'<td class="l">{f"<a href={chr(34)}{e(reports_of(cfg, j))}/{folder(j)}/data/{chr(34)}>files</a>" if started else ""}</td></tr>')
     def table(title, jobs, empty):
         head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">device</th><th class="l">PR</th>'
-                '<th class="l">commit</th><th class="l">state</th><th>started</th><th class="l">raw data</th></tr></thead><tbody>')
+                '<th class="l">commit</th><th class="l">by</th><th class="l">state</th><th>started</th><th class="l">raw data</th></tr></thead><tbody>')
         return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
-    queue = q.jobs("running") + sorted(q.jobs("waiting"), key=order)
+    # MadNLP's only: ExaModels' jobs are on its own pages (Sungho)
+    queue = [j for j in q.jobs("running") + sorted(q.jobs("waiting"), key=order) if not is_exa(j)]
     bot = e(cfg.bots[0]) if cfg.bots else ""
     # jobs start through the API (Sungho), so the dashboard has no form for them: it says how
     return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2></div>'
@@ -2606,6 +2621,9 @@ def handler(cfg, q):
             find = lambda i: next((j for j in q.data["jobs"] if i.isdigit() and j["id"] == int(i)), None)
             if parts == ["jobs"] and method == "GET":
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
+                want = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project") or [""])[0]
+                if want:
+                    jobs = [j for j in jobs if (j.get("project") or "madnlp") == want]
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
                 unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", "label", "local", "project", *DEFAULTS})
@@ -3175,6 +3193,7 @@ if __name__ == "__main__":
     # nodes, so nobody's code runs on the app's machines
     if cfg.builder:
         threading.Thread(target=Builder(cfg).serve, daemon=True).start()
+    backfill_by(cfg, q)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port), handler(cfg, q))
     server.daemon_threads = True
     server.serve_forever()

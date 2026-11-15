@@ -1028,6 +1028,14 @@ class TestServer(Base):
         self.assertEqual(code, 200); self.assertTrue(page.startswith("case,status"))
         self.assertEqual(self.get(f"/examodels/{app.folder(j)}/data/../../../etc/passwd", "alice")[0], 404)
         self.assertEqual(self.get("/examodels/run-x1-a/", "alice")[0], 404)
+        self.assertEqual(json.load(open(os.path.join(self.cfg.uploads, app.folder(j), "run.json")))["by"], "alice")
+        self.assertIn("<td>alice</td>", self.get("/examodels/", "alice")[1])
+        # the projects apart: MadNLP's dashboard and API list leave ExaModels' jobs out
+        self.assertNotIn(f"Job {new['id']}:", app.jobs_section(self.cfg, self.q, "alice"))
+        listed = self.call_api("GET", "/queue/api/jobs?project=madnlp", token="tok-alice")[1]["jobs"]
+        self.assertFalse(any(x["id"] == new["id"] for x in listed))
+        listed = self.call_api("GET", "/queue/api/jobs?project=examodels", token="tok-alice")[1]["jobs"]
+        self.assertEqual(sorted(x["id"] for x in listed), sorted([ref["id"], new["id"]]))
         # its job page leads to its pages
         self.assertEqual(self.request("GET", f"/queue/job/{new['id']}", headers={"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[1]["Location"],
                          new["report"])

@@ -765,7 +765,7 @@ function write_index(site, runs; repository, reports = [])
     # One list of every run, however it was started (Sungho): pull requests, master, runs on the
     # queue's machines or on clusters, the archived results and the Ipopt references. Running first,
     # then the newest.
-    row(name_html, device, github, commit, state, updated, files) = "<tr><td>$name_html</td><td class=\"l\">$device</td><td class=\"l\">$github</td><td class=\"l\">$commit</td><td class=\"l\">$state</td><td>$updated</td><td class=\"l\">$files</td></tr>"
+    row(name_html, device, github, commit, state, updated, files, by = "") = "<tr><td>$name_html</td><td class=\"l\">$device</td><td class=\"l\">$github</td><td class=\"l\">$commit</td><td class=\"l\">$by</td><td class=\"l\">$state</td><td>$updated</td><td class=\"l\">$files</td></tr>"
     devices_of(r) = join(device_tag.(get(r, :devices, String[])), " ")
     commit_link(c) = occursin(r"^[0-9a-f]{40}$", c) ? "<a href=\"$code/commit/$c\">$(first(c, 8))</a>" : escape_html(first(c, 8))
     # a long name (a job's title, its nodes) is cut to the column's width; the whole of it on hover
@@ -779,6 +779,8 @@ function write_index(site, runs; repository, reports = [])
         state_badge(shown_state(r)) * (shown_state(r) == "running" && get(r, :total, 0) > 0 ? " <span class=\"m\">$(r.done)/$(r.total)</span>" : ""),
         local_time(r.updated),
         "<a href=\"$(escape_html(r.name))/data/\">files</a>",
+        # who started it (Sungho): the GitHub user
+        escape_html(String(get(r, :by, ""))),
     )
     running = [r for r in runs if shown_state(r) == "running"]
     finished = [r for r in runs if shown_state(r) != "running"]
@@ -801,7 +803,7 @@ function write_index(site, runs; repository, reports = [])
     for v in versions
         push!(rows, row("<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">Ipopt reference, benchmark $(escape_html(v))</a>", device_tag("cpu"), "–", "–", state_badge("reference"), "", "<a href=\"$tree/tree/$ARCHIVE_BRANCH/ipopt/$(escape_html(v))\">files</a>"))
     end
-    println(io, "<h2>Runs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">PR</th><th class=\"l\">commit</th><th class=\"l\">state</th><th>updated</th><th class=\"l\">raw data</th></tr></thead><tbody>")
+    println(io, "<h2>Runs</h2><input id=\"runsearch\" class=\"form-control form-control-sm mb-2\" placeholder=\"Search runs: name, commit, device, user, state\" aria-label=\"Search runs\"><div class=\"wide\"><table id=\"runs\" class=\"table table-sm\"><thead><tr><th>run</th><th class=\"l\">device</th><th class=\"l\">PR</th><th class=\"l\">commit</th><th class=\"l\">by</th><th class=\"l\">state</th><th>updated</th><th class=\"l\">raw data</th></tr></thead><tbody>")
     foreach(r -> println(io, r), rows)
     println(io, "</tbody></table></div><nav id=\"runpages\" class=\"pages\" aria-label=\"Pages of runs\"></nav>")
     line = "<span class=\"m\">$(length(running)) running, $(length(finished)) finished, $(length(commits)) archived</span>"

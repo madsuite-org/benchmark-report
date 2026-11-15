@@ -190,10 +190,10 @@ def index(jobs, base, display_name, folder, when, state_badge):
     for j in sorted(jobs, key=lambda j: -j["id"]):
         badge = f'<span class="badge text-bg-{state_badge.get(j["state"], "secondary")}">{e(j["state"])}</span>'
         rows.append(f'<tr><td><a href="{e(base)}/{e(folder(j))}/">{j["id"]}</a></td><td>{e(display_name(j))}</td>'
-                    f'<td>{commit_link(j)} {target_link(j)}</td><td>{e(j.get("devices", ""))}</td><td>{badge}</td>'
+                    f'<td>{commit_link(j)} {target_link(j)}</td><td>{e(j.get("devices", ""))}</td><td>{e(j.get("by", ""))}</td><td>{badge}</td>'
                     f'<td>{when(j.get("started") or j.get("queued"))}</td><td class="m">{e(j.get("purpose", ""))}</td></tr>')
     table = ('<div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Job</th><th>Run</th><th>Commit</th>'
-             '<th>Devices</th><th>State</th><th>Started</th><th>Note</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>"
+             '<th>Devices</th><th>By</th><th>State</th><th>Started</th><th>Note</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>"
              if rows else '<p class="m">No runs yet.</p>')
     return (f'<h1 class="h3">ExaModels benchmarks</h1>'
             f'<p class="m">Model construction and callback times of <a href="https://github.com/{REPO}">ExaModels.jl</a>, on the host and on '

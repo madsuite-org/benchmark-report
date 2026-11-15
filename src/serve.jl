@@ -139,7 +139,8 @@ function build_run(live, site, name)
         finished = state != "running", assets = "..", live = true,
     )
     updated = Dates.format(now(UTC), "yyyy-mm-ddTHH:MM:SSZ")
-    RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed, counts.done, counts.total, counts.devices)
+    by = json_field(text, "by")
+    RUNS[name] = (; name, pr = manual ? "" : pr, title, commit, state, updated, mtime = changed, counts.done, counts.total, counts.devices, by)
     build_reports_of(live, site, name)
     return
 end
