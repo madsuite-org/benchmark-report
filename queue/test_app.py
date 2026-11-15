@@ -22,6 +22,11 @@ class FakeGitHub:
         self.commits = {"c0ffee1": ("c0ffee1" + "0" * 33, "behind"), "f0f0f0f": ("f0f0f0f" + "0" * 33, "diverged")}
 
     def api(self, method, path, body=None):
+        # ExaModels.jl, for its jobs: the same fake repository, with a main branch
+        if path.startswith(f"/repos/{app.exa.REPO}/"):
+            if path == f"/repos/{app.exa.REPO}/commits/main":
+                return {"sha": "e" * 40}
+            path = path.replace(f"/repos/{app.exa.REPO}/", f"/repos/{REPO}/")
         if path.startswith(f"/repos/{REPO}/pulls/"):
             n = int(path.rsplit("/", 1)[1])
             if n not in self.pulls:
@@ -976,6 +981,56 @@ class TestServer(Base):
         self.assertTrue(send("a", {}, tok=token)[1]["cancel"])
         self.assertEqual(claim("a", "x", tok=token)[1], {"todo": [], "cancel": True})
         self.assertEqual(self.call_api("POST", "/queue/api/jobs", {"external": True}, token="tok-alice")[0], 400)
+
+    def test_examodels_jobs_and_pages(self):
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        post = lambda data: self.call_api("POST", "/queue/api/jobs", data, token="tok-alice")
+        # what an ExaModels job takes, and what it does not
+        self.assertEqual(post({"project": "other", "external": True, "master": True})[0], 400)
+        self.assertEqual(post({"project": "examodels", "external": True, "master": True, "options": "tol=1"})[0], 400)
+        self.assertEqual(post({"project": "examodels", "external": True, "master": True, "sets": "acopf,nope"})[0], 400)
+        self.assertEqual(post({"project": "examodels", "master": True})[0], 400)
+        head = "case,status,nvar,ncon,nnzj,nnzh,t_create,t_obj,t_cons,t_grad,t_jac,t_hess,t_hprod,t_jprod,t_jtprod,bt_n,bt_spread\n"
+        meta = 'device = "cpu"\nhost = "n1"\ncpu_model = "Xeon"\n'
+        def run(data, rows):
+            code, job = post({"project": "examodels", "external": True, "devices": "cpu"} | data)
+            self.assertEqual(code, 201, job)
+            body = self.make_tar({"X/cops_default.csv": head + rows, "X/cops_default.csv.meta.toml": meta})
+            code, _, out = self.request("POST", f"/queue/api/jobs/{job['id']}/files?node=n&state=finished&host=n1", body,
+                                        {"Authorization": "Bearer " + job["token"], "Content-Length": str(len(body))})
+            self.assertEqual(code, 200, out)
+            return job
+        ref = run({"master": True}, "a,1,10,5,20,30,1e-3,1e-6,1e-5,1e-6,2e-5,4e-5,4e-5,2e-5,2e-5,0,0.0\nb,1,10,5,20,30,1e-3,1e-6,1e-5,1e-6,2e-5,4e-5,4e-5,2e-5,2e-5,0,0.0\n")
+        new = run({"pr": 7}, "a,1,10,5,20,30,1e-3,1e-6,1e-5,1e-6,1e-5,4e-5,4e-5,2e-5,2e-5,0,0.0\nc,-101,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,0,NaN\n")
+        j = next(x for x in self.q.data["jobs"] if x["id"] == new["id"])
+        self.assertTrue(app.folder(j).startswith("exa-x"))             # out of the MadNLP builder's way
+        self.assertTrue(new["report"].startswith("http") and "/examodels/exa-x" in new["report"])
+        spec = json.loads(self.request("GET", f"/queue/api/jobs/{new['id']}/spec", headers={"Authorization": "Bearer " + new["token"]})[2])
+        self.assertEqual((spec["repository"], spec["sets"]), (app.exa.REPO, app.exa.DEFAULT_SETS))
+        self.assertEqual(json.load(open(os.path.join(self.cfg.uploads, app.folder(j), "run.json")))["project"], "examodels")
+        self.assertIn("main eeeeeeee", ref["title"])
+        # the pages: for members only
+        self.assertIn("Sign in", self.get("/examodels/")[1])
+        self.assertEqual(self.get("/examodels/", "eve")[0], 403)
+        code, page = self.get("/examodels/", "alice")
+        self.assertEqual(code, 200)
+        self.assertIn(app.folder(j), page)
+        code, page = self.get(f"/examodels/{app.folder(j)}/", "alice")
+        self.assertEqual(code, 200)
+        self.assertIn(f"Job {ref['id']}", page)                         # its reference, main on the same machine
+        self.assertIn("1 / 2", page)                                    # one timed of two
+        self.assertIn("0.50×", page)                                    # jac twice as fast, over the one instance in common
+        self.assertIn("1 common", page)
+        code, page = self.get(f"/examodels/{app.folder(j)}/X/cops-default.html?view=ratio", "alice")
+        self.assertEqual(code, 200)
+        self.assertIn("0.50×", page); self.assertIn("error", page)
+        code, page = self.get(f"/examodels/{app.folder(j)}/data/X/cops_default.csv", "alice")
+        self.assertEqual(code, 200); self.assertTrue(page.startswith("case,status"))
+        self.assertEqual(self.get(f"/examodels/{app.folder(j)}/data/../../../etc/passwd", "alice")[0], 404)
+        self.assertEqual(self.get("/examodels/run-x1-a/", "alice")[0], 404)
+        # its job page leads to its pages
+        self.assertEqual(self.request("GET", f"/queue/job/{new['id']}", headers={"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[1]["Location"],
+                         new["report"])
 
     def test_a_job_over_a_subset(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)

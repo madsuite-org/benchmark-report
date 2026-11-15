@@ -11,6 +11,7 @@ machine and nothing here polls. Standard library only; the GitHub App's tokens a
 
 import base64, email.utils, hashlib, hmac, html, http.server, json, mimetypes, os, re, secrets, shlex, shutil, subprocess, tarfile, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
+import exa
 
 # who may use the app: write access to the repository, or membership of its organization (Sungho)
 WRITE = ("admin", "maintain", "write", "member")
@@ -140,6 +141,25 @@ def settings_of(job):
     return {k: job.get(k) or v for k, v in DEFAULTS.items()}
 
 
+# The projects benchmarked here: MadNLP (cfg.repo, its reports at cfg.reports) and ExaModels
+# (exa.py, its pages at /examodels on the same site). A job is MadNLP's unless it says otherwise.
+def is_exa(j):
+    return bool(j) and j.get("project") == "examodels"
+
+
+def repo_of(cfg, j):
+    return exa.REPO if is_exa(j) else cfg.repo
+
+
+def exa_base(cfg):
+    u = urllib.parse.urlsplit(cfg.reports)
+    return f"{u.scheme}://{u.netloc}/examodels"
+
+
+def reports_of(cfg, j):
+    return exa_base(cfg) if is_exa(j) else cfg.reports
+
+
 def settings_problem(cfg, settings):
     """Why the settings of a job cannot run, or None. Checked as the machine's wrapper and run.jl
     check them; with a harness branch, its own run.jl checks option names it may add."""
@@ -230,11 +250,13 @@ class Queue:
         self.version = getattr(self, "version", 0) + 1
         self.changed.notify_all()
 
-    def add_external(self, login, what, settings):
+    def add_external(self, login, what, settings, project="madnlp"):
         """A job run outside the app's machines by `login`, who publishes its results through the API
         with the token returned here. `what` is {"master": true}, {"pr": N}, {"branch": name} or
         {"commit": sha}. Returns (job, token) or (None, problem)."""
-        title, fork = "", self.cfg.repo
+        repo = exa.REPO if project == "examodels" else self.cfg.repo
+        default = exa.DEFAULT_BRANCH if project == "examodels" else "master"
+        title, fork = "", repo
         if what.get("local"):
             # local code: not on GitHub, so not looked up; marked as such everywhere it shows
             loc = what["local"]
@@ -242,30 +264,31 @@ class Queue:
             changes = str(loc.get("changes") or "")
             title = f"Local: {ref + ' ' if ref else ''}{sha[:8]}{' + uncommitted changes' if changes else ''}"
         elif what.get("pr"):
-            p, problem = self.pull(int(what["pr"]), forks=True)
+            p, problem = self.pull(int(what["pr"]), forks=True, repo=repo)
             if problem:
                 return None, problem
             kind, pr, ref, sha, title = "pr", int(what["pr"]), None, p["head"]["sha"], p.get("title", "")
             fork = ((p.get("head") or {}).get("repo") or {}).get("full_name") or "a deleted fork"
-            if fork != self.cfg.repo:
+            if fork != repo:
                 title = f"Fork: {fork}, #{pr} {title}"
         else:
             kind, pr = ("branch" if what.get("branch") else "commit"), None
-            ref = what.get("branch") or what.get("commit") or "master"
+            ref = what.get("branch") or what.get("commit") or default
             if not re.fullmatch(r"[A-Za-z0-9._/-]{1,100}", ref) or ".." in ref:
                 return None, "That is not a branch or a commit."
             try:
-                sha = self.gh.api("GET", f"/repos/{self.cfg.repo}/commits/{urllib.parse.quote(ref, safe='')}")["sha"]
+                sha = self.gh.api("GET", f"/repos/{repo}/commits/{urllib.parse.quote(ref, safe='')}")["sha"]
             except urllib.error.HTTPError:
-                return None, f"{ref} is not a branch or commit of {self.cfg.repo}."
-            title = ("master " + sha[:8]) if what.get("master") else ref if kind == "branch" else sha[:8]
+                return None, f"{ref} is not a branch or commit of {repo}."
+            title = (f"{default} " + sha[:8]) if what.get("master") else ref if kind == "branch" else sha[:8]
             if what.get("master"):
                 kind, ref = "commit", sha
         token = secrets.token_urlsafe(32)
         with self.changed:
             job = {"id": self.data["next"], "kind": kind, "pr": pr, "ref": ref, "sha": sha, "title": title, "by": login,
                    **({"local": True, "changes": changes} if kind == "local" else {}),
-                   **({"fork": fork} if kind == "pr" and fork != self.cfg.repo else {}),
+                   **({"fork": fork} if kind == "pr" and fork != repo else {}),
+                   **({"project": project} if project != "madnlp" else {}),
                    "state": "running", "queued": int(time.time()), "started": int(time.time()), "keep": True,
                    "external": True, "node": "external", "nodes": {}, "token_hash": hashlib.sha256(token.encode()).hexdigest(), **settings}
             self.data["jobs"].append(job)
@@ -376,15 +399,16 @@ class Queue:
         self.perms[login.lower()] = (p, time.time() + 300)
         return p
 
-    def pull(self, pr, forks=False):
+    def pull(self, pr, forks=False, repo=None):
         """The head of open pull request `pr` from a branch of the repository, else a reason not to run it."""
+        repo = repo or self.cfg.repo
         try:
-            p = self.gh.api("GET", f"/repos/{self.cfg.repo}/pulls/{pr}")
+            p = self.gh.api("GET", f"/repos/{repo}/pulls/{pr}")
         except urllib.error.HTTPError:
             return None, "There is no such pull request."
         if p.get("state") != "open":
             return None, "That pull request is not open."
-        if not forks and ((p.get("head") or {}).get("repo") or {}).get("full_name") != self.cfg.repo:
+        if not forks and ((p.get("head") or {}).get("repo") or {}).get("full_name") != repo:
             return None, "Only pull requests from branches of the repository can be benchmarked."
         # a job run elsewhere may take a fork's pull request (Sungho): its nodes fetch it from this
         # repository, as refs/pull/<N>/head, which GitHub keeps there even if the fork changes or goes
@@ -621,7 +645,9 @@ def public(cfg, j):
     if j.get("only"):
         out["subset"], out["instances"] = j.get("subset", ""), len(j["only"])
     out |= settings_of(j) | {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
-            "report": f"{cfg.reports}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
+            "report": f"{reports_of(cfg, j)}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
+    if is_exa(j):
+        out["project"] = "examodels"
     return out
 
 
@@ -634,7 +660,8 @@ def folder(job):
         target = (f"local-{(job.get('sha') or '')[:8]}" if job["kind"] == "local" else
                   f"pr{job['pr']}" if job["kind"] == "pr" else
                   re.sub(r"[^a-z0-9]+", "-", (job.get("ref") or "").lower()).strip("-")[:16] if job["kind"] == "branch" else (job.get("sha") or "")[:8])
-        return f"run-x{job['id']}-{target}"[:48].rstrip("-")
+        # ExaModels' are exa-x<id>-..., which the MadNLP builder leaves alone
+        return f"{'exa' if is_exa(job) else 'run'}-x{job['id']}-{target}"[:48].rstrip("-")
     v = variant(job)
     if v:
         target = (f"pr{job['pr']}" if job["kind"] == "pr" else
@@ -828,7 +855,7 @@ class Builder:
 def live_dir(cfg, name):
     """Where the live files of report folder `name` are: uploads and external jobs in the uploads
     root, the runs of the app's machines in the live root. "" if not set up."""
-    root = cfg.uploads if name.startswith(("run-up-", "run-x")) else cfg.live_local
+    root = cfg.uploads if name.startswith(("run-up-", "run-x", "exa-x")) else cfg.live_local
     return os.path.join(root, name) if root else ""
 
 
@@ -876,7 +903,7 @@ def app_nav(cfg, login):
                 f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a>{theme}</div></details></nav>')
     csrf = sign(cfg, "csrf|" + login)
     return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">{e(login)} ☰</summary><div>'
-            f'<a href="{e(cfg.reports)}/">Dashboard</a><a href="{e(cfg.base)}/help">How it works</a>{theme}'
+            f'<a href="{e(cfg.reports)}/">MadNLP</a><a href="{e(exa_base(cfg))}/">ExaModels</a><a href="{e(cfg.base)}/help">How it works</a>{theme}'
             f'<form method="post" action="{e(cfg.base)}/logout"><input type="hidden" name="csrf" value="{csrf}"><button>Sign out</button></form>'
             '</div></details></nav>')
 
@@ -1486,7 +1513,9 @@ def write_run_json(cfg, j):
                                  f"{len(j['only'])} instances: {j.get('subset', '')}" if j.get("only") else "") if x)
     # short: the job's label, else what it runs; its note, settings and hosts are in its details (Sungho)
     title = f"Job {j['id']}: {display_name(j)}"
-    doc = {"repository": cfg.repo, "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
+    doc = {"repository": repo_of(cfg, j), "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"]}
+    if is_exa(j):
+        doc["project"] = "examodels"
     if j.get("local"):
         doc["local"] = True          # code not on GitHub: marked everywhere, never a reference
     if j.get("fork"):
@@ -1643,6 +1672,9 @@ def help_page(cfg, login):
 <p>This site coordinates benchmark jobs of <a href="https://github.com/{e(cfg.repo)}">{e(cfg.repo)}</a>, collects their results and
 shows them as runs and reports. It runs no benchmark itself: <b>a job runs on the machines its creator starts nodes on</b>; the site
 hands out the instances, merges the results and builds the pages.</p>
+<p><b>ExaModels</b>: jobs of <a href="https://github.com/{exa.REPO}">{exa.REPO}</a> time model construction and callbacks, with
+<a href="{exa.HARNESS}#readme">ExaModelsBenchmark.jl</a> (its <code>runner/publish.sh</code>, as below); their runs are at
+<a href="{e(exa_base(cfg))}/">{e(exa_base(cfg))}/</a>, each compared with the newest run of main on the same machine.</p>
 <h2>Who can use it</h2>
 <p>Any member of {org}, and anyone with write access to {e(cfg.repo)}, signs in with GitHub to see the runs and reports and to make
 jobs and reports. A run or a report is open to anyone given its link (<i>Copy link</i> on its page); nothing else is public, and the
@@ -1922,14 +1954,15 @@ def job_details(cfg, j):
     e = html.escape
     st = settings_of(j)
     what = ("<b>local code</b>, not on GitHub" + (", with uncommitted changes" if j.get("changes") else "") if j["kind"] == "local" else
-            f'pull request <a href="https://github.com/{cfg.repo}/pull/{j["pr"]}">#{j["pr"]}</a>' + (f' <b>from the fork {e(j["fork"])}</b>' if j.get("fork") else "") if j["kind"] == "pr" else
-            f'branch <a href="https://github.com/{cfg.repo}/tree/{urllib.parse.quote(j.get("ref") or "", safe="/")}">{e(j.get("ref") or "")}</a>' if j["kind"] == "branch" else
-            "master" if j["kind"] == "master" or (j.get("title") or "").startswith("master ") else "commit")
+            f'pull request <a href="https://github.com/{repo_of(cfg, j)}/pull/{j["pr"]}">#{j["pr"]}</a>' + (f' <b>from the fork {e(j["fork"])}</b>' if j.get("fork") else "") if j["kind"] == "pr" else
+            f'branch <a href="https://github.com/{repo_of(cfg, j)}/tree/{urllib.parse.quote(j.get("ref") or "", safe="/")}">{e(j.get("ref") or "")}</a>' if j["kind"] == "branch" else
+            "master" if j["kind"] == "master" or (j.get("title") or "").startswith("master ") else
+            "main" if is_exa(j) and (j.get("title") or "").startswith("main ") else "commit")
     sha = j.get("sha") or ""
     fields = [("label", e(j["label"])) if j.get("label") else None,
               ("note", e(j["purpose"])) if j.get("purpose") else None,
               ("against", ", ".join(f"job {int(i)}" for i in j["against"])) if j.get("against") else None,
-              ("runs", what + ((f' at <code>{sha[:8]}</code>' if j.get("local") else f' at <a href="https://github.com/{cfg.repo}/commit/{sha}"><code>{sha[:8]}</code></a>') if sha else "")),
+              ("runs", what + ((f' at <code>{sha[:8]}</code>' if j.get("local") else f' at <a href="https://github.com/{repo_of(cfg, j)}/commit/{sha}"><code>{sha[:8]}</code></a>') if sha else "")),
               ("device", e(st["devices"].replace("cuda", "GPU").replace("cpu", "CPU"))),
               ("configuration", e(st["config"])),
               ("options", f"<code>{e(st['options'])}</code>") if st["options"] else None,
@@ -2099,7 +2132,7 @@ def workers_page(cfg, login, name, q=None, view=None):
     else:
         note = ""
     body = f'<h1>Workers</h1><p class="m">Read live from the run, every few seconds. <a href="./">Back to the report</a></p>{note}'
-    j = job_of(q, name) if q is not None and name.startswith("run-x") else None
+    j = job_of(q, name) if q is not None and name.startswith(("run-x", "exa-x")) else None
     body += nodes_table(j) if j else ""
     view = view or {}
     want_node, want_log = (view.get("node") or [""])[0], (view.get("log") or [""])[0]
@@ -2217,11 +2250,11 @@ def jobs_section(cfg, q, login=None):
         # state, time, raw data
         short = display_name(j)
         started = j.get("sha") and j["state"] != "waiting"
-        target = f'{e(cfg.reports)}/{folder(j)}/' if started else f'{e(cfg.base)}/job/{j["id"]}'
+        target = f'{e(reports_of(cfg, j))}/{folder(j)}/' if started else f'{e(cfg.base)}/job/{j["id"]}'
         devices = " ".join(f'<span class="tag {d}">{d.upper()}</span>' for d in settings_of(j)["devices"].split(","))
         # only a pull request number or a commit hash links to GitHub (Sungho)
-        github = f'<a href="https://github.com/{cfg.repo}/pull/{j["pr"]}">#{j["pr"]}</a>' if j["kind"] == "pr" else "–"
-        commit = f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}">{j["sha"][:8]}</a>' if j.get("sha") else "–"
+        github = f'<a href="https://github.com/{repo_of(cfg, j)}/pull/{j["pr"]}">#{j["pr"]}</a>' if j["kind"] == "pr" else "–"
+        commit = f'<a href="https://github.com/{repo_of(cfg, j)}/commit/{j["sha"]}">{j["sha"][:8]}</a>' if j.get("sha") else "–"
         state = "cancelling" if j.get("cancel") and j["state"] == "running" else j["state"]
         shown = f'<span class="state {"on" if state == "running" else "off"}">{e(state)}</span>'
         progress = progress_of(cfg, j)
@@ -2229,7 +2262,7 @@ def jobs_section(cfg, q, login=None):
                 f'<td class="l">{devices}</td><td class="l">{github}</td><td class="l">{commit}</td>'
                 f'<td class="l">{shown}{" <span class=m>" + e(progress) + "</span>" if progress else ""}</td>'
                 f'<td>{when(j.get("started") or j["queued"])}</td>'
-                f'<td class="l">{f"<a href={chr(34)}{e(cfg.reports)}/{folder(j)}/data/{chr(34)}>files</a>" if started else ""}</td></tr>')
+                f'<td class="l">{f"<a href={chr(34)}{e(reports_of(cfg, j))}/{folder(j)}/data/{chr(34)}>files</a>" if started else ""}</td></tr>')
     def table(title, jobs, empty):
         head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">device</th><th class="l">PR</th>'
                 '<th class="l">commit</th><th class="l">state</th><th>started</th><th class="l">raw data</th></tr></thead><tbody>')
@@ -2250,19 +2283,19 @@ def jobs_page(cfg, q, login, message=""):
 
 def job_page(cfg, q, login, j):
     e = html.escape
-    link = (f'https://github.com/{cfg.repo}/tree/{urllib.parse.quote(j.get("ref", ""))}' if j["kind"] == "branch" else
-            f'https://github.com/{cfg.repo}/commit/{j.get("sha") or ""}' if j["kind"] == "commit" else
-            f'https://github.com/{cfg.repo}/pull/{j["pr"]}' if j["kind"] == "pr" else f'https://github.com/{cfg.repo}/commits/master')
+    link = (f'https://github.com/{repo_of(cfg, j)}/tree/{urllib.parse.quote(j.get("ref", ""))}' if j["kind"] == "branch" else
+            f'https://github.com/{repo_of(cfg, j)}/commit/{j.get("sha") or ""}' if j["kind"] == "commit" else
+            f'https://github.com/{repo_of(cfg, j)}/pull/{j["pr"]}' if j["kind"] == "pr" else f'https://github.com/{repo_of(cfg, j)}/commits/master')
     rows = [("Run", f'<a href="{link}">{e(name(cfg, j))}</a> {e(j.get("title", ""))}'), ("Details", job_details(cfg, j)),
             ("State", badge(j, cfg) + (f' {e(j["note"])}' if j.get("note") else "")),
-            ("Commit", f'<a href="https://github.com/{cfg.repo}/commit/{j["sha"]}"><code>{j["sha"][:8]}</code></a>' if j.get("sha") else "resolved when it starts"),
+            ("Commit", f'<a href="https://github.com/{repo_of(cfg, j)}/commit/{j["sha"]}"><code>{j["sha"][:8]}</code></a>' if j.get("sha") else "resolved when it starts"),
             ("Machine", e(machine_of(j) or "any free")), ("Queued by", e(j["by"])), ("Queued", when(j["queued"])), ("Started", when(j.get("started"))), ("Ended", when(j.get("ended"))),
             ("Results", "keep the results so far" if j.get("keep", True) else "start over")]
     st = settings_of(j)
     if st != DEFAULTS:
         rows.append(("Settings", e(", ".join(f"{k} {v}" for k, v in st.items() if v != DEFAULTS[k]))))
     if j.get("sha") and j["state"] != "waiting":
-        rows.append(("Report", f'<a href="{e(cfg.reports)}/{folder(j)}/">{e(cfg.reports)}/{folder(j)}/</a>'))
+        rows.append(("Report", f'<a href="{e(reports_of(cfg, j))}/{folder(j)}/">{e(reports_of(cfg, j))}/{folder(j)}/</a>'))
     table = "".join(f'<tr><th class="l">{k}</th><td class="l">{v}</td></tr>' for k, v in rows)
     body = (f'<h1>Job {j["id"]}: {e(name(cfg, j))}</h1><div class="wide"><table class="table table-sm"><tbody>{table}</tbody></table></div>'
             f'<div class="mt-2">{actions(cfg, q, login, j)}</div><p class="mt-3"><a href="{e(cfg.base)}/">All jobs</a></p>')
@@ -2464,12 +2497,12 @@ def handler(cfg, q):
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             if what == "spec":
                 # what a node runs: everything about the job is the server's, set when it was created
-                return reply(200, {"id": j["id"], "sha": j["sha"], "repository": cfg.repo, "state": j["state"],
+                return reply(200, {"id": j["id"], "sha": j["sha"], "repository": repo_of(cfg, j), "state": j["state"],
                                    **({"local": "true", "changes": j.get("changes", "")} if j.get("local") else {}),
                                    **({"pull": str(j["pr"])} if j.get("pr") else {}),
-                                   "sets": j.get("sets", "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
+                                   "sets": j.get("sets", exa.DEFAULT_SETS if is_exa(j) else "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
                                    "files": f"{cfg.base}/api/jobs/{j['id']}/files", "claim": f"{cfg.base}/api/jobs/{j['id']}/claim",
-                                   "report": f"{cfg.reports}/{folder(j)}/"})
+                                   "report": f"{reports_of(cfg, j)}/{folder(j)}/"})
             if what == "stream":
                 # the ends of the logs a node is writing, every few seconds: kept in memory only, for
                 # the workers page to show as they come (Sungho); results go through .../files
@@ -2550,7 +2583,7 @@ def handler(cfg, q):
                 return reply(400, {"error": problem})
             # a node put aside is told to stop, as for a cancelled job
             out_ = j.get("nodes", {}).get(node, {}).get("state") == "quarantined"
-            return reply(200, {"cancel": j["state"] == "cancelled" or out_, "quarantined": out_, "state": j["state"], "report": f"{cfg.reports}/{folder(j)}/"})
+            return reply(200, {"cancel": j["state"] == "cancelled" or out_, "quarantined": out_, "state": j["state"], "report": f"{reports_of(cfg, j)}/{folder(j)}/"})
 
         def api(self, method, path, body):
             reply = lambda code, data: self.send(code, json.dumps(data), kind="application/json")
@@ -2575,13 +2608,22 @@ def handler(cfg, q):
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 return reply(200, {"jobs": [public(cfg, j) for j in jobs]})
             if parts == ["jobs"] and method == "POST":
-                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", "label", "local", *DEFAULTS})
+                unknown = sorted(set(data) - {"pr", "master", "branch", "commit", "keep", "node", "external", "sets", "subset", "instances", "note", "label", "local", "project", *DEFAULTS})
                 if unknown:
                     # a field this app does not know would otherwise be ignored without a word
                     return reply(400, {"error": "Unknown fields: " + ", ".join(unknown) + "."})
                 keep = bool(data.get("keep", True))
                 settings = {k: str(data.get(k) or DEFAULTS[k]) for k in DEFAULTS}
-                problem = settings_problem(cfg, settings)
+                project = str(data.get("project") or "madnlp")
+                if project not in ("madnlp", "examodels"):
+                    return reply(400, {"error": "project is madnlp or examodels."})
+                if project == "examodels":
+                    # ExaModelsBenchmark.jl: one configuration and no solver options; its sets are its own
+                    if settings["config"] != "default" or settings["options"] or settings["harness"] or data.get("subset"):
+                        return reply(400, {"error": "An ExaModels job takes devices, sets, instances, note and label only."})
+                    if not data.get("external"):
+                        return reply(400, {"error": "An ExaModels job runs where you start its nodes: create it with \"external\": true."})
+                problem = None if project == "examodels" else settings_problem(cfg, settings)
                 if problem:
                     return reply(400, {"error": problem})
                 if not data.get("external"):
@@ -2595,11 +2637,19 @@ def handler(cfg, q):
                     purpose = " ".join(str(data.get("note") or "").split())
                     if len(purpose) > 200:
                         return reply(400, {"error": "A note is up to 200 characters."})
-                    sets = str(data.get("sets") or "acopf,cops,mittelmann,cutest")
+                    sets = str(data.get("sets") or (exa.DEFAULT_SETS if project == "examodels" else "acopf,cops,mittelmann,cutest"))
                     if not re.fullmatch(r"[a-z]+(,[a-z]+){0,9}", sets):
                         return reply(400, {"error": "sets is a comma-separated list of set names."})
+                    if project == "examodels" and not set(sets.split(",")) <= exa.KNOWN_SETS:
+                        return reply(400, {"error": "The sets of ExaModels are " + ", ".join(sorted(exa.KNOWN_SETS)) + "."})
                     settings = settings | {"sets": sets}
-                    if data.get("subset") or data.get("instances"):
+                    if project == "examodels" and data.get("instances"):
+                        # a list of names, kept as given: the nodes time those of them their sets have
+                        given = data.get("instances")
+                        if not (isinstance(given, list) and 0 < len(given) <= 5000 and all(isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_.+-]{1,100}", x) for x in given)):
+                            return reply(400, {"error": "instances is a list of instance names."})
+                        settings = settings | {"only": sorted(set(given)), "subset": "listed instances"}
+                    elif data.get("subset") or data.get("instances"):
                         given = data.get("instances") or []
                         if not isinstance(given, list) or len(given) > 5000:
                             return reply(400, {"error": "instances is a list of instance names."})
@@ -2617,7 +2667,7 @@ def handler(cfg, q):
                                 and re.fullmatch(r"([0-9a-f]{40})?", str(loc.get("changes") or ""))
                                 and re.fullmatch(r"[A-Za-z0-9 ._/+-]{0,60}", str(loc.get("name") or ""))):
                             return reply(400, {"error": 'local is {"commit": <40 hex>, "changes": <40 hex of the uncommitted diff, or "">, "name": <up to 60 characters>}.'})
-                    job, token = q.add_external(login, {k: (int(v) if k == "pr" else v) for k, v in what.items()}, settings | ({"purpose": purpose} if purpose else {}))
+                    job, token = q.add_external(login, {k: (int(v) if k == "pr" else v) for k, v in what.items()}, settings | ({"purpose": purpose} if purpose else {}), project)
                     if job is None:
                         return reply(400, {"error": token})
                     if data.get("label"):
@@ -2909,6 +2959,8 @@ def handler(cfg, q):
                 if path.startswith("/queue/job/"):
                     job_id = path[len("/queue/job/"):]
                     j = next((j for j in q.data["jobs"] if job_id.isdigit() and j["id"] == int(job_id)), None)
+                    if j and is_exa(j) and j.get("sha"):
+                        return self.redirect(f"{exa_base(cfg)}/{folder(j)}/")
                     if j and j.get("sha") and site_file(cfg, f"{urllib.parse.urlsplit(cfg.reports).path}/{folder(j)}/"):
                         return self.redirect(f"{cfg.reports}/{folder(j)}/")
                     return self.send(200, job_page(cfg, q, login, j)) if j else self.send(404, jobs_page(cfg, q, login, "There is no such job."))
@@ -2944,7 +2996,65 @@ def handler(cfg, q):
                 asked = lambda: any(j["id"] == job_id and j.get("cancel") for j in q.jobs("running")) or not any(j["id"] == job_id for j in q.jobs("running"))
                 q.wait(asked, cfg.hold)
                 return self.send(200, json.dumps({"cancel": asked()}), kind="application/json")
+            if path == "/examodels" or path.startswith("/examodels/"):
+                return self.exa_page(path, login, member, args)
             return self.report_page(path, login)
+
+        def exa_page(self, path, login, member, args):
+            """The ExaModels benchmarks (exa.py), for those who may use the site, as MadNLP's runs."""
+            if path == "/examodels":
+                return self.redirect(path + "/")
+            if not login:
+                return self.send(200, signin(cfg))
+            if not member:
+                return self.send(403, shell(cfg, login, "No access", f"<p>{html.escape(login)} is not a member of {html.escape(cfg.repo.split('/')[0])}.</p>"))
+            base = exa_base(cfg)
+            jobs = [j for j in q.data["jobs"] if is_exa(j)]
+            root_of = lambda j: os.path.join(cfg.uploads, folder(j)) if j and cfg.uploads else ""
+            parts = path[len("/examodels/"):].split("/")
+            if parts in ([""], ["index.html"]):
+                body = exa.index(jobs, base, display_name, folder, when, STATE_BADGE)
+                return self.send(200, shell(cfg, login, "ExaModels", body))
+            j = next((j for j in jobs if folder(j) == parts[0]), None) if exa.is_folder(parts[0]) else None
+            if j is None:
+                return self.send(404, shell(cfg, login, "Not found", "<p>There is no such run.</p>"))
+            if len(parts) == 1:
+                return self.redirect(path + "/")
+            root = root_of(j)
+            refs = exa.reference(j, jobs, root_of)
+            if parts[1:] in ([""], ["index.html"]):
+                running = j["state"] == "running"
+                extra = f'<div class="mt-2 mb-2">{actions(cfg, q, login, j)}</div>'
+                body = exa.run_page(j, root, refs, root_of, base, display_name, folder, extra)
+                page = shell(cfg, login, f"ExaModels job {j['id']}", body)
+                if running:
+                    page = page.replace("<body>", '<meta http-equiv="refresh" content="30"><body>', 1)
+                return self.send(200, page)
+            if parts[1:] == ["workers.html"]:
+                return self.send(200, workers_page(cfg, login, parts[0], q, args))
+            if parts[1] == "data":
+                # the raw files: the result files, their metadata and summaries
+                rel = "/".join(parts[2:])
+                target = os.path.realpath(os.path.join(root, rel))
+                if not (target == os.path.realpath(root) or target.startswith(os.path.realpath(root) + os.sep)):
+                    return self.send(404, "Not found", kind="text/plain")
+                if os.path.isdir(target):
+                    if not path.endswith("/"):
+                        return self.redirect(path + "/")
+                    items = sorted(os.listdir(target))
+                    rows = "".join(f'<li><a href="{html.escape(n)}{"/" if os.path.isdir(os.path.join(target, n)) else ""}">{html.escape(n)}</a></li>'
+                                   for n in items if not n.startswith(".") and (os.path.isdir(os.path.join(target, n)) or n.endswith(UPLOAD_KINDS + (".json",))))
+                    return self.send(200, shell(cfg, login, "Files", f'<h1 class="h4">Files of job {j["id"]}: /{html.escape(rel)}</h1><ul>{rows}</ul>'))
+                if not os.path.isfile(target) or not target.endswith(UPLOAD_KINDS + (".json",)):
+                    return self.send(404, "Not found", kind="text/plain")
+                with open(target, "rb") as f:
+                    return self.send(200, f.read().decode("utf-8", "replace"), kind="text/plain; charset=utf-8")
+            m = re.fullmatch(r"([A-Za-z0-9_.+-]{1,100})/([a-z]+)-([a-z0-9_]{1,40})\.html", "/".join(parts[1:]))
+            if m:
+                body = exa.set_page(j, root, m[1], m[2], m[3], refs.get(m[1]), root_of, base, display_name, folder, (args.get("view") or [""])[0])
+                if body is not None:
+                    return self.send(200, shell(cfg, login, f"ExaModels job {j['id']}", body))
+            return self.send(404, shell(cfg, login, "Not found", "<p>There is no such page.</p>"))
 
         def do_PATCH(self):
             body = self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1 << 20))
