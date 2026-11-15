@@ -1713,12 +1713,22 @@ jobs and reports. A run or a report is open to anyone given its link (<i>Copy li
 site is not indexed.</p>
 <h2>Running a benchmark</h2>
 <ol>
-<li><b>Push the code</b> to a branch of {e(cfg.repo)} (no fork, no unpushed branch), or use master, a pull request or a commit.</li>
-<li><b>Create a job</b> with <code>runner/publish.sh new</code> of <a href="{harness}">MadNLPBenchmark.jl</a>: it fixes the commit, the device
-(CPU or GPU, one per job), the MadNLP options and the instances, and writes a job file.</li>
+<li><b>Choose the code</b>: master (main for ExaModels), a branch, a commit, a pull request (a fork's too, marked as such), or a
+checkout of your own with <code>--local=PATH</code> (marked as local code, and never a reference).</li>
+<li><b>Create a job</b> with <code>runner/publish.sh new</code> of <a href="{harness}">MadNLPBenchmark.jl</a> (or of
+<a href="{exa.HARNESS}">ExaModelsBenchmark.jl</a> for ExaModels), with a GitHub token (<code>gh auth login</code>, or
+<code>BENCHMARK_TOKEN</code>): it fixes the commit, the device (CPU or GPU, one per job), the options and the instances, and writes
+a job file.</li>
 <li><b>Start nodes</b> with <code>runner/publish.sh run --job-file=…</code> on as many machines as you like, at once or later. Each asks
-the site for instances, sends results as it goes, and leaves when nothing is left.</li>
+the site for instances, sends results as it goes, and leaves when nothing is left. A stopped node (a preempted batch job)
+carries on when started again.</li>
 </ol>
+<p>For MadNLP, without a clone of the harness:</p>
+<pre class="log">curl -fsSL {e(cfg.base)}/run.sh | bash -s -- new master --devices=cuda --note="what it is for"
+curl -fsSL {e(cfg.base)}/run.sh | bash -s -- run --job-file=benchmark-job-N</pre>
+<p>For ExaModels, from a clone of ExaModelsBenchmark.jl:</p>
+<pre class="log">runner/publish.sh new main --devices=cpu --note="what it is for"
+runner/publish.sh run --job-file=benchmark-job-N</pre>
 <p>Everything about the nodes (options, subsets of instances, clusters and preemption, the HSL library) is in
 <a href="{harness}">MadNLPBenchmark.jl's README</a>.</p>
 <p>A job's page shows its progress and, under <i>Workers</i>, each node and what it solves: click a node for its log, an instance for
@@ -2274,39 +2284,102 @@ def machine_of(j):
     return j.get("node") or ("any" if j["state"] == "waiting" else "")
 
 
+def job_row(cfg, j):
+    """A job as a row of the lists of jobs and runs: the same columns, tags and styles everywhere (Sungho)."""
+    e = html.escape
+    # the columns and styles of the list of runs below (Sungho): run, device, GitHub, commit,
+    # state, time, raw data
+    short = display_name(j)
+    started = j.get("sha") and j["state"] != "waiting"
+    target = f'{e(reports_of(cfg, j))}/{folder(j)}/' if started else f'{e(cfg.base)}/job/{j["id"]}'
+    devices = " ".join(f'<span class="tag {d}">{d.upper()}</span>' for d in settings_of(j)["devices"].split(","))
+    # only a pull request number or a commit hash links to GitHub (Sungho)
+    github = f'<a href="https://github.com/{repo_of(cfg, j)}/pull/{j["pr"]}">#{j["pr"]}</a>' if j["kind"] == "pr" else "–"
+    commit = f'<a href="https://github.com/{repo_of(cfg, j)}/commit/{j["sha"]}">{j["sha"][:8]}</a>' if j.get("sha") else "–"
+    state = "cancelling" if j.get("cancel") and j["state"] == "running" else j["state"]
+    shown = f'<span class="state {"on" if state == "running" else "off"}">{e(state)}</span>'
+    progress = progress_of(cfg, j)
+    return (f'<tr><td><a class="trunc" href="{target}" title="{e(j.get("purpose") or short)}">Job {j["id"]}: {e(short)}</a></td>'
+            f'<td class="l">{devices}</td><td class="l">{github}</td><td class="l">{commit}</td><td class="l">{e(j.get("by") or "")}</td>'
+            f'<td class="l">{shown}{" <span class=m>" + e(progress) + "</span>" if progress else ""}</td>'
+            f'<td>{when(j.get("started") or j["queued"])}</td>'
+            f'<td class="l">{f"<a href={chr(34)}{e(reports_of(cfg, j))}/{folder(j)}/data/{chr(34)}>files</a>" if started else ""}</td></tr>')
+
+
+JOB_HEAD = ('<div class="wide"><table class="table table-sm"{id}><thead><tr><th>run</th><th class="l">device</th><th class="l">PR</th>'
+            '<th class="l">commit</th><th class="l">by</th><th class="l">state</th><th>started</th><th class="l">raw data</th></tr></thead><tbody>')
+
+
+def exa_reports_path(cfg):
+    return os.path.join(cfg.uploads, "exa-reports.json") if cfg.uploads else ""
+
+
+def load_exa_reports(cfg):
+    """ExaModels' reports: a run compared with another, `{"next", "reports": {id: {id, title, runs, by, created}}}`."""
+    try:
+        with open(exa_reports_path(cfg)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"next": 1, "reports": {}}
+
+
+def save_exa_reports(cfg, store):
+    tmp = exa_reports_path(cfg) + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(store, f)
+    os.replace(tmp, exa_reports_path(cfg))
+
+
+RUN_SEARCH = ("<script>(()=>{const tb=document.querySelector('#runs'),q=document.querySelector('#runsearch'),nav=document.querySelector('#runpages');"
+              "if(!tb||!q||!nav)return;let page=0;const per=10,show=()=>{const v=q.value.toLowerCase(),rows=[...tb.tBodies[0].rows],"
+              "hit=rows.filter(r=>r.textContent.toLowerCase().includes(v)),pages=Math.max(1,Math.ceil(hit.length/per));page=Math.min(page,pages-1);"
+              "rows.forEach(r=>r.style.display='none');hit.slice(page*per,(page+1)*per).forEach(r=>r.style.display='');"
+              "nav.innerHTML=pages<2?'':[...Array(pages).keys()].map(i=>'<a href=\"#\" data-p=\"'+i+'\"'+(i===page?' class=\"active\" aria-current=\"page\"':'')+'>'+(i+1)+'</a>').join(' ');"
+              "nav.querySelectorAll('a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();page=+a.dataset.p;show()}))};"
+              "q.addEventListener('input',()=>{page=0;show()});show()})()</script>")
+
+
+def exa_dashboard(cfg, q, login):
+    """ExaModels' dashboard, as MadNLP's (Sungho): reports, the current jobs, the past ones, with the
+    same tables, tags and search."""
+    e = html.escape
+    jobs = {j["id"]: j for j in q.data["jobs"] if is_exa(j)}
+    reports = sorted(load_exa_reports(cfg)["reports"].values(), key=lambda r: -r["id"])
+    def report_row(r):
+        cols = " vs ".join(e(display_name(jobs[i])) if i in jobs else f"job {int(i)}" for i in r["runs"])
+        states = {jobs[i]["state"] for i in r["runs"] if i in jobs}
+        state = "running" if "running" in states else "finished"
+        return (f'<tr><td><a class="trunc" href="report-{r["id"]}/">{e(r["title"])}</a></td><td class="l">{cols}</td><td class="l">{e(r.get("by", ""))}</td>'
+                f'<td class="l"><span class="state {"on" if state == "running" else "off"}">{state}</span></td><td>{when(r.get("created"))}</td></tr>')
+    body = ('<h1 class="h3">ExaModels benchmarks</h1>'
+            f'<p class="m">Model construction and callback times of <a href="https://github.com/{exa.REPO}">ExaModels.jl</a>, run with '
+            f'<a href="{exa.HARNESS}#readme">ExaModelsBenchmark.jl</a>. A run is compared with the newest run of main on the same machine; a report compares two runs.</p>')
+    body += '<h2>Reports</h2>' + ('<div class="wide"><table id="reports" class="table table-sm"><thead><tr><th>report</th><th class="l">runs</th>'
+                                  '<th class="l">by</th><th class="l">state</th><th>made</th></tr></thead><tbody>' + "".join(map(report_row, reports)) + "</tbody></table></div>"
+                                  if reports else '<p class="m">No reports yet.</p>')
+    current = sorted((j for j in jobs.values() if j["state"] in ("running", "waiting")), key=lambda j: -j["id"])
+    past = sorted((j for j in jobs.values() if j["state"] not in ("running", "waiting")), key=lambda j: -j["id"])
+    body += '<h2>Current jobs</h2>' + (JOB_HEAD.format(id="") + "".join(job_row(cfg, j) for j in current) + "</tbody></table></div>"
+                                       if current else '<p class="m">Nothing is running or waiting.</p>')
+    body += ('<h2>Past jobs</h2><input id="runsearch" class="form-control form-control-sm mb-2" placeholder="Search runs: name, commit, device, user, state" aria-label="Search runs">'
+             + JOB_HEAD.format(id=' id="runs"') + "".join(job_row(cfg, j) for j in past) + '</tbody></table></div><nav id="runpages" class="pages" aria-label="Pages of runs"></nav>')
+    return shell(cfg, login, "ExaModels", body).replace("</body>", RUN_SEARCH + "</body>", 1)
+
+
 def jobs_section(cfg, q, login=None):
     """The jobs: what runs and waits, and what ran lately. On the dashboard, above the reports."""
     e = html.escape
-    def row(j):
-        # the columns and styles of the list of runs below (Sungho): run, device, GitHub, commit,
-        # state, time, raw data
-        short = display_name(j)
-        started = j.get("sha") and j["state"] != "waiting"
-        target = f'{e(reports_of(cfg, j))}/{folder(j)}/' if started else f'{e(cfg.base)}/job/{j["id"]}'
-        devices = " ".join(f'<span class="tag {d}">{d.upper()}</span>' for d in settings_of(j)["devices"].split(","))
-        # only a pull request number or a commit hash links to GitHub (Sungho)
-        github = f'<a href="https://github.com/{repo_of(cfg, j)}/pull/{j["pr"]}">#{j["pr"]}</a>' if j["kind"] == "pr" else "–"
-        commit = f'<a href="https://github.com/{repo_of(cfg, j)}/commit/{j["sha"]}">{j["sha"][:8]}</a>' if j.get("sha") else "–"
-        state = "cancelling" if j.get("cancel") and j["state"] == "running" else j["state"]
-        shown = f'<span class="state {"on" if state == "running" else "off"}">{e(state)}</span>'
-        progress = progress_of(cfg, j)
-        return (f'<tr><td><a class="trunc" href="{target}" title="{e(j.get("purpose") or short)}">Job {j["id"]}: {e(short)}</a></td>'
-                f'<td class="l">{devices}</td><td class="l">{github}</td><td class="l">{commit}</td><td class="l">{e(j.get("by") or "")}</td>'
-                f'<td class="l">{shown}{" <span class=m>" + e(progress) + "</span>" if progress else ""}</td>'
-                f'<td>{when(j.get("started") or j["queued"])}</td>'
-                f'<td class="l">{f"<a href={chr(34)}{e(reports_of(cfg, j))}/{folder(j)}/data/{chr(34)}>files</a>" if started else ""}</td></tr>')
     def table(title, jobs, empty):
-        head = ('<div class="wide"><table class="table table-sm"><thead><tr><th>run</th><th class="l">device</th><th class="l">PR</th>'
-                '<th class="l">commit</th><th class="l">by</th><th class="l">state</th><th>started</th><th class="l">raw data</th></tr></thead><tbody>')
-        return f'<h2>{title}</h2>' + (head + "".join(row(j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
+        return f'<h2>{title}</h2>' + (JOB_HEAD.format(id="") + "".join(job_row(cfg, j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     # MadNLP's only: ExaModels' jobs are on its own pages (Sungho)
     queue = [j for j in q.jobs("running") + sorted(q.jobs("waiting"), key=order) if not is_exa(j)]
     bot = e(cfg.bots[0]) if cfg.bots else ""
     # jobs start through the API (Sungho), so the dashboard has no form for them: it says how
     return (f'<div class="d-flex align-items-center gap-3 mt-3"><h2 class="me-auto my-0">Jobs</h2></div>'
             # finished runs are in the one list of runs below, with the rest (Sungho)
+            # how to start one is on the help page (Sungho)
             + table("Queue", queue, "Nothing is running or waiting.").replace("<h2>", "<h3>").replace("</h2>", "</h3>")
-            + run_card(cfg))
+            + f'<p class="m">How to start a job: <a href="{e(cfg.base)}/help">How it works</a>.</p>')
 
 
 def jobs_page(cfg, q, login, message=""):
@@ -2810,6 +2883,37 @@ def handler(cfg, q):
                 found = usual_suspects(cfg, device)
                 return reply(200, {"device": device, "rule": "failed at least once by the best quarter of the finished full runs' configurations, ranked by instances solved",
                                    "suspects": [{"instance": k, "failed": f_, "runs": n_} for k, (f_, n_) in sorted(found.items(), key=lambda kv: (-kv[1][0] / kv[1][1], kv[0]))]})
+            if parts[:2] == ["examodels", "reports"]:
+                # ExaModels' reports: a run compared with another, {"title", "runs": [JOB, JOB]}
+                if not cfg.uploads:
+                    return reply(503, {"error": "Uploads are not set up on this server."})
+                with q.changed:
+                    store = load_exa_reports(cfg)
+                    if len(parts) == 2 and method == "GET":
+                        return reply(200, {"reports": sorted(store["reports"].values(), key=lambda x: -x["id"])})
+                    if len(parts) == 2 and method == "POST":
+                        title = " ".join(str(data.get("title") or "").split())
+                        runs = data.get("runs")
+                        if not 1 <= len(title) <= 120:
+                            return reply(400, {"error": "Give a title, up to 120 characters."})
+                        ids = {j["id"] for j in q.data["jobs"] if is_exa(j)}
+                        if not (isinstance(runs, list) and len(runs) == 2 and all(isinstance(i, int) and i in ids for i in runs) and runs[0] != runs[1]):
+                            return reply(400, {"error": "runs is two ExaModels jobs, [compared, against]."})
+                        r = {"id": store["next"], "title": title, "runs": runs, "by": login, "created": int(time.time())}
+                        store["next"] += 1
+                        store["reports"][str(r["id"])] = r
+                        save_exa_reports(cfg, store)
+                        return reply(201, r | {"url": f"{exa_base(cfg)}/report-{r['id']}/"})
+                    if len(parts) == 3 and method == "DELETE":
+                        r = store["reports"].get(parts[2])
+                        if r is None:
+                            return reply(404, {"error": "There is no such report."})
+                        if r["by"].lower() != login.lower() and permission != "admin":
+                            return reply(403, {"error": "Only who made the report can delete it."})
+                        del store["reports"][parts[2]]
+                        save_exa_reports(cfg, store)
+                        return reply(200, {"deleted": r["id"]})
+                return reply(405, {"error": "GET or POST examodels/reports, DELETE examodels/reports/<id>."})
             if parts[:1] == ["reports"]:
                 # reports, apart from runs (Sungho): compositions of runs, each a column with a label
                 if not cfg.uploads:
@@ -3049,9 +3153,19 @@ def handler(cfg, q):
             root_of = lambda j: os.path.join(cfg.uploads, folder(j)) if j and cfg.uploads else ""
             parts = path[len("/examodels/"):].split("/")
             if parts in ([""], ["index.html"]):
-                body = exa.index(jobs, base, display_name, folder, when, STATE_BADGE)
-                return self.send(200, shell(cfg, login, "ExaModels", body))
-            j = next((j for j in jobs if folder(j) == parts[0]), None) if exa.is_folder(parts[0]) else None
+                return self.send(200, exa_dashboard(cfg, q, login))
+            # a report: its first run, compared with its second
+            rm = re.fullmatch(r"report-(\d{1,6})", parts[0])
+            report = load_exa_reports(cfg)["reports"].get(rm[1]) if rm else None
+            if report is not None:
+                by_id = {j["id"]: j for j in jobs}
+                first, second = (by_id.get(i) for i in report["runs"])
+                if first is None or second is None:
+                    return self.send(404, shell(cfg, login, "Not found", "<p>A run of this report is gone.</p>"))
+                args = {**args, "vs": [folder(second)]}
+                j = first
+            else:
+                j = next((j for j in jobs if folder(j) == parts[0]), None) if exa.is_folder(parts[0]) else None
             if j is None:
                 return self.send(404, shell(cfg, login, "Not found", "<p>There is no such run.</p>"))
             if len(parts) == 1:
@@ -3061,6 +3175,8 @@ def handler(cfg, q):
             # compared with a run of one's choosing (?vs=<its folder>), on each machine both have
             vs = (args.get("vs") or [""])[0]
             other = next((o for o in jobs if folder(o) == vs and o is not j), None) if exa.is_folder(vs) else None
+            if report is not None:
+                vs = ""          # the links of a report's pages stay under the report
             if other is not None:
                 refs = {m: other for m in exa.results(root) if m in exa.results(root_of(other))}
             else:
@@ -3069,7 +3185,9 @@ def handler(cfg, q):
                 running = j["state"] == "running"
                 extra = f'<div class="mt-2 mb-2">{actions(cfg, q, login, j)}</div>'
                 body = exa.run_page(j, root, refs, root_of, base, display_name, folder, extra, vs)
-                page = shell(cfg, login, f"ExaModels job {j['id']}", body)
+                if report is not None:
+                    body = f'<h1 class="h3">{html.escape(report["title"])}</h1>' + body.replace("Compared with", "Against", 1)
+                page = shell(cfg, login, report["title"] if report else f"ExaModels job {j['id']}", body)
                 if running:
                     page = page.replace("<body>", '<meta http-equiv="refresh" content="30"><body>', 1)
                 return self.send(200, page)

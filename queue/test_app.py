@@ -585,7 +585,7 @@ class TestServer(Base):
         self.assertIn("&lt;script&gt;", page)
         self.assertNotIn("<script>x", page)
         self.assertNotIn("New job", page)                   # jobs start through the API
-        self.assertIn("Starting a job", page)
+        self.assertIn("How to start a job", page)              # on the help page (Sungho)
         code, page = self.get("/queue/job/1", "alice")
         self.assertIn("Update, start over", page)
         self.assertEqual(self.get("/queue/job/99", "alice")[0], 404)
@@ -1030,7 +1030,23 @@ class TestServer(Base):
         self.assertEqual(self.get(f"/examodels/{app.folder(j)}/data/../../../etc/passwd", "alice")[0], 404)
         self.assertEqual(self.get("/examodels/run-x1-a/", "alice")[0], 404)
         self.assertEqual(json.load(open(os.path.join(self.cfg.uploads, app.folder(j), "run.json")))["by"], "alice")
-        self.assertIn("<td>alice</td>", self.get("/examodels/", "alice")[1])
+        self.assertIn('<td class="l">alice</td>', self.get("/examodels/", "alice")[1])
+        # the dashboard: reports, current jobs, past jobs, with MadNLP's table and search
+        code, page = self.get("/examodels/", "alice")
+        for part in ("<h2>Reports</h2>", "<h2>Current jobs</h2>", "<h2>Past jobs</h2>", 'id="runsearch"', 'class="tag cpu"', "per=10"):
+            self.assertIn(part, page)
+        # a report: a run against another
+        self.assertEqual(self.call_api("POST", "/queue/api/examodels/reports", {"title": "x", "runs": [new["id"], 999]}, token="tok-alice")[0], 400)
+        code, rep_ = self.call_api("POST", "/queue/api/examodels/reports", {"title": "PR vs main", "runs": [new["id"], ref["id"]]}, token="tok-alice")
+        self.assertEqual(code, 201, rep_)
+        self.assertIn("PR vs main", self.get("/examodels/", "alice")[1])
+        code, page = self.get(f"/examodels/report-{rep_['id']}/", "alice")
+        self.assertEqual(code, 200)
+        self.assertIn("PR vs main", page); self.assertIn("0.50×", page)
+        code, page = self.get(f"/examodels/report-{rep_['id']}/X/cops-default.html?view=ratio", "alice")
+        self.assertIn("0.50×", page)
+        self.assertEqual(self.call_api("DELETE", f"/queue/api/examodels/reports/{rep_['id']}", token="tok-eve")[0], 403)
+        self.assertEqual(self.call_api("DELETE", f"/queue/api/examodels/reports/{rep_['id']}", token="tok-alice")[0], 200)
         # compared with a run of one's choosing: the main run against the pull request's
         code, page = self.get(f"/examodels/{app.folder(ref_job)}/?vs={app.folder(j)}", "alice")
         self.assertIn("Compared with", page); self.assertIn("2.00×", page); self.assertIn(f"?vs={app.folder(j)}", page)

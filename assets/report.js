@@ -23,7 +23,7 @@ function markTab(){const here=location.pathname.split('/').pop()||'index.html';
 document.querySelectorAll('.bar nav.tabs a').forEach(a=>{const on=a.getAttribute('href')===here;a.classList.toggle('active',on);on?a.setAttribute('aria-current','page'):a.removeAttribute('aria-current')})}
 markTab();
 // live refresh, which replaces the table
-const RUNS_PER_PAGE=50;let runQuery='',runPage=0;
+const RUNS_PER_PAGE=10;let runQuery='',runPage=0;
 function bindRuns(){const tb=document.querySelector('#runs'),q=document.querySelector('#runsearch'),nav=document.querySelector('#runpages');
 if(!tb||!q||!nav)return;q.value=runQuery;
 const show=()=>{const v=runQuery.toLowerCase(),rows=[...tb.tBodies[0].rows],hit=rows.filter(r=>r.textContent.toLowerCase().includes(v)),

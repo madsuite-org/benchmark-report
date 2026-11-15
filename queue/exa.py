@@ -184,23 +184,6 @@ def breadcrumb(base, j=None, extra=""):
     return f'<p class="m mb-1">MadSuite benchmarks / {trail}{(" / " + extra) if extra else ""}</p>'
 
 
-def index(jobs, base, display_name, folder, when, state_badge):
-    """The dashboard: every ExaModels run, newest first."""
-    rows = []
-    for j in sorted(jobs, key=lambda j: -j["id"]):
-        badge = f'<span class="badge text-bg-{state_badge.get(j["state"], "secondary")}">{e(j["state"])}</span>'
-        rows.append(f'<tr><td><a href="{e(base)}/{e(folder(j))}/">{j["id"]}</a></td><td>{e(display_name(j))}</td>'
-                    f'<td>{commit_link(j)} {target_link(j)}</td><td>{e(j.get("devices", ""))}</td><td>{e(j.get("by", ""))}</td><td>{badge}</td>'
-                    f'<td>{when(j.get("started") or j.get("queued"))}</td><td class="m">{e(j.get("purpose", ""))}</td></tr>')
-    table = ('<div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Job</th><th>Run</th><th>Commit</th>'
-             '<th>Devices</th><th>By</th><th>State</th><th>Started</th><th>Note</th></tr></thead><tbody>' + "".join(rows) + "</tbody></table></div>"
-             if rows else '<p class="m">No runs yet.</p>')
-    return (f'<h1 class="h3">ExaModels benchmarks</h1>'
-            f'<p class="m">Model construction and callback times of <a href="https://github.com/{REPO}">ExaModels.jl</a>, on the host and on '
-            f'GPUs, over Lukšan–Vlček, COPS, AC OPF, Mittelmann and CUTEst. Each run is compared with the newest run of main on the same '
-            f'machine. Runs are made with <a href="{HARNESS}#readme">ExaModelsBenchmark.jl</a>.</p>' + table)
-
-
 def summary_table(files, ref_files, prefix="", suffix=""):
     """Per set: instances timed and the geometric mean of each time; with a reference, the geometric
     mean of the ratios over the instances both timed."""
