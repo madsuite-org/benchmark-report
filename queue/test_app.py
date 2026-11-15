@@ -1147,7 +1147,9 @@ class TestSite(Base):
         self.assertIn("Sign out", page)
         self.assertIn("alice", page)
         self.assertEqual(self.get("/madnlp/pr-1")[0], 303)
-        self.assertEqual(self.get("/")[1]["Location"], "/madnlp/")
+        code, _, page = self.get("/")                                  # which package (Sungho)
+        self.assertEqual(code, 200)
+        self.assertIn("Which package?", page); self.assertIn('href="/madnlp/"', page); self.assertIn("/examodels/", page)
         self.assertEqual(self.get("/madnlp/style.css")[2], "body{}")
 
     def test_nothing_outside_the_site(self):

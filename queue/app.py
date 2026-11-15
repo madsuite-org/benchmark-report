@@ -1663,9 +1663,27 @@ def shell(cfg, login, title, body, message=""):
     return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{e(title)}: MadSuite benchmarks</title><link rel="icon" href="{r}/favicon.ico" sizes="any"><script src="{r}/theme.js"></script>'
             f'<link rel="stylesheet" href="{r}/bootstrap.min.css"><link rel="stylesheet" href="{r}/style.css"><body>'
-            f'<header class="site"><div class="container"><a class="brand" href="{e(cfg.base)}/"><img src="{r}/madsuite-logo.svg" alt="MadSuite" class="logo"> benchmarks</a>'
+            f'<header class="site"><div class="container"><a class="brand" href="/"><img src="{r}/madsuite-logo.svg" alt="MadSuite" class="logo"> benchmarks</a>'
             f'{app_nav(cfg, login)}</div></header>'
             f'<main class="container py-3">{note}{body}</main>{LOCAL_TIMES}</body></html>')
+
+
+def packages(cfg):
+    """The packages benchmarked here, as (name, what is timed, address, repository): the landing page
+    lists them, and a new one is a line here."""
+    return [("MadNLP", "nonlinear programming solver: solve times, iterations and failures", cfg.reports, cfg.repo),
+            ("ExaModels", "algebraic modeling: model construction and callback times", exa_base(cfg), exa.REPO)]
+
+
+def landing_page(cfg, login):
+    """benchmark.madsuite.org: which package (Sungho)."""
+    e = html.escape
+    cards = "".join(f'<div class="col"><a class="card h-100 text-decoration-none" href="{e(url)}/"><div class="card-body">'
+                    f'<h2 class="h5">{e(name)}</h2><p class="m mb-0">{e(what)}</p></div></a></div>'
+                    for name, what, url, _ in packages(cfg))
+    body = (f'<h1 class="h3">MadSuite benchmarks</h1><p class="m">Which package?</p>'
+            f'<div class="row row-cols-1 row-cols-md-2 g-3">{cards}</div>')
+    return shell(cfg, login, "Packages", body)
 
 
 def help_page(cfg, login):
@@ -2855,8 +2873,8 @@ def handler(cfg, q):
         def report_page(self, path, login):
             member_of = lambda who: bool(who) and q.permission(who) in WRITE
             """A page or file of the reports. A report's own banner gets the links of the signed-in user."""
-            if path == "/":
-                return self.redirect(cfg.reports + "/")
+            if path in ("/", "/index.html"):
+                return self.send(200, landing_page(cfg, login))
             base = urllib.parse.urlsplit(cfg.reports).path.rstrip("/")
             # a report by its long address: anyone with it may read it
             m = re.fullmatch(re.escape(base) + r"/r/([A-Za-z0-9_-]{20,64})(/.*)?", path)
