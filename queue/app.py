@@ -334,7 +334,50 @@ class Queue:
             if holder and holder != node and self.alive(j, holder):
                 return False
             claims[key] = node
+            if not again and j.get("external") and j.setdefault("claimed", {}).get(key) != node:
+                # kept with the job, so that an instance its node never finished is known after a
+                # restart too: handed out again, or recorded as such when the job ends (see `settle`)
+                j["claimed"][key] = node
+                self.save()
             return True
+
+    STARTED = time.time()
+
+    def quiet(self, j, node):
+        """Seconds since `node` of `j` was last heard from, by this process or as saved."""
+        n = j["nodes"].get(node, {})
+        heard = max(self.__dict__.setdefault("beats", {}).get((j["id"], node), 0), n.get("seen", n.get("joined", 0)) or 0)
+        return time.time() - heard
+
+    def settle(self, cfg, j):
+        """End an external job whose work is done though no node said so last (Papaya, job 230): a node
+        has finished and every other one is done or gone. Then its nodes still marked as working are
+        marked gone, and an instance a gone node took and never sent a row for is recorded as such
+        (`record_unfinished`). Also tidies the nodes of a job already ended (cancelled). Not in the
+        first NODE_GONE seconds of this process, while nodes have not been heard from yet."""
+        final = {"finished", "failed", "cancelled", "quarantined", "gone"}
+        if not j.get("external"):
+            return
+        with self.changed:
+            nodes = j.get("nodes", {})
+            if j["state"] == "running":
+                if time.time() - self.STARTED < self.NODE_GONE:
+                    return
+                working = [k for k, v in nodes.items() if v.get("state") not in final and self.quiet(j, k) < self.NODE_GONE]
+                if working or not any(v.get("state") == "finished" for v in nodes.values()):
+                    return
+                j["state"], j["ended"] = "finished", int(time.time())
+                record_unfinished(cfg, j)
+            stale = [k for k, v in nodes.items() if v.get("state") not in final]
+            for k in stale:
+                nodes[k]["state"] = "gone"
+            if j["state"] == "finished" or stale:
+                self.save()
+
+    def settle_all(self, cfg):
+        for j in self.jobs("running", "cancelled", "finished", "failed"):
+            if j.get("external") and (j["state"] == "running" or any(v.get("state") in ("running", "setup", "interrupted") for v in j.get("nodes", {}).values())):
+                self.settle(cfg, j)
 
     def node_state(self, j, node, state):
         """A node's own state; the job ends when every node still alive has finished."""
@@ -352,9 +395,11 @@ class Queue:
                 if not live:
                     j["state"] = "finished"
                     j["ended"] = int(time.time())
+                    record_unfinished(self.cfg, j)
                     changed = True
             if changed:
                 self.save()
+        self.settle(self.cfg, j)
 
     def down(self, node=None):
         """The machines the app could not reach, `name => {since, reason}`, or the entry of one."""
@@ -549,6 +594,10 @@ class Queue:
                     j["cancelled_by"], j["cancelled_at"] = login, int(time.time())
                     if j["state"] == "waiting" or j.get("external"):
                         j["state"], j["ended"] = "cancelled", int(time.time())
+                        # its nodes are told to stop at their next word; none of them works for it any more
+                        for v in j.get("nodes", {}).values():
+                            if v.get("state") in ("setup", "running", "interrupted"):
+                                v["state"] = "cancelled"
                     else:
                         j["cancel"] = True
                     self.save()
@@ -1335,6 +1384,11 @@ def next_retry(cfg, q, j, node, device):
     for (set_name, case), configs in by_case.items():
         if q.claim(j, node, f"{device}/{set_name}/{case}", again=True):
             return {"set": set_name, "case": case, "configs": configs}
+    # what a node took and never finished, that node having gone (Papaya, job 231)
+    for key, holder in unfinished(cfg, q, j, device):
+        if holder != node and q.claim(j, node, key, again=True):
+            _, set_name, case = key.split("/", 2)
+            return {"set": set_name, "case": case, "configs": [j["nodes"][holder]["config"]]}
     tries, failed_on = j.setdefault("retries", {}), j.setdefault("failed_on", {})
     others = any(k != node and v.get("state") not in ("finished", "failed", "cancelled") and q.alive(j, k) for k, v in j["nodes"].items())
     by_case = {}
@@ -1351,6 +1405,40 @@ def next_retry(cfg, q, j, node, device):
                 q.save()
             return {"set": set_name, "case": case, "configs": configs}
     return None
+
+
+def unfinished(cfg, q, j, device=None):
+    """What a node took of `j` and never sent a row for, the node having gone: (key, node), key
+    `device/set/case`. A node still working may yet send it."""
+    out = []
+    for key, holder in j.get("claimed", {}).items():
+        dev, set_name, case = key.split("/", 2)
+        n = j["nodes"].get(holder, {})
+        if (device and dev != device) or not n.get("config") or q.quiet(j, holder) < q.NODE_GONE and n.get("state") not in ("finished", "failed", "cancelled", "quarantined", "gone"):
+            continue
+        if not solved_already(cfg, j, dev, set_name, case, [n["config"]]):
+            out.append((key, holder))
+    return out
+
+
+def record_unfinished(cfg, j):
+    """Rows for what the nodes of an ended job took and never finished (Papaya): -100, its node having
+    stopped, in the file the node's other rows are in, so that the population stays explicit."""
+    for key, holder in j.get("claimed", {}).items():
+        dev, set_name, case = key.split("/", 2)
+        n = j["nodes"].get(holder, {})
+        if not n.get("machine") or not n.get("config") or solved_already(cfg, j, dev, set_name, case, [n["config"]]):
+            continue
+        path = os.path.join(cfg.uploads, folder(j), n["machine"], f"{set_name}_{n['config']}.csv")
+        try:
+            with open(path) as f:
+                head = f.readline().strip()
+        except OSError:
+            continue
+        cols = head.split(",")
+        zero = {"iters", "nvar", "ncon", "nnzj", "nnzh", "bt_n"}
+        row = [case, "-100"] + ["0" if c in zero or c.startswith("n_") else "NaN" for c in cols[2:]]
+        merge_rows(path, [head, ",".join(row)])
 
 
 def solved_already(cfg, j, device, set_name, case, configs):
@@ -1575,6 +1663,9 @@ def receive_job_files(cfg, q, j, node, archive_path, state):
                 if j.get("nodes", {}).get(node, {}).get("state") == "quarantined":
                     continue
                 os.makedirs(os.path.join(target, parts[0]), mode=0o755, exist_ok=True)
+                n = j.get("nodes", {}).get(node)
+                if n is not None and (n.get("machine"), n.get("config")) != (r[1], r[3]):
+                    n["machine"], n["config"] = r[1], r[3]      # where its rows go: for those it never sends
                 lines = without_discarded(cfg, j, target, r, data.decode(errors="replace").splitlines())
                 merge_rows(os.path.join(target, path), lines)
                 note_failures(cfg, q, j, node, target, r, lines)
@@ -2097,7 +2188,7 @@ def log_tail(path, lines=80, limit=1 << 20):
 
 
 NODE_STATES = ("setup", "running", "interrupted", "finished", "failed", "cancelled")
-NODE_SAY = {"setup": "setting up: cloning, installing, precompiling", "running": "solving", "interrupted": "stopped (preempted?)",
+NODE_SAY = {"setup": "setting up: cloning, installing, precompiling", "running": "solving", "interrupted": "stopped (preempted?)", "gone": "gone: not heard from when the job ended",
             "quarantined": "put aside: machine failures in a row; its results since are handed out again"}
 
 
@@ -2106,7 +2197,7 @@ def nodes_table(j):
     if not j or not j.get("nodes"):
         return ""
     e, now, rows = html.escape, int(time.time()), []
-    released = lambda v: v.get("state") in ("finished", "cancelled", "failed", "interrupted") or now - v.get("seen", v.get("joined", now)) >= Queue.NODE_GONE
+    released = lambda v: v.get("state") in ("finished", "cancelled", "failed", "interrupted", "gone") or now - v.get("seen", v.get("joined", now)) >= Queue.NODE_GONE
     done = sum(released(v) for v in j["nodes"].values())
     for k, v in sorted(j["nodes"].items(), key=lambda kv: kv[1].get("joined", 0)):
         if released(v):
@@ -2346,6 +2437,7 @@ def exa_shell(cfg, login, title, crumb, line, menu, content, live):
 def exa_dashboard(cfg, q, login):
     """ExaModels' dashboard, as MadNLP's (Sungho): reports, the current jobs, the past ones, with the
     same tables, tags and search."""
+    q.settle_all(cfg)
     e = html.escape
     jobs = {j["id"]: j for j in q.data["jobs"] if is_exa(j)}
     reports = sorted((r for r in load_reports(cfg)["reports"].values() if r.get("project") == "examodels"), key=lambda r: -r["id"])
@@ -2372,6 +2464,7 @@ def exa_dashboard(cfg, q, login):
 
 def jobs_section(cfg, q, login=None):
     """The jobs: what runs and waits, and what ran lately. On the dashboard, above the reports."""
+    q.settle_all(cfg)
     e = html.escape
     def table(title, jobs, empty):
         return f'<h2>{title}</h2>' + (JOB_HEAD.format(id="") + "".join(job_row(cfg, j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
@@ -2711,6 +2804,7 @@ def handler(cfg, q):
             parts = path[len("/queue/api/"):].strip("/").split("/")
             find = lambda i: next((j for j in q.data["jobs"] if i.isdigit() and j["id"] == int(i)), None)
             if parts == ["jobs"] and method == "GET":
+                q.settle_all(cfg)
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
                 want = (urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project") or [""])[0]
                 if want:

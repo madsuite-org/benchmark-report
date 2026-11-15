@@ -1061,6 +1061,50 @@ class TestServer(Base):
         self.assertEqual(self.request("GET", f"/queue/job/{new['id']}", headers={"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[1]["Location"],
                          new["report"])
 
+    def test_ended_jobs_and_unfinished_instances(self):
+        """Papaya, jobs 230-234: a job ends when its work is done though a node never said so; its nodes
+        are not left working; an instance a gone node took is handed out again, and recorded if none is left."""
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        self.q.STARTED = 0                                  # past the grace after a start
+        code, job = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cuda"}, token="tok-alice")
+        jid, tok = job["id"], job["token"]
+        j = next(x for x in self.q.data["jobs"] if x["id"] == jid)
+        root = os.path.join(self.cfg.uploads, app.folder(j))
+        head, meta = "case,status,iters,nvar,t_total\n", 'device = "cuda"\n'
+        def send(node, csv, state="running"):
+            body = self.make_tar({"G/acopf_default.csv": head + csv, "G/acopf_default.csv.meta.toml": meta})
+            return json.loads(self.request("POST", f"/queue/api/jobs/{jid}/files?node={node}&state={state}&host=h{node}", body,
+                                           {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})[2])
+        def ask(what, body):
+            raw = json.dumps(body).encode()
+            return json.loads(self.request("POST", f"/queue/api/jobs/{jid}/{what}", raw, {"Authorization": "Bearer " + tok, "Content-Length": str(len(raw))})[2])
+        claim = lambda node, case: ask("claim", {"node": node, "device": "cuda", "set": "acopf", "case": case, "configs": ["default"]})["todo"]
+        self.assertEqual(claim("a", "x"), ["default"]); self.assertEqual(claim("b", "y"), ["default"]); self.assertEqual(claim("b", "z"), ["default"])
+        send("a", "x,1,5,9,1.0\n"); send("b", "y,1,5,9,1.0\n")
+        self.assertEqual(j["claimed"], {"cuda/acopf/x": "a", "cuda/acopf/y": "b", "cuda/acopf/z": "b"})
+        # b goes quiet holding z: a, done with its share, is handed z again
+        self.q.beats[(jid, "b")] = time.time() - 700; j["nodes"]["b"]["seen"] = int(time.time()) - 700
+        got = ask("retry", {"node": "a", "device": "cuda"})
+        self.assertEqual((got.get("case"), got.get("configs")), ("z", ["default"]))
+        # a finishes without sending it: the job ends, b is gone, and z is recorded as unfinished
+        send("a", "x,1,5,9,1.0\n", state="finished")
+        self.assertEqual(j["state"], "finished")
+        self.assertEqual(j["nodes"]["b"]["state"], "gone")
+        rows = open(os.path.join(root, "G", "acopf_default.csv")).read().splitlines()
+        self.assertIn("z,-100,0,0,NaN", rows)
+        self.assertEqual(len(rows), 4)
+        # a cancelled job leaves no node working
+        code, job2 = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cuda"}, token="tok-alice")
+        j2 = next(x for x in self.q.data["jobs"] if x["id"] == job2["id"])
+        body = self.make_tar({"G/acopf_default.csv": head, "G/acopf_default.csv.meta.toml": meta})
+        self.request("POST", f"/queue/api/jobs/{job2['id']}/files?node=c&state=running&host=hc", body, {"Authorization": "Bearer " + job2["token"], "Content-Length": str(len(body))})
+        self.assertEqual(self.call_api("POST", f"/queue/api/jobs/{job2['id']}/cancel", {}, token="tok-alice")[0], 200)
+        self.assertEqual(j2["nodes"]["c"]["state"], "cancelled")
+        # and one cancelled before this fix is tidied when the jobs are listed
+        j2["nodes"]["c"]["state"] = "running"
+        self.call_api("GET", "/queue/api/jobs", token="tok-alice")
+        self.assertEqual(j2["nodes"]["c"]["state"], "gone")
+
     def test_a_job_over_a_subset(self):
         self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
         self.cfg.site = os.path.join(self.dir, "site")
