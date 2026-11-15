@@ -201,13 +201,13 @@ def index(jobs, base, display_name, folder, when, state_badge):
             f'machine. Runs are made with <a href="{HARNESS}#readme">ExaModelsBenchmark.jl</a>.</p>' + table)
 
 
-def summary_table(files, ref_files, prefix=""):
+def summary_table(files, ref_files, prefix="", suffix=""):
     """Per set: instances timed and the geometric mean of each time; with a reference, the geometric
     mean of the ratios over the instances both timed."""
     head = "".join(f"<th>{SHORT[c]}</th>" for c in COLUMNS)
     out = []
     for (set_, config), rows in sorted(files.items(), key=lambda kv: (SETS.index(kv[0][0]) if kv[0][0] in SETS else 99, kv[0])):
-        label = f'<a href="{e(prefix)}{e(set_)}-{e(config)}.html">{e(SET_NAMES.get(set_, set_))}</a>' + ("" if config == "default" else f" ({e(config)})")
+        label = f'<a href="{e(prefix)}{e(set_)}-{e(config)}.html{e(suffix)}">{e(SET_NAMES.get(set_, set_))}</a>' + ("" if config == "default" else f" ({e(config)})")
         n = sum(timed(r) for r in rows)
         cells = "".join(f"<td>{fmt_time(gmean([num(r.get(c)) for r in rows if timed(r)]))}</td>" for c in COLUMNS)
         out.append(f"<tr><td>{label}</td><td>{n} / {len(rows)}</td>{cells}</tr>")
@@ -229,7 +229,7 @@ def machine_line(root, machine, files):
     return ", ".join(p for p in parts if p)
 
 
-def run_page(j, root, refs, root_of, base, display_name, folder, extra=""):
+def run_page(j, root, refs, root_of, base, display_name, folder, extra="", vs=""):
     """A run: per machine, its summary by set, with the reference's ratios."""
     res = results(root)
     head = (breadcrumb(base, j) + f'<h1 class="h4">{e(display_name(j))}</h1>'
@@ -246,13 +246,14 @@ def run_page(j, root, refs, root_of, base, display_name, folder, extra=""):
         line = status_line(root, machine)
         body += (f'<h2 class="h5 mt-4">{e(machine)}</h2><p class="m mb-1">{e(machine_line(root, machine, files))}'
                  + (f" · {e(line)}" if line and j["state"] == "running" else "") + "</p>")
-        body += (f'<p class="m mb-1">Reference: <a href="{e(base)}/{e(folder(ref))}/">Job {ref["id"]}</a> ({commit_link(ref)}); a ratio '
-                 'below 1 is faster than the reference.</p>' if ref else '<p class="m mb-1">No reference: no other run of main on this machine yet.</p>')
-        body += summary_table(files, ref_files, f"{machine}/")
+        body += (f'<p class="m mb-1">{"Compared with" if vs else "Reference"}: <a href="{e(base)}/{e(folder(ref))}/">Job {ref["id"]}: {e(display_name(ref))}</a> '
+                 f'({commit_link(ref)}); a ratio below 1 is faster than it.' + (' <a href="./">Back to the reference</a>' if vs else "") + '</p>' if ref else
+                 '<p class="m mb-1">' + ("That run has no results on this machine." if vs else "No reference: no other run of main on this machine yet.") + '</p>')
+        body += summary_table(files, ref_files, f"{machine}/", f"?vs={vs}" if vs else "")
     return body
 
 
-def set_page(j, root, machine, set_, config, ref, root_of, base, display_name, folder, view):
+def set_page(j, root, machine, set_, config, ref, root_of, base, display_name, folder, view, vs=""):
     """One set of one machine: a row per instance, by size; with a reference, its times or the ratios."""
     rows = results(root).get(machine, {}).get((set_, config))
     if rows is None:
@@ -272,8 +273,9 @@ def set_page(j, root, machine, set_, config, ref, root_of, base, display_name, f
         out.append(f"<tr><td>{e(r['case'])}</td><td>{e(st)}</td>{dims}{cells}</tr>")
     switch = ""
     if ref_rows is not None:
-        switch = (f'<p class="m">Reference: <a href="{e(base)}/{e(folder(ref))}/">Job {ref["id"]}</a> ({commit_link(ref)}). Show '
-                  + ('<a href="?">times</a> · <b>ratios to the reference</b>' if show_ratio else '<b>times</b> · <a href="?view=ratio">ratios to the reference</a>')
+        q = f"vs={e(vs)}&amp;" if vs else ""
+        switch = (f'<p class="m">{"Compared with" if vs else "Reference"}: <a href="{e(base)}/{e(folder(ref))}/">Job {ref["id"]}: {e(display_name(ref))}</a> ({commit_link(ref)}). Show '
+                  + (f'<a href="?{q}">times</a> · <b>ratios</b>' if show_ratio else f'<b>times</b> · <a href="?{q}view=ratio">ratios</a>')
                   + "</p>")
     name = SET_NAMES.get(set_, set_) + ("" if config == "default" else f" ({config})")
     return (breadcrumb(base, j, e(f"{machine} / {name}")).replace('href="./"', 'href="../"') + f'<h1 class="h4">{e(name)} on {e(machine)}</h1>' + switch +

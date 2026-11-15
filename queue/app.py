@@ -3058,10 +3058,17 @@ def handler(cfg, q):
                 return self.redirect(path + "/")
             root = root_of(j)
             refs = exa.reference(j, jobs, root_of)
+            # compared with a run of one's choosing (?vs=<its folder>), on each machine both have
+            vs = (args.get("vs") or [""])[0]
+            other = next((o for o in jobs if folder(o) == vs and o is not j), None) if exa.is_folder(vs) else None
+            if other is not None:
+                refs = {m: other for m in exa.results(root) if m in exa.results(root_of(other))}
+            else:
+                vs = ""
             if parts[1:] in ([""], ["index.html"]):
                 running = j["state"] == "running"
                 extra = f'<div class="mt-2 mb-2">{actions(cfg, q, login, j)}</div>'
-                body = exa.run_page(j, root, refs, root_of, base, display_name, folder, extra)
+                body = exa.run_page(j, root, refs, root_of, base, display_name, folder, extra, vs)
                 page = shell(cfg, login, f"ExaModels job {j['id']}", body)
                 if running:
                     page = page.replace("<body>", '<meta http-equiv="refresh" content="30"><body>', 1)
@@ -3087,7 +3094,7 @@ def handler(cfg, q):
                     return self.send(200, f.read().decode("utf-8", "replace"), kind="text/plain; charset=utf-8")
             m = re.fullmatch(r"([A-Za-z0-9_.+-]{1,100})/([a-z]+)-([a-z0-9_]{1,40})\.html", "/".join(parts[1:]))
             if m:
-                body = exa.set_page(j, root, m[1], m[2], m[3], refs.get(m[1]), root_of, base, display_name, folder, (args.get("view") or [""])[0])
+                body = exa.set_page(j, root, m[1], m[2], m[3], refs.get(m[1]), root_of, base, display_name, folder, (args.get("view") or [""])[0], vs)
                 if body is not None:
                     return self.send(200, shell(cfg, login, f"ExaModels job {j['id']}", body))
             return self.send(404, shell(cfg, login, "Not found", "<p>There is no such page.</p>"))

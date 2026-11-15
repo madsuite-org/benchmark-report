@@ -1003,6 +1003,7 @@ class TestServer(Base):
         ref = run({"master": True}, "a,1,10,5,20,30,1e-3,1e-6,1e-5,1e-6,2e-5,4e-5,4e-5,2e-5,2e-5,0,0.0\nb,1,10,5,20,30,1e-3,1e-6,1e-5,1e-6,2e-5,4e-5,4e-5,2e-5,2e-5,0,0.0\n")
         new = run({"pr": 7}, "a,1,10,5,20,30,1e-3,1e-6,1e-5,1e-6,1e-5,4e-5,4e-5,2e-5,2e-5,0,0.0\nc,-101,0,0,0,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,0,NaN\n")
         j = next(x for x in self.q.data["jobs"] if x["id"] == new["id"])
+        ref_job = next(x for x in self.q.data["jobs"] if x["id"] == ref["id"])
         self.assertTrue(app.folder(j).startswith("exa-x"))             # out of the MadNLP builder's way
         self.assertTrue(new["report"].startswith("http") and "/examodels/exa-x" in new["report"])
         spec = json.loads(self.request("GET", f"/queue/api/jobs/{new['id']}/spec", headers={"Authorization": "Bearer " + new["token"]})[2])
@@ -1030,6 +1031,11 @@ class TestServer(Base):
         self.assertEqual(self.get("/examodels/run-x1-a/", "alice")[0], 404)
         self.assertEqual(json.load(open(os.path.join(self.cfg.uploads, app.folder(j), "run.json")))["by"], "alice")
         self.assertIn("<td>alice</td>", self.get("/examodels/", "alice")[1])
+        # compared with a run of one's choosing: the main run against the pull request's
+        code, page = self.get(f"/examodels/{app.folder(ref_job)}/?vs={app.folder(j)}", "alice")
+        self.assertIn("Compared with", page); self.assertIn("2.00×", page); self.assertIn(f"?vs={app.folder(j)}", page)
+        code, page = self.get(f"/examodels/{app.folder(ref_job)}/X/cops-default.html?vs={app.folder(j)}&view=ratio", "alice")
+        self.assertIn("2.00×", page)
         # the projects apart: MadNLP's dashboard and API list leave ExaModels' jobs out
         self.assertNotIn(f"Job {new['id']}:", app.jobs_section(self.cfg, self.q, "alice"))
         listed = self.call_api("GET", "/queue/api/jobs?project=madnlp", token="tok-alice")[1]["jobs"]
