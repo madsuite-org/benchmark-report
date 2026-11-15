@@ -89,29 +89,29 @@ end
         machine = joinpath(results, "machine")
         lines = readlines(joinpath(machine, "smoke_default.csv"))
         row = split(lines[2], ",")
-        row[findfirst(==("t_total"), split(lines[1], ","))] = "900"
+        row[findfirst(==("t_total"), split(lines[1], ","))] = "450"
         write(joinpath(machine, "smoke_default.csv"), lines[1] * "\n" * join(row, ",") * "\n")
         other = mkpath(joinpath(results, "other"))
         cp(joinpath(machine, "smoke_default.csv"), joinpath(other, "smoke_default.csv"))
         meta = read(joinpath(machine, "smoke_default.csv.meta.toml"), String)
         write(joinpath(other, "smoke_default.csv.meta.toml"), replace(meta, "device = \"cuda\"" => "device = \"cpu\""))
-        # a GPU run from when a GPU solve had 600 s
-        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 600.0\n")
+        # a GPU run that states a lower limit than the benchmark's 600 s
+        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 300.0\n")
         write_report(site, results; wall = 7200.0, finished = true)
-        # one page with both: the GPU solve past its 600 s failed, the same time on the host did not
+        # one page with both: the GPU solve past its 300 s failed, the same time on the host did not
         page = read(joinpath(site, "smoke.html"), String)
         @test count("<td class=\"l fail\"", page) == 1
         @test occursin("current (GPU)", page) && occursin("current (CPU)", page)
         @test occursin("url=smoke.html", read(joinpath(site, "cuda-smoke.html"), String))   # the old address
         # the result files are left as they were
-        @test occursin(",900,", read(joinpath(site, "data", "machine", "smoke_default.csv"), String))
-        # the benchmark's limit, 1800 s on a GPU and on the host, and a run's lower one
-        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 600.0
-        @test BenchmarkReport.device_walls(results, 7200.0)["cpu"] == 1800.0
-        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 7200.0\n")
-        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 1800.0
+        @test occursin(",450,", read(joinpath(site, "data", "machine", "smoke_default.csv"), String))
+        # the benchmark's limit, 600 s on a GPU and on the host (Sungho, 2026-11-15), and a run's lower one
+        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 300.0
+        @test BenchmarkReport.device_walls(results, 7200.0)["cpu"] == 600.0
+        write(joinpath(machine, "smoke_default.csv.meta.toml"), meta * "wall_limit_s = 1800.0\n")
+        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 600.0      # an older run's longer limit
         write(joinpath(machine, "smoke_default.csv.meta.toml"), meta)
-        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 1800.0
+        @test BenchmarkReport.device_walls(results, 7200.0)["cuda"] == 600.0
     end
 end
 

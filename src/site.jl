@@ -87,11 +87,11 @@ side_rows(side, cand, base, set) = get((side.base ? base : cand).rows, (side.key
 
 # Every solver on a device's pages is held to that device's limit on a solve, also in runs from
 # before it (run with a longer one): a longer solve counts as stopped at the limit. The result
-# files are left as they were. The limit is the benchmark's, 1800 s on the host and on a GPU alike
-# (Sungho, 2026-11-08); a run that states a lower one (`wall_limit_s`, such as the 600 s GPU runs
-# had before) is held to that.
-const CPU_WALL = 1800.0
-const GPU_WALL = 1800.0
+# files are left as they were. The limit is the benchmark's, 600 s on the host and on a GPU alike
+# (Sungho, 2026-11-15; 1800 s from 2026-11-08); a run that states a lower one (`wall_limit_s`) is
+# held to that.
+const CPU_WALL = 600.0
+const GPU_WALL = 600.0
 function device_walls(root, wall)
     stated = Dict{String, Float64}()
     for (dir, _, files) in walkdir(root), file in files
