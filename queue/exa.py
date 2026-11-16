@@ -237,7 +237,8 @@ def instance_table(cols, per):
     out = ['<div class="scroll"><table class="table table-sm table-hover cases"><thead><tr><th class="s" rowspan="2">instance</th>'
            '<th class="s" rowspan="2">nv</th><th class="s" rowspan="2">nc</th>']
     out.extend(f'<th colspan="{1 + len(COLUMNS)}" class="l">{e(label)}</th>' for label, _ in have)
-    out.append("</tr><tr>" + ('<th class="s l">st</th>' + "".join(f'<th class="s">{SHORT[c]}</th>' for c in COLUMNS)) * len(have) + "</tr></thead><tbody>")
+    # the rows in a <template> beside the table, shown a page at a time by report.js (as src/site.jl)
+    out.append("</tr><tr>" + ('<th class="s l">st</th>' + "".join(f'<th class="s">{SHORT[c]}</th>' for c in COLUMNS)) * len(have) + '</tr></thead><tbody></tbody></table><template class="caserows">')
     cases = set().union(*(set(rows) for _, rows in have))
     any_row = lambda c: next(rows[c] for _, rows in have if c in rows)
     for case in sorted(cases, key=lambda c: (size(any_row(c)), c)):
@@ -251,7 +252,7 @@ def instance_table(cols, per):
             letter, name = STATUS.get(r.get("status", ""), (r.get("status", ""), ""))
             out.append(f'<td class="l{"" if letter == "ok" else " fail"}" title="{e(name)}">{e(letter)}</td>' + "".join(f"<td>{us(num(r.get(c)))}</td>" for c in COLUMNS))
         out.append("</tr>")
-    out.append("</tbody></table></div>")
+    out.append("</template></div>")
     return "".join(out)
 
 

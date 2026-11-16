@@ -414,7 +414,9 @@ function instance_table(io, set, sides, rows, logs)
     foreach(s -> print(io, "<th colspan=\"12\" class=\"l\">", title(s.label), "</th>"), sides)
     print(io, "</tr><tr>")
     foreach(_ -> print(io, "<th class=\"s l\">st</th><th class=\"s\">it</th><th class=\"s\">t (s)</th><th class=\"s\">obj</th><th class=\"s\">inf</th><th class=\"s\">nfac</th><th class=\"s\">nsol</th><th class=\"s\">nf</th><th class=\"s\">ng</th><th class=\"s\">nc</th><th class=\"s\">nj</th><th class=\"s\">nh</th>"), sides)
-    println(io, "</tr></thead><tbody>")
+    # the rows in a <template> beside the table, which the browser parses without laying out them all:
+    # report.js shows them a page at a time (a CUTEst report has 100,000 cells, which froze it)
+    println(io, "</tr></thead><tbody></tbody></table><template class=\"caserows\">")
     for case in sort!(collect(reduce(union, [Set(keys(r)) for r in rows]; init = Set{String}())))
         any_row = first(r[case] for r in rows if haskey(r, case))
         print(io, "<tr><td>", escape_html(case), "</td><td>", any_row.nvar, "</td><td>", any_row.ncon, "</td>")
@@ -433,7 +435,7 @@ function instance_table(io, set, sides, rows, logs)
         end
         println(io, "</tr>")
     end
-    println(io, "</tbody></table></div>")
+    println(io, "</template></div>")
     return
 end
 

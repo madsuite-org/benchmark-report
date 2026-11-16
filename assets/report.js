@@ -9,13 +9,26 @@ t.style.display='block';t.style.left=Math.max(0,Math.min(e.clientX-r.left+12,r.w
 l.setAttribute('x1',x);l.setAttribute('x2',x);l.style.display='block'});
 s.addEventListener('pointerleave',()=>{t.style.display='none';l.style.display='none'})});
 const q=document.querySelector('#filter'),only=document.querySelector('#failed');
-document.querySelectorAll('table.cases').forEach(tb=>{const body=tb.tBodies[0];
-const show=()=>{const v=q.value.toLowerCase();
-for(const r of body.rows)r.style.display=r.cells[0].textContent.toLowerCase().includes(v)&&(!only.checked||r.querySelector('.fail'))?'':'none'};
-q.addEventListener('input',show);only.addEventListener('change',show);
-tb.querySelectorAll('th.s').forEach(h=>{let up=true;h.addEventListener('click',()=>{const i=h.cellIndex;up=!up;
+// a table of instances: rows kept in an array and shown CASES_PER_PAGE at a time, so that a set of
+// thousands of instances (CUTEst: about 100,000 cells in a report) is not laid out at once, which
+// froze the browser (Sungho); the filter, failures-only and sorting work on all of them
+// the rows come in a <template> beside the table, which the browser parses without laying out
+document.querySelectorAll('table.cases').forEach(tb=>{const body=tb.tBodies[0],tpl=tb.parentNode.querySelector('template.caserows');
+const all=tpl?[...tpl.content.querySelectorAll('tr')]:[...body.rows];let shown=all,page=0;
+let nav=tb.parentNode.nextElementSibling;if(!nav||!nav.classList.contains('casepages')){nav=document.createElement('nav');nav.className='pages casepages';nav.setAttribute('aria-label','Pages of instances');tb.parentNode.after(nav)}
+const render=()=>{const pages=Math.max(1,Math.ceil(shown.length/CASES_PER_PAGE));page=Math.min(page,pages-1);
+const f=document.createDocumentFragment();shown.slice(page*CASES_PER_PAGE,(page+1)*CASES_PER_PAGE).forEach(r=>f.append(r));body.replaceChildren(f);
+nav.innerHTML=pages<2?'':[...Array(pages).keys()].map(i=>'<a href="#" data-p="'+i+'"'+(i===page?' class="active" aria-current="page"':'')+'>'+(i+1)+'</a>').join(' ')+' <span class="m">'+shown.length+' instances</span>';
+nav.querySelectorAll('a').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();page=+a.dataset.p;render()}))};
+const show=()=>{const v=q?q.value.toLowerCase():'',f=only&&only.checked;
+shown=all.filter(r=>r.cells[0].textContent.toLowerCase().includes(v)&&(!f||r.querySelector('.fail')));page=0;render()};
+q&&q.addEventListener('input',show);only&&only.addEventListener('change',show);
+// a header in the second row counts the cells spanning both rows before it
+const head=tb.tHead.rows,spanned=head.length>1?[...head[0].cells].filter(c=>c.rowSpan>1).length:0;
+tb.querySelectorAll('th.s').forEach(h=>{let up=true;h.addEventListener('click',()=>{const i=h.cellIndex+(h.parentNode===head[0]?0:spanned);up=!up;
 const key=r=>{const v=r.cells[i].textContent,n=parseFloat(v);return isNaN(n)?v:n};
-[...body.rows].sort((a,b)=>{const x=key(a),y=key(b),c=x<y?-1:x>y?1:0;return up?-c:c}).forEach(r=>body.append(r))})})})
+all.sort((a,b)=>{const x=key(a),y=key(b),c=x<y?-1:x>y?1:0;return up?-c:c});show()})});
+render()})
 }
 // the list of runs: a search over every column, and pages of RUNS_PER_PAGE; both kept across the
 // the tab of the page shown
@@ -23,7 +36,7 @@ function markTab(){const here=location.pathname.split('/').pop()||'index.html';
 document.querySelectorAll('.bar nav.tabs a').forEach(a=>{const on=a.getAttribute('href')===here;a.classList.toggle('active',on);on?a.setAttribute('aria-current','page'):a.removeAttribute('aria-current')})}
 markTab();
 // live refresh, which replaces the table
-const RUNS_PER_PAGE=10;let runQuery='',runPage=0;
+const RUNS_PER_PAGE=10,CASES_PER_PAGE=100;let runQuery='',runPage=0;
 function bindRuns(){const tb=document.querySelector('#runs'),q=document.querySelector('#runsearch'),nav=document.querySelector('#runpages');
 if(!tb||!q||!nav)return;q.value=runQuery;
 const show=()=>{const v=runQuery.toLowerCase(),rows=[...tb.tBodies[0].rows],hit=rows.filter(r=>r.textContent.toLowerCase().includes(v)),
@@ -43,7 +56,14 @@ let seen,touched=0,pressed=false;
 for(const k of ['scroll','wheel','touchmove'])addEventListener(k,()=>touched=Date.now(),{capture:true,passive:true});
 addEventListener('pointerdown',()=>{pressed=true;touched=Date.now()},{capture:true,passive:true});
 for(const k of ['pointerup','pointercancel','touchend'])addEventListener(k,()=>{pressed=false;touched=Date.now()},{capture:true,passive:true});
+// a page too large to swap in without freezing the browser (a report of a whole set) says that it has
+// new results, checked every 30 s, rather than swapping itself
+const HEAVY=document.querySelectorAll('#live td').length>20000;let lastCheck=0;
 if(document.querySelector('meta[name=live]'))setInterval(async()=>{
+if(HEAVY){if(Date.now()-lastCheck<30000)return;lastCheck=Date.now();
+const c=new AbortController(),r=await fetch(location.href,{cache:'no-cache',signal:c.signal});const v=r.headers.get('last-modified');c.abort();
+if(!seen){seen=v;return}if(v&&v!==seen&&!document.querySelector('#newresults')){const b=document.createElement('button');b.id='newresults';
+b.className='btn btn-sm btn-primary newresults';b.textContent='New results: reload';b.onclick=()=>location.reload();document.querySelector('.bar .line')?.append(' ',b)}return}
 if(pressed||Date.now()-touched<2500)return;
 // nor while the reader is filling in a form (adding a column, say), whose input it would throw away
 const typing=()=>document.activeElement?.matches?.('#live input:not([type=hidden]),#live select,#live textarea');
