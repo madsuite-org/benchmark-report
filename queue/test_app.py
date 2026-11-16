@@ -1061,6 +1061,31 @@ class TestServer(Base):
         self.assertEqual(self.request("GET", f"/queue/job/{new['id']}", headers={"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[1]["Location"],
                          new["report"])
 
+    def test_an_instance_that_fails_on_every_host_is_its_own_failure(self):
+        """Papaya, job 244: a solve that throws for an instance throws on every host. After a second
+        host, it is the instance's failure: not tried again, nor held against the nodes."""
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        code, job = self.call_api("POST", "/queue/api/jobs", {"external": True, "master": True, "devices": "cpu"}, token="tok-alice")
+        jid, tok = job["id"], job["token"]
+        j = next(x for x in self.q.data["jobs"] if x["id"] == jid)
+        head, meta = "case,status,iters\n", 'device = "cpu"\n'
+        def send(node, csv):
+            body = self.make_tar({"C/cutest_default.csv": head + csv, "C/cutest_default.csv.meta.toml": meta})
+            return json.loads(self.request("POST", f"/queue/api/jobs/{jid}/files?node={node}&state=running&host=h{node}", body,
+                                           {"Authorization": "Bearer " + tok, "Content-Length": str(len(body))})[2])
+        ask = lambda body: json.loads(self.request("POST", f"/queue/api/jobs/{jid}/retry", json.dumps(body).encode(),
+                                                   {"Authorization": "Bearer " + tok, "Content-Length": str(len(json.dumps(body)))})[2])
+        send("a", "ok1,1,5\nY1,-101,0\nY2,-101,0\n")
+        self.assertEqual(ask({"node": "b", "device": "cpu"}).get("case"), "Y1")             # tried again elsewhere
+        send("b", "Y1,-101,0\n")
+        self.assertIn("cpu/cutest/Y1/default", j["instance_failures"])                      # the same on a second host
+        self.assertEqual(ask({"node": "c", "device": "cpu"}).get("case"), "Y2")             # Y1 is not handed out again
+        send("c", "Y2,-101,0\n")
+        for n in "abc":
+            self.assertNotEqual(j["nodes"][n].get("state"), "quarantined")
+        self.assertEqual(j["streak"].get("b", 0) + j["streak"].get("c", 0), 0)               # nor held against b and c
+        self.assertNotIn("case", ask({"node": "d", "device": "cpu"}))                          # nothing left to try
+
     def test_ended_jobs_and_unfinished_instances(self):
         """Papaya, jobs 230-234: a job ends when its work is done though a node never said so; its nodes
         are not left working; an instance a gone node took is handed out again, and recorded if none is left."""

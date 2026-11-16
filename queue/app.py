@@ -1175,8 +1175,20 @@ def note_failures(cfg, q, j, node, target, r, lines):
             prov[key] = [node, host_of(j, node), now, f[1]]
             requeued.discard(key)
             if f[1] in MACHINE_FAILURES:
-                streak[node] = streak.get(node, 0) + 1
-                bad_since.setdefault(node, now)
+                # the same failure on a second host is the instance's, not a machine's (Papaya, job
+                # 244: a solve that throws for an instance throws on every host): it is not tried again
+                # and does not count against the node
+                hosts = j.setdefault("failed_hosts", {}).setdefault(key, [])
+                host = host_of(j, node) or node
+                host in hosts or hosts.append(host)
+                # an error on two hosts; a kill (a hang, out of memory) after its retries, as a slower
+                # machine may yet finish it
+                if len(hosts) >= (2 if f[1] == "-101" else RETRIES + 1):
+                    instance_failures = j.setdefault("instance_failures", [])
+                    key in instance_failures or instance_failures.append(key)
+                else:
+                    streak[node] = streak.get(node, 0) + 1
+                    bad_since.setdefault(node, now)
             else:
                 streak[node] = 0
         if f[1] in MACHINE_FAILURES:
@@ -1337,7 +1349,7 @@ def quarantine(cfg, q, j, node):
     failure handed out again."""
     since = j.get("bad_since", {}).get(node, 0)
     prov = load_provenance(cfg, j)
-    keys = {k for k, (n, _, t, _) in prov.items() if n == node and t >= since}
+    keys = {k for k, (n, _, t, _) in prov.items() if n == node and t >= since} - set(j.get("instance_failures", []))
     with q.changed:
         j["nodes"].setdefault(node, {})["state"] = "quarantined"
         q.save()
@@ -1377,9 +1389,10 @@ def next_retry(cfg, q, j, node, device):
         return None
     # what was handed out again (a rerun, a node put aside) comes first
     by_case = {}
+    instance_failures = set(j.get("instance_failures", []))
     for k in j.get("requeue", []):
         dev, set_name, case, config = k.split("/", 3)
-        if dev == device:
+        if dev == device and k not in instance_failures:
             by_case.setdefault((set_name, case), []).append(config)
     for (set_name, case), configs in by_case.items():
         if q.claim(j, node, f"{device}/{set_name}/{case}", again=True):
@@ -1394,7 +1407,7 @@ def next_retry(cfg, q, j, node, device):
     by_case = {}
     for set_name, case, config in failure_rows(cfg, j, device):
         key = f"{device}/{set_name}/{case}"
-        if tries.get(f"{key}/{config}", 0) >= RETRIES or (others and failed_on.get(f"{key}/{config}") == node):
+        if tries.get(f"{key}/{config}", 0) >= RETRIES or (others and failed_on.get(f"{key}/{config}") == node) or f"{key}/{config}" in instance_failures:
             continue
         by_case.setdefault((set_name, case), []).append(config)
     for (set_name, case), configs in by_case.items():
