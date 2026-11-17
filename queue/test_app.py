@@ -1121,6 +1121,13 @@ class TestServer(Base):
         out = run("report", "madipm", "first", f"{jid}:main"); self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("/madipm/report-", out.stdout)
         out = run("cancel", str(jid)); self.assertIn("cancelled", out.stdout)
+        # results made by hand, uploaded as a run of their own
+        res = os.path.join(self.dir, "res", "Some_CPU"); os.makedirs(res)
+        open(os.path.join(res, "acopf_default.csv"), "w").write("case,status\nx,1\n")
+        open(os.path.join(res, "acopf_default.csv.meta.toml"), "w").write(f'device = "cpu"\nmadnlp_commit = "{"a" * 40}"\n')
+        out = run("upload", os.path.join(self.dir, "res"), "by-hand"); self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("run-up-by-hand", out.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.cfg.uploads, "run-up-by-hand", "Some_CPU", "acopf_default.csv")))
         self.assertNotEqual(run("frobnicate").returncode, 0)
 
     def test_madbench_replaces_batch_nodes(self):
