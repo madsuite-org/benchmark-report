@@ -22,6 +22,8 @@
     madbench note JOB TEXT / madbench label JOB TEXT    change a job's note or label
     madbench report PACKAGE TITLE JOB[:LABEL]...        make a report of runs, the first one first
     madbench open JOB                                   the address of a job's report
+    madbench upload DIR NAME                            upload result folders made by hand (MadNLP's run.jl) as a
+                                                        run of its own, NAME: lowercase letters, digits and -
     madbench config [KEY=VALUE...]                      show or set defaults of `up`: depot, src, work (where the
                                                         compiled packages, the set-up commits and the nodes' work
                                                         go; on a cluster, a shared file system), hsl (a licensed
@@ -430,13 +432,30 @@ def cmd_report(args):
     print(f"report {out['id']}: {out['url']}")
 
 
+def cmd_upload(args):
+    if len(args) != 2 or not re.fullmatch(r"[a-z0-9-]{1,40}", args[1]):
+        die("madbench upload DIR NAME (NAME: lowercase letters, digits and -)")
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(args[0], arcname=".")
+    req = urllib.request.Request(f"{API}/results?name={args[1]}", data=buf.getvalue(), method="POST",
+                                 headers={"Authorization": "Bearer " + token(), "Content-Type": "application/gzip"})
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            print(f"report: {json.load(r).get('report')}")
+    except urllib.error.HTTPError as err:
+        die(json.load(err).get("error") or str(err.code))
+
+
 def cmd_open(args):
     print(call("GET", f"/jobs/{int(args[0])}").get("report") or "the job has no report yet")
 
 
 COMMANDS = {"packages": cmd_packages, "new": cmd_new, "jobs": cmd_jobs, "status": cmd_status, "up": cmd_up, "down": cmd_down,
             "cancel": cmd_cancel, "rerun": cmd_rerun, "note": cmd_note, "label": lambda a: cmd_note(a, "label"),
-            "report": cmd_report, "open": cmd_open, "config": cmd_config}
+            "report": cmd_report, "open": cmd_open, "config": cmd_config, "upload": cmd_upload}
 
 
 def main(argv):
