@@ -5,7 +5,8 @@
     madbench new PACKAGE [REF] --note=TEXT [options]    create a job: REF is main/master (default), a PR
                                                         number, a branch or a commit; --local=PATH for a checkout
                                                         of your own. Options: --devices=cpu|cuda, --sets=a,b,
-                                                        --instances=a,b|@FILE, --config=NAME, --label=TEXT
+                                                        --instances=a,b|@FILE, --config=NAME, --label=TEXT;
+                                                        for MadNLP also --options=name=value,... and --subset=TERMS
     madbench jobs [PACKAGE] [--all]                     the jobs (running and waiting; --all for every one)
     madbench status JOB                                 a job and its nodes
     madbench up JOB [-d] [--checkout=PATH]              run a node of the job on this machine (-d: in the background)
@@ -141,7 +142,7 @@ def cmd_packages(args):
 
 
 def cmd_new(args):
-    o, pos = opts(args, {"note", "devices", "sets", "instances", "config", "label", "local"})
+    o, pos = opts(args, {"note", "devices", "sets", "instances", "config", "label", "local", "options", "subset"})
     if not pos:
         die("give the package: madbench new PACKAGE [REF] --note=TEXT (madbench packages lists them)")
     package, ref = pos[0], (pos[1] if len(pos) > 1 else "main")
@@ -167,7 +168,7 @@ def cmd_new(args):
         body["commit"] = ref
     else:
         body["branch"] = ref
-    for k in ("sets", "config", "label"):
+    for k in ("sets", "config", "label", "options", "subset"):
         if o.get(k):
             body[k] = o[k]
     if o.get("instances"):
