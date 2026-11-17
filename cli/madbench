@@ -198,9 +198,21 @@ def cmd_jobs(args):
               f"{working}/{len(nodes)} nodes  {(j.get('label') or j.get('title') or '')[:40]}  ({j.get('by', '')})")
 
 
+def have_token():
+    return bool(os.environ.get("BENCHMARK_TOKEN")) or (shutil.which("gh") is not None and
+           subprocess.run(["gh", "auth", "token"], capture_output=True).returncode == 0)
+
+
 def cmd_status(args):
     if not args:
         die("madbench status JOB")
+    if not have_token() and os.path.exists(job_file(args[0])):
+        # a node's machine, with the job file and no GitHub token: what the job's own token may read
+        _, _, tok = read_job(args[0])
+        j = call("GET", f"/jobs/{int(args[0])}/spec", auth=tok)
+        print(f"job {j['id']} ({j.get('project', 'madnlp')}): {j['state']}, {j['sha'][:8]}, {j.get('devices')}, {j.get('config')}")
+        print(f"  report: {j.get('report')}")
+        return
     j = call("GET", f"/jobs/{int(args[0])}")
     print(f"job {j['id']} ({j.get('project', 'madnlp')}): {j['state']}, {j.get('title', '')}, {j.get('devices')}, {j.get('config')}")
     if j.get("purpose"):
