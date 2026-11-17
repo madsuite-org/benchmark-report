@@ -12,6 +12,7 @@ machine and nothing here polls. Standard library only; the GitHub App's tokens a
 import base64, email.utils, hashlib, hmac, html, http.server, json, mimetypes, os, re, secrets, shlex, shutil, subprocess, tarfile, tempfile, threading, time
 import urllib.error, urllib.parse, urllib.request
 import exa
+import solver as solverpages
 
 # who may use the app: write access to the repository, or membership of its organization (Sungho)
 WRITE = ("admin", "maintain", "write", "member")
@@ -141,23 +142,45 @@ def settings_of(job):
     return {k: job.get(k) or v for k, v in DEFAULTS.items()}
 
 
-# The projects benchmarked here: MadNLP (cfg.repo, its reports at cfg.reports) and ExaModels
-# (exa.py, its pages at /examodels on the same site). A job is MadNLP's unless it says otherwise.
-def is_exa(j):
-    return bool(j) and j.get("project") == "examodels"
+# The packages benchmarked here: MadNLP (cfg.repo, its reports at cfg.reports, built by the builder),
+# and the others the app renders itself, each at /<key> on the same site: ExaModels (exa.py, callback
+# times) and MadIPM (solver.py, solver results). A job is MadNLP's unless it says otherwise; a new
+# package is an entry here (Sungho: "later we will add others").
+class Side:
+    def __init__(self, key, name, repo, harness, default, sets, known, prefix, pages, configs, about):
+        self.key, self.name, self.repo, self.harness, self.default = key, name, repo, harness, default
+        self.sets, self.known, self.prefix, self.pages, self.configs, self.about = sets, known, prefix, pages, configs, about
+
+
+SIDES = {
+    "examodels": Side("examodels", "ExaModels", exa.REPO, exa.HARNESS, exa.DEFAULT_BRANCH, exa.DEFAULT_SETS, exa.KNOWN_SETS, "exa", exa,
+                      {"default"}, "algebraic modeling: model construction and callback times"),
+    "madipm": Side("madipm", "MadIPM", "madsuite-org/MadIPM.jl", "https://github.com/madsuite-org/MadIPMBenchmark.jl", "main",
+                   "netlib,mm,miplib", {"netlib", "mm", "miplib", "smoke"}, "ipm", solverpages, {"default", "highs"},
+                   "LP and QP interior point solver: solve times, iterations and failures, with HiGHS as the reference"),
+}
+
+
+def side_of(j):
+    return SIDES.get((j or {}).get("project", ""))
+
+
+def is_side(j):
+    """A job of a package the app renders itself, not MadNLP's."""
+    return side_of(j) is not None
 
 
 def repo_of(cfg, j):
-    return exa.REPO if is_exa(j) else cfg.repo
+    return side_of(j).repo if is_side(j) else cfg.repo
 
 
-def exa_base(cfg):
+def side_base(cfg, side):
     u = urllib.parse.urlsplit(cfg.reports)
-    return f"{u.scheme}://{u.netloc}/examodels"
+    return f"{u.scheme}://{u.netloc}/{side.key if isinstance(side, Side) else side}"
 
 
 def reports_of(cfg, j):
-    return exa_base(cfg) if is_exa(j) else cfg.reports
+    return side_base(cfg, side_of(j)) if is_side(j) else cfg.reports
 
 
 def settings_problem(cfg, settings):
@@ -254,8 +277,8 @@ class Queue:
         """A job run outside the app's machines by `login`, who publishes its results through the API
         with the token returned here. `what` is {"master": true}, {"pr": N}, {"branch": name} or
         {"commit": sha}. Returns (job, token) or (None, problem)."""
-        repo = exa.REPO if project == "examodels" else self.cfg.repo
-        default = exa.DEFAULT_BRANCH if project == "examodels" else "master"
+        repo = SIDES[project].repo if project in SIDES else self.cfg.repo
+        default = SIDES[project].default if project in SIDES else "master"
         title, fork = "", repo
         if what.get("local"):
             # local code: not on GitHub, so not looked up; marked as such everywhere it shows
@@ -695,8 +718,8 @@ def public(cfg, j):
         out["subset"], out["instances"] = j.get("subset", ""), len(j["only"])
     out |= settings_of(j) | {"keep": j.get("keep", True), "cancelling": bool(j.get("cancel")), "url": f"{cfg.base}/job/{j['id']}",
             "report": f"{reports_of(cfg, j)}/{folder(j)}/" if j.get("sha") and j["state"] != "waiting" else None}
-    if is_exa(j):
-        out["project"] = "examodels"
+    if is_side(j):
+        out["project"] = j["project"]
     return out
 
 
@@ -710,7 +733,7 @@ def folder(job):
                   f"pr{job['pr']}" if job["kind"] == "pr" else
                   re.sub(r"[^a-z0-9]+", "-", (job.get("ref") or "").lower()).strip("-")[:16] if job["kind"] == "branch" else (job.get("sha") or "")[:8])
         # ExaModels' are exa-x<id>-..., which the MadNLP builder leaves alone
-        return f"{'exa' if is_exa(job) else 'run'}-x{job['id']}-{target}"[:48].rstrip("-")
+        return f"{side_of(job).prefix if is_side(job) else 'run'}-x{job['id']}-{target}"[:48].rstrip("-")
     v = variant(job)
     if v:
         target = (f"pr{job['pr']}" if job["kind"] == "pr" else
@@ -952,7 +975,8 @@ def app_nav(cfg, login):
                 f'<a href="{e(cfg.base)}/login">Sign in with GitHub</a><a href="{e(cfg.reports)}/">Reports</a>{theme}</div></details></nav>')
     csrf = sign(cfg, "csrf|" + login)
     return (f'<nav class="app"><details class="menu"><summary aria-label="Menu">{e(login)} ☰</summary><div>'
-            f'<a href="{e(cfg.reports)}/">MadNLP</a><a href="{e(exa_base(cfg))}/">ExaModels</a><a href="{e(cfg.base)}/help">How it works</a>{theme}'
+            f'<a href="{e(cfg.reports)}/">MadNLP</a>' + "".join(f'<a href="{e(side_base(cfg, s))}/">{e(s.name)}</a>' for s in SIDES.values())
+            + f'<a href="{e(cfg.base)}/help">How it works</a>{theme}'
             f'<form method="post" action="{e(cfg.base)}/logout"><input type="hidden" name="csrf" value="{csrf}"><button>Sign out</button></form>'
             '</div></details></nav>')
 
@@ -1629,8 +1653,8 @@ def write_run_json(cfg, j):
     # short: the job's label, else what it runs; its note, settings and hosts are in its details (Sungho)
     title = f"Job {j['id']}: {display_name(j)}"
     doc = {"repository": repo_of(cfg, j), "pr": "", "commit": j.get("sha") or "", "title": title, "state": j["state"], "job": j["id"], "by": j.get("by", "")}
-    if is_exa(j):
-        doc["project"] = "examodels"
+    if is_side(j):
+        doc["project"] = j["project"]
     if j.get("local"):
         doc["local"] = True          # code not on GitHub: marked everywhere, never a reference
     if j.get("fork"):
@@ -1776,7 +1800,7 @@ def packages(cfg):
     """The packages benchmarked here, as (name, what is timed, address, repository): the landing page
     lists them, and a new one is a line here."""
     return [("MadNLP", "nonlinear programming solver: solve times, iterations and failures", cfg.reports, cfg.repo),
-            ("ExaModels", "algebraic modeling: model construction and callback times", exa_base(cfg), exa.REPO)]
+            *((s.name, s.about, side_base(cfg, s), s.repo) for s in SIDES.values())]
 
 
 def landing_page(cfg, login):
@@ -1808,9 +1832,7 @@ def help_page(cfg, login):
 <p>This site coordinates benchmark jobs of <a href="https://github.com/{e(cfg.repo)}">{e(cfg.repo)}</a>, collects their results and
 shows them as runs and reports. It runs no benchmark itself: <b>a job runs on the machines its creator starts nodes on</b>; the site
 hands out the instances, merges the results and builds the pages.</p>
-<p><b>ExaModels</b>: jobs of <a href="https://github.com/{exa.REPO}">{exa.REPO}</a> time model construction and callbacks, with
-<a href="{exa.HARNESS}#readme">ExaModelsBenchmark.jl</a> (its <code>runner/publish.sh</code>, as below); their runs are at
-<a href="{e(exa_base(cfg))}/">{e(exa_base(cfg))}/</a>, each compared with the newest run of main on the same machine.</p>
+{"".join(f'<p><b>{e(s.name)}</b> ({e(s.about)}): jobs of <a href="https://github.com/{e(s.repo)}">{e(s.repo)}</a>, run with <a href="{e(s.harness)}#readme">{e(s.harness.rsplit("/", 1)[1])}</a> (its <code>runner/publish.sh</code>, as below); their runs and reports are at <a href="{e(side_base(cfg, s))}/">{e(side_base(cfg, s))}/</a>.</p>' for s in SIDES.values())}
 <h2>Who can use it</h2>
 <p>Any member of {org}, and anyone with write access to {e(cfg.repo)}, signs in with GitHub to see the runs and reports and to make
 jobs and reports. A run or a report is open to anyone given its link (<i>Copy link</i> on its page); nothing else is public, and the
@@ -2005,9 +2027,9 @@ def report_runs(q, given):
 
 def public_report(cfg, r, links=None):
     out = {k: r[k] for k in ("id", "title", "runs", "by", "created")}
-    out["url"] = f"{exa_base(cfg) if r.get('project') == 'examodels' else cfg.reports}/report-{r['id']}/"
-    if r.get("project") == "examodels":
-        out["project"] = "examodels"
+    out["url"] = f"{side_base(cfg, r['project']) if r.get('project') in SIDES else cfg.reports}/report-{r['id']}/"
+    if r.get("project") in SIDES:
+        out["project"] = r["project"]
         return out
     if links is not None and links.path:
         name = "report-" + str(r["id"])
@@ -2106,7 +2128,7 @@ def job_details(cfg, j):
             f'pull request <a href="https://github.com/{repo_of(cfg, j)}/pull/{j["pr"]}">#{j["pr"]}</a>' + (f' <b>from the fork {e(j["fork"])}</b>' if j.get("fork") else "") if j["kind"] == "pr" else
             f'branch <a href="https://github.com/{repo_of(cfg, j)}/tree/{urllib.parse.quote(j.get("ref") or "", safe="/")}">{e(j.get("ref") or "")}</a>' if j["kind"] == "branch" else
             "master" if j["kind"] == "master" or (j.get("title") or "").startswith("master ") else
-            "main" if is_exa(j) and (j.get("title") or "").startswith("main ") else "commit")
+            "main" if is_side(j) and (j.get("title") or "").startswith("main ") else "commit")
     sha = j.get("sha") or ""
     fields = [("label", e(j["label"])) if j.get("label") else None,
               ("note", e(j["purpose"])) if j.get("purpose") else None,
@@ -2432,37 +2454,66 @@ def origin_badge(title):
             '<span class="origin" title="a pull request from a fork">fork</span> ' if title.startswith("Fork:") else "")
 
 
-def exa_shell(cfg, login, title, crumb, line, menu, content, live):
-    """A page of ExaModels' runs and reports in the shell of MadNLP's (src/site.jl `page`, `banner`): the
+# what a configuration of a run is called in a column (MadIPM's runs: MadIPM and its reference)
+CONFIG_LABELS = {"highs": "HiGHS"}
+
+
+def side_columns(side, runs, root_of, own=False):
+    """The columns of a package's page for `runs` [(label, job)]. ExaModels: a run each. A solver: each
+    run's configurations; on a run's own page labelled by configuration, in a report by the run's label,
+    the reference (HiGHS) once, the first run's."""
+    if side.pages is exa:
+        return exa.Columns([(label, j, root_of(j)) for label, j in runs])
+    cols, seen_ref = [], False
+    for label, j in runs:
+        for config in (j.get("config") or "default").split(","):
+            ref = config in CONFIG_LABELS
+            if ref and seen_ref:
+                continue
+            seen_ref |= ref
+            name = CONFIG_LABELS.get(config, side.name if own else label)
+            cols.append((name, root_of(j), config))
+    return solverpages.Columns(cols, tuple(side.sets.split(",")))
+
+
+def side_commit(side, j):
+    sha = j.get("sha") or ""
+    if not sha:
+        return ""
+    return f'<code class="m">{html.escape(sha[:8])}</code>' if j.get("local") else f'<a class="m" href="https://github.com/{side.repo}/commit/{html.escape(sha)}">{html.escape(sha[:8])}</a>'
+
+
+def side_shell(cfg, login, side, title, crumb, line, menu, content, live):
+    """A page of a package's runs and reports in the shell of MadNLP's (src/site.jl `page`, `banner`): the
     banner with its trail, the bar with the page's line and tabs, and report.js, which refreshes a live
     page in place."""
     e, r = html.escape, html.escape(cfg.reports)
     return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             '<meta name="robots" content="noindex, nofollow">' + ('<meta name="live" content="1">' if live else "") +
-            f'<title>{e(title)}: ExaModels benchmarks</title><link rel="icon" href="{r}/favicon.ico" sizes="any"><script src="{r}/theme.js"></script>'
+            f'<title>{e(title)}: {e(side.name)} benchmarks</title><link rel="icon" href="{r}/favicon.ico" sizes="any"><script src="{r}/theme.js"></script>'
             f'<link rel="stylesheet" href="{r}/bootstrap.min.css"><link rel="stylesheet" href="{r}/style.css"><body><div id="live">'
             f'<header class="site"><div class="container"><a class="brand" href="/"><img src="{r}/madsuite-logo.svg" alt="MadSuite" class="logo"> benchmarks</a>'
-            f'<span class="trail"><a href="{e(exa_base(cfg))}/">ExaModels</a></span><span class="trail">{e(crumb)}</span>{app_nav(cfg, login)}</div></header>'
+            f'<span class="trail"><a href="{e(side_base(cfg, side))}/">{e(side.name)}</a></span><span class="trail">{e(crumb)}</span>{app_nav(cfg, login)}</div></header>'
             f'<div class="bar"><div class="container"><div class="line">{line}</div>{menu}</div></div>'
             f'<main class="container">{content}</main></div><script src="{r}/report.js"></script></body></html>')
 
 
-def exa_dashboard(cfg, q, login):
-    """ExaModels' dashboard, as MadNLP's (Sungho): reports, the current jobs, the past ones, with the
+def side_dashboard(cfg, q, login, side):
+    """A package's dashboard, as MadNLP's (Sungho): reports, the current jobs, the past ones, with the
     same tables, tags and search."""
     q.settle_all(cfg)
     e = html.escape
-    jobs = {j["id"]: j for j in q.data["jobs"] if is_exa(j)}
-    reports = sorted((r for r in load_reports(cfg)["reports"].values() if r.get("project") == "examodels"), key=lambda r: -r["id"])
+    jobs = {j["id"]: j for j in q.data["jobs"] if j.get("project") == side.key}
+    reports = sorted((r for r in load_reports(cfg)["reports"].values() if r.get("project") == side.key), key=lambda r: -r["id"])
     def report_row(r):
         cols = ", ".join(e(c["label"]) for c in r["runs"])
         states = {jobs[c["job"]]["state"] for c in r["runs"] if c["job"] in jobs}
         state = "running" if "running" in states else "finished"
         return (f'<tr><td><a class="trunc" href="report-{r["id"]}/">{e(r["title"])}</a></td><td class="l">{cols}</td><td class="l">{e(r.get("by", ""))}</td>'
                 f'<td class="l"><span class="state {"on" if state == "running" else "off"}">{state}</span></td><td>{when(r.get("created"))}</td></tr>')
-    body = ('<h1 class="h3">ExaModels benchmarks</h1>'
-            f'<p class="m">Model construction and callback times of <a href="https://github.com/{exa.REPO}">ExaModels.jl</a>, run with '
-            f'<a href="{exa.HARNESS}#readme">ExaModelsBenchmark.jl</a>. A run is compared with the newest run of main on the same machine; a report compares two runs.</p>')
+    body = (f'<h1 class="h3">{e(side.name)} benchmarks</h1>'
+            f'<p class="m"><a href="https://github.com/{e(side.repo)}">{e(side.repo)}</a>: {e(side.about)}. Run with '
+            f'<a href="{e(side.harness)}#readme">{e(side.harness.rsplit("/", 1)[1])}</a>. A run\'s page shows the run alone; a report compares runs.</p>')
     body += '<h2>Reports</h2>' + ('<div class="wide"><table id="reports" class="table table-sm"><thead><tr><th>report</th><th class="l">columns</th>'
                                   '<th class="l">by</th><th class="l">state</th><th>made</th></tr></thead><tbody>' + "".join(map(report_row, reports)) + "</tbody></table></div>"
                                   if reports else '<p class="m">No reports yet.</p>')
@@ -2472,7 +2523,7 @@ def exa_dashboard(cfg, q, login):
                                        if current else '<p class="m">Nothing is running or waiting.</p>')
     body += ('<h2>Past jobs</h2><input id="runsearch" class="form-control form-control-sm mb-2" placeholder="Search runs: name, commit, device, user, state" aria-label="Search runs">'
              + JOB_HEAD.format(id=' id="runs"') + "".join(job_row(cfg, j) for j in past) + '</tbody></table></div><nav id="runpages" class="pages" aria-label="Pages of runs"></nav>')
-    return shell(cfg, login, "ExaModels", body).replace("</body>", RUN_SEARCH + "</body>", 1)
+    return shell(cfg, login, side.name, body).replace("</body>", RUN_SEARCH + "</body>", 1)
 
 
 def jobs_section(cfg, q, login=None):
@@ -2482,7 +2533,7 @@ def jobs_section(cfg, q, login=None):
     def table(title, jobs, empty):
         return f'<h2>{title}</h2>' + (JOB_HEAD.format(id="") + "".join(job_row(cfg, j) for j in jobs) + "</tbody></table></div>" if jobs else f'<p class="m">{empty}</p>')
     # MadNLP's only: ExaModels' jobs are on its own pages (Sungho)
-    queue = [j for j in q.jobs("running") + sorted(q.jobs("waiting"), key=order) if not is_exa(j)]
+    queue = [j for j in q.jobs("running") + sorted(q.jobs("waiting"), key=order) if not is_side(j)]
     # jobs start through the API (Sungho), so the dashboard has no form for them: it says how
     # the dashboard's sections, as ExaModels': reports, current jobs, past jobs (Sungho)
     return table("Current jobs", queue, "Nothing is running or waiting.")
@@ -2712,7 +2763,7 @@ def handler(cfg, q):
                 return reply(200, {"id": j["id"], "sha": j["sha"], "repository": repo_of(cfg, j), "state": j["state"],
                                    **({"local": "true", "changes": j.get("changes", "")} if j.get("local") else {}),
                                    **({"pull": str(j["pr"])} if j.get("pr") else {}),
-                                   "sets": j.get("sets", exa.DEFAULT_SETS if is_exa(j) else "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
+                                   "sets": j.get("sets", side_of(j).sets if is_side(j) else "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
                                    "files": f"{cfg.base}/api/jobs/{j['id']}/files", "claim": f"{cfg.base}/api/jobs/{j['id']}/claim",
                                    "report": f"{reports_of(cfg, j)}/{folder(j)}/"})
             if what == "stream":
@@ -2831,15 +2882,21 @@ def handler(cfg, q):
                 keep = bool(data.get("keep", True))
                 settings = {k: str(data.get(k) or DEFAULTS[k]) for k in DEFAULTS}
                 project = str(data.get("project") or "madnlp")
-                if project not in ("madnlp", "examodels"):
-                    return reply(400, {"error": "project is madnlp or examodels."})
-                if project == "examodels":
-                    # ExaModelsBenchmark.jl: one configuration and no solver options; its sets are its own
-                    if settings["config"] != "default" or settings["options"] or settings["harness"] or data.get("subset"):
-                        return reply(400, {"error": "An ExaModels job takes devices, sets, instances, note and label only."})
+                side = SIDES.get(project)
+                if project != "madnlp" and side is None:
+                    return reply(400, {"error": "project is one of madnlp, " + ", ".join(SIDES) + "."})
+                if side is not None:
+                    # a package the app renders itself: its configurations, no solver options; its sets are its own
+                    configs_ = settings["config"].split(",")
+                    if not set(configs_) <= side.configs or settings["options"] or settings["harness"] or data.get("subset"):
+                        return reply(400, {"error": f"A {side.name} job takes devices, sets, instances, note, label and a configuration of "
+                                                    + ", ".join(sorted(side.configs)) + "."})
                     if not data.get("external"):
-                        return reply(400, {"error": "An ExaModels job runs where you start its nodes: create it with \"external\": true."})
-                problem = None if project == "examodels" else settings_problem(cfg, settings)
+                        return reply(400, {"error": f"A {side.name} job runs where you start its nodes: create it with \"external\": true."})
+                    # MadIPM's reference, HiGHS, runs beside it on the host unless a configuration is named
+                    if "highs" in side.configs and settings["config"] == "default" and settings["devices"] == "cpu" and not data.get("config"):
+                        settings["config"] = "default,highs"
+                problem = None if side is not None else settings_problem(cfg, settings)
                 if problem:
                     return reply(400, {"error": problem})
                 if not data.get("external"):
@@ -2853,13 +2910,13 @@ def handler(cfg, q):
                     purpose = " ".join(str(data.get("note") or "").split())
                     if len(purpose) > 200:
                         return reply(400, {"error": "A note is up to 200 characters."})
-                    sets = str(data.get("sets") or (exa.DEFAULT_SETS if project == "examodels" else "acopf,cops,mittelmann,cutest"))
+                    sets = str(data.get("sets") or (side.sets if side is not None else "acopf,cops,mittelmann,cutest"))
                     if not re.fullmatch(r"[a-z]+(,[a-z]+){0,9}", sets):
                         return reply(400, {"error": "sets is a comma-separated list of set names."})
-                    if project == "examodels" and not set(sets.split(",")) <= exa.KNOWN_SETS:
-                        return reply(400, {"error": "The sets of ExaModels are " + ", ".join(sorted(exa.KNOWN_SETS)) + "."})
+                    if side is not None and not set(sets.split(",")) <= side.known:
+                        return reply(400, {"error": f"The sets of {side.name} are " + ", ".join(sorted(side.known)) + "."})
                     settings = settings | {"sets": sets}
-                    if project == "examodels" and data.get("instances"):
+                    if side is not None and data.get("instances"):
                         # a list of names, kept as given: the nodes time those of them their sets have
                         given = data.get("instances")
                         if not (isinstance(given, list) and 0 < len(given) <= 5000 and all(isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9_.+-]{1,100}", x) for x in given)):
@@ -3015,20 +3072,20 @@ def handler(cfg, q):
                             return reply(400, {"error": problem})
                         # a report is of one package's runs: MadNLP's (built by the builder) or ExaModels' (exa.py)
                         project = (r or {}).get("project") or str(data.get("project") or "madnlp")
-                        if project not in ("madnlp", "examodels"):
-                            return reply(400, {"error": "project is madnlp or examodels."})
+                        if project != "madnlp" and project not in SIDES:
+                            return reply(400, {"error": "project is one of madnlp, " + ", ".join(SIDES) + "."})
                         by_id = {j["id"]: j for j in q.data["jobs"]}
-                        if any(is_exa(by_id.get(c["job"])) != (project == "examodels") for c in runs):
+                        if any((by_id.get(c["job"]) or {}).get("project", "madnlp") != project for c in runs):
                             return reply(400, {"error": f"Every run of a report of {project} is a job of {project}."})
                         if r is None:
                             r = {"id": store["next"], "by": login, "created": int(time.time())}
                             store["next"] += 1
                         r.update(title=title, runs=runs)
-                        if project == "examodels":
-                            r["project"] = "examodels"
+                        if project in SIDES:
+                            r["project"] = project
                         store["reports"][str(r["id"])] = r
                         save_reports(cfg, store)
-                        if project != "examodels":
+                        if project not in SIDES:
                             write_report_spec(cfg, r)      # ExaModels' are rendered by the app
                         return reply(201 if method == "POST" else 200, public_report(cfg, r, links))
                     if len(parts) == 2 and method == "GET":
@@ -3187,8 +3244,8 @@ def handler(cfg, q):
                 if path.startswith("/queue/job/"):
                     job_id = path[len("/queue/job/"):]
                     j = next((j for j in q.data["jobs"] if job_id.isdigit() and j["id"] == int(job_id)), None)
-                    if j and is_exa(j) and j.get("sha"):
-                        return self.redirect(f"{exa_base(cfg)}/{folder(j)}/")
+                    if j and is_side(j) and j.get("sha"):
+                        return self.redirect(f"{reports_of(cfg, j)}/{folder(j)}/")
                     if j and j.get("sha") and site_file(cfg, f"{urllib.parse.urlsplit(cfg.reports).path}/{folder(j)}/"):
                         return self.redirect(f"{cfg.reports}/{folder(j)}/")
                     return self.send(200, job_page(cfg, q, login, j)) if j else self.send(404, jobs_page(cfg, q, login, "There is no such job."))
@@ -3224,40 +3281,42 @@ def handler(cfg, q):
                 asked = lambda: any(j["id"] == job_id and j.get("cancel") for j in q.jobs("running")) or not any(j["id"] == job_id for j in q.jobs("running"))
                 q.wait(asked, cfg.hold)
                 return self.send(200, json.dumps({"cancel": asked()}), kind="application/json")
-            if path == "/examodels" or path.startswith("/examodels/"):
-                return self.exa_page(path, login, member, args)
+            for side in SIDES.values():
+                if path == f"/{side.key}" or path.startswith(f"/{side.key}/"):
+                    return self.side_page(side, path, login, member, args)
             return self.report_page(path, login)
 
-        def exa_page(self, path, login, member, args):
-            """The ExaModels benchmarks (exa.py): its dashboard, a run's pages and a report's, for those who
-            may use the site, as MadNLP's."""
-            if path == "/examodels":
+        def side_page(self, side, path, login, member, args):
+            """A package's benchmarks (exa.py, solver.py): its dashboard, a run's pages and a report's, for
+            those who may use the site, as MadNLP's."""
+            if path == f"/{side.key}":
                 return self.redirect(path + "/")
             if not login:
                 return self.send(200, signin(cfg))
             if not member:
                 return self.send(403, shell(cfg, login, "No access", f"<p>{html.escape(login)} is not a member of {html.escape(cfg.repo.split('/')[0])}.</p>"))
-            parts = path[len("/examodels/"):].split("/")
+            parts = path[len(f"/{side.key}/"):].split("/")
             if parts in ([""], ["index.html"]):
-                return self.send(200, exa_dashboard(cfg, q, login))
-            jobs = {j["id"]: j for j in q.data["jobs"] if is_exa(j)}
+                return self.send(200, side_dashboard(cfg, q, login, side))
+            jobs = {j["id"]: j for j in q.data["jobs"] if j.get("project") == side.key}
             root_of = lambda j: os.path.join(cfg.uploads, folder(j)) if cfg.uploads else ""
             rm = re.fullmatch(r"report-(\d{1,6})", parts[0])
             report = load_reports(cfg)["reports"].get(rm[1]) if rm else None
-            if report is not None and report.get("project") == "examodels":
+            if report is not None and report.get("project") == side.key:
                 runs = [(c["label"], jobs.get(c["job"])) for c in report["runs"]]
                 if any(j is None for _, j in runs):
                     return self.send(404, shell(cfg, login, "Not found", "<p>A run of this report is gone.</p>"))
-                cols = exa.Columns([(label, j, root_of(j)) for label, j in runs])
+                cols = side_columns(side, runs, root_of)
                 j, crumb, subtitle = None, f"Report {report['id']}", report["title"]
                 running = any(j_["state"] == "running" for _, j_ in runs)
                 commit = ""
             else:
-                j = next((j for j in jobs.values() if folder(j) == parts[0]), None) if exa.is_folder(parts[0]) else None
+                ok = re.fullmatch(rf"{side.prefix}-x\d+-[a-z0-9-]{{0,40}}", parts[0])
+                j = next((j for j in jobs.values() if folder(j) == parts[0]), None) if ok else None
                 if j is None:
                     return self.send(404, shell(cfg, login, "Not found", "<p>There is no such run.</p>"))
-                cols = exa.Columns([(j.get("label") or f"job {j['id']}", j, root_of(j))])
-                crumb, subtitle, running, commit = f"Job {j['id']}", display_name(j), j["state"] == "running", exa.commit_link(j)
+                cols = side_columns(side, [(j.get("label") or f"job {j['id']}", j)], root_of, own=True)
+                crumb, subtitle, running, commit = f"Job {j['id']}", display_name(j), j["state"] == "running", side_commit(side, j)
             if len(parts) == 1:
                 return self.redirect(path + "/")
             page = "/".join(parts[1:]) or "index.html"
@@ -3266,19 +3325,19 @@ def handler(cfg, q):
             if j is not None and parts[1] == "data":
                 return self.exa_data(path, login, j, root_of(j), "/".join(parts[2:]))
             if page == "index.html":
-                content = exa.summary_page(cols)
+                content = side.pages.summary_page(cols)
             else:
                 m = re.fullmatch(r"([a-z]+)\.html", page)
                 if not (m and m[1] in cols.sets):
                     return self.send(404, shell(cfg, login, "Not found", "<p>There is no such page.</p>"))
-                content = exa.set_page(cols, m[1])
-            stamp = exa.updated([root for _, _, root in cols.cols])
+                content = side.pages.set_page(cols, m[1])
+            stamp = side.pages.updated(sorted({root_of(j_) for _, j_ in (runs if j is None else [(None, j)])}))
             line = (f'{origin_badge(subtitle)}<span class="subtitle">{html.escape(subtitle)}</span> {commit} '
                     f'<span class="state {"on" if running else "off"}">{"running" if running else "finished"}</span> '
                     f'<span class="m">updated <span class="ago" data-t="{stamp}">{stamp.replace("T", " ").rstrip("Z")} UTC</span></span>')
-            menu = exa.tabs(cols, workers=j is not None and running, raw=j is not None)
+            menu = side.pages.tabs(cols, workers=j is not None and running, raw=j is not None)
             panel = f'<div class="jobbar">{job_details(cfg, j)} {actions(cfg, q, login, j)}</div>' if j is not None else ""
-            return self.send(200, exa_shell(cfg, login, subtitle, crumb, line, menu, panel + content, running))
+            return self.send(200, side_shell(cfg, login, side, subtitle, crumb, line, menu, panel + content, running))
 
         def exa_data(self, path, login, j, root, rel):
             """A run's raw files: the result files, their metadata and summaries."""

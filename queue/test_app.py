@@ -23,10 +23,12 @@ class FakeGitHub:
 
     def api(self, method, path, body=None):
         # ExaModels.jl, for its jobs: the same fake repository, with a main branch
-        if path.startswith(f"/repos/{app.exa.REPO}/"):
-            if path == f"/repos/{app.exa.REPO}/commits/main":
-                return {"sha": "e" * 40}
-            path = path.replace(f"/repos/{app.exa.REPO}/", f"/repos/{REPO}/")
+        # the other packages' repositories, for their jobs: the same fake repository, with a main branch
+        for other in (side.repo for side in app.SIDES.values()):
+            if path.startswith(f"/repos/{other}/"):
+                if path == f"/repos/{other}/commits/main":
+                    return {"sha": "e" * 40}
+                path = path.replace(f"/repos/{other}/", f"/repos/{REPO}/")
         if path.startswith(f"/repos/{REPO}/pulls/"):
             n = int(path.rsplit("/", 1)[1])
             if n not in self.pulls:
@@ -1085,6 +1087,45 @@ class TestServer(Base):
             self.assertNotEqual(j["nodes"][n].get("state"), "quarantined")
         self.assertEqual(j["streak"].get("b", 0) + j["streak"].get("c", 0), 0)               # nor held against b and c
         self.assertNotIn("case", ask({"node": "d", "device": "cpu"}))                          # nothing left to try
+
+    def test_madipm_jobs_and_pages(self):
+        """MadIPM's benchmark, a package the app renders itself: its jobs run MadIPM and HiGHS on the host,
+        and its pages are MadNLP's, with HiGHS as a column."""
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        post = lambda data: self.call_api("POST", "/queue/api/jobs", data, token="tok-alice")
+        self.assertEqual(post({"project": "madipm", "external": True, "master": True, "config": "nope"})[0], 400)
+        self.assertEqual(post({"project": "madipm", "external": True, "master": True, "sets": "cutest"})[0], 400)
+        code, job = post({"project": "madipm", "external": True, "master": True, "devices": "cpu"})
+        self.assertEqual(code, 201, job)
+        j = next(x for x in self.q.data["jobs"] if x["id"] == job["id"])
+        self.assertEqual(j["config"], "default,highs")                             # its reference beside it on the host
+        self.assertTrue(app.folder(j).startswith("ipm-x"))
+        spec = json.loads(self.request("GET", f"/queue/api/jobs/{job['id']}/spec", headers={"Authorization": "Bearer " + job["token"]})[2])
+        self.assertEqual((spec["repository"], spec["sets"], spec["config"]), ("madsuite-org/MadIPM.jl", "netlib,mm,miplib", "default,highs"))
+        head = "case,status,iters,nvar,ncon,nnzj,nnzh,obj,primal_feas,dual_feas,t_total\n"
+        meta = 'device = "cpu"\nhost = "n1"\ncpu_model = "EPYC"\n'
+        body = self.make_tar({"C/netlib_default.csv": head + "AFIRO,1,7,32,27,83,0,-464.75,1e-9,1e-9,0.002\nBLEND,1,11,83,74,491,0,-30.81,1e-9,1e-9,0.009\n",
+                              "C/netlib_highs.csv": head + "AFIRO,1,10,32,27,83,0,-464.75,1e-9,1e-9,0.004\nBLEND,6,99,83,74,491,0,NaN,NaN,NaN,0.5\n",
+                              "C/netlib_default.csv.meta.toml": meta, "C/netlib_highs.csv.meta.toml": meta})
+        code, _, out = self.request("POST", f"/queue/api/jobs/{job['id']}/files?node=n&state=finished&host=n1", body,
+                                    {"Authorization": "Bearer " + job["token"], "Content-Length": str(len(body))})
+        self.assertEqual(code, 200, out)
+        code, page = self.get("/madipm/", "alice")
+        self.assertEqual(code, 200)
+        self.assertIn(app.folder(j), page); self.assertIn("MadIPM benchmarks", page)
+        code, page = self.get(f"/madipm/{app.folder(j)}/", "alice")
+        self.assertEqual(code, 200)
+        for part in ('class="table table-sm summary"', ">MadIPM</th>", ">HiGHS</th>", 'href="netlib.html"', "report.js"):
+            self.assertIn(part, page)
+        code, page = self.get(f"/madipm/{app.folder(j)}/netlib.html", "alice")
+        self.assertEqual(code, 200)
+        self.assertIn('<template class="caserows">', page); self.assertIn("BLEND", page); self.assertIn(">i</td>", page)
+        code, made = self.call_api("POST", "/queue/api/reports", {"title": "MadIPM main", "project": "madipm", "runs": [job["id"]]}, token="tok-alice")
+        self.assertEqual(code, 201, made)
+        self.assertTrue(made["url"].endswith(f"/madipm/report-{made['id']}/"))
+        code, page = self.get(f"/madipm/report-{made['id']}/", "alice")
+        self.assertEqual(code, 200); self.assertIn(">HiGHS</th>", page)
+        self.assertIn("/madipm/", self.request("GET", "/")[2].decode())                # on the landing page
 
     def test_ended_jobs_and_unfinished_instances(self):
         """Papaya, jobs 230-234: a job ends when its work is done though a node never said so; its nodes
