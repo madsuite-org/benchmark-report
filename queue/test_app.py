@@ -1123,6 +1123,44 @@ class TestServer(Base):
         out = run("cancel", str(jid)); self.assertIn("cancelled", out.stdout)
         self.assertNotEqual(run("frobnicate").returncode, 0)
 
+    def test_madbench_replaces_batch_nodes(self):
+        """madbench up --slurm: a node unfit for the job is replaced elsewhere, one that failed or reached its
+        time limit as the same node after it, one preempted is left to Slurm, at most five times in a row."""
+        import importlib.machinery, importlib.util, types
+        fake = os.path.join(self.dir, "fakebin"); os.makedirs(fake)
+        log = os.path.join(self.dir, "sbatch.log")
+        open(os.path.join(fake, "sbatch"), "w").write(f'#!/bin/sh\necho "$@ GEN=$MADBENCH_GENERATION WORK=${{MADBENCH_WORK:-}}" >> {log}\necho 777\n')
+        open(os.path.join(fake, "squeue"), "w").write('#!/bin/sh\necho "${LEFT:-0:30}"\n')
+        for f in ("sbatch", "squeue"):
+            os.chmod(os.path.join(fake, f), 0o755)
+        env = {"PATH": fake + ":" + os.environ["PATH"], "SLURM_JOB_ID": "42", "XDG_CONFIG_HOME": os.path.join(self.dir, "c"),
+               "XDG_CACHE_HOME": os.path.join(self.dir, "k"), "MADBENCH_SBATCH": "--partition=p --gres=gpu:1"}
+        old = dict(os.environ)
+        try:
+            os.environ.update(env)
+            loader = importlib.machinery.SourceFileLoader("madbench", os.path.join(os.path.dirname(__file__), "..", "cli", "madbench"))
+            mb = types.ModuleType("madbench"); loader.exec_module(mb)
+            os.makedirs(mb.CONFIG)
+            self.assertEqual(mb.replace(9, 0, "/w"), 0)                               # done: nothing
+            self.assertFalse(os.path.exists(log))
+            mb.replace(9, 75, "/w")                                                   # unfit: elsewhere, a new node
+            line = open(log).read().splitlines()[-1]
+            self.assertIn("--exclude=", line); self.assertIn("--partition=p --gres=gpu:1", line); self.assertIn("GEN=1 WORK=", line)
+            self.assertNotIn("WORK=/w", line)
+            mb.replace(9, 4, "/w")                                                    # failed: the same node, after this one
+            line = open(log).read().splitlines()[-1]
+            self.assertIn("--dependency=afterany:42", line); self.assertIn("WORK=/w", line)
+            os.environ["LEFT"] = "2:00:00"
+            n = len(open(log).read().splitlines())
+            self.assertEqual(mb.replace(9, 143, "/w"), 143)                           # preempted: Slurm requeues it
+            self.assertEqual(len(open(log).read().splitlines()), n)
+            os.environ["LEFT"] = "0:30"; os.environ["MADBENCH_GENERATION"] = "5"
+            mb.replace(9, 4, "/w")                                                    # five in a row: no more
+            self.assertEqual(len(open(log).read().splitlines()), n)
+            self.assertEqual(open(mb.slurmfile(9)).read().split(), ["777", "777"])  # the ids, for madbench down
+        finally:
+            os.environ.clear(); os.environ.update(old)
+
     def test_madipm_jobs_and_pages(self):
         """MadIPM's benchmark, a package the app renders itself: its jobs run MadIPM and HiGHS on the host,
         and its pages are MadNLP's, with HiGHS as a column."""
@@ -1469,7 +1507,7 @@ class TestSite(Base):
         self.assertEqual(subprocess.run(["bash", "-n", path]).returncode, 0)
         page = self.get("/queue/new", {"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2]
         self.assertIn("Starting a job", page)
-        self.assertIn("/run.sh | bash -s -- new master", page)
+        self.assertIn("madbench new madnlp master", page)
 
     def test_builder_is_started(self):
         mark = os.path.join(self.dir, "built")

@@ -10,7 +10,10 @@
     madbench status JOB                                 a job and its nodes
     madbench up JOB [-d] [--checkout=PATH]              run a node of the job on this machine (-d: in the background)
     madbench up JOB --slurm=N [--sbatch="ARGS"]         submit N nodes as Slurm batch jobs (ARGS: --partition,
-                                                        --gres, --time, ...); they carry on when requeued
+                                                        --gres, --time, ...): one requeued carries on, one stopped
+                                                        at its time limit or failing is replaced (at most 5 times
+                                                        in a row), one unfit for the job (a GPU taken) is replaced
+                                                        on another host
     madbench down JOB                                   stop this machine's nodes of the job, and cancel the
                                                         batch jobs madbench submitted for it (by their ids only)
     madbench cancel JOB                                 cancel a job
@@ -18,6 +21,10 @@
     madbench note JOB TEXT / madbench label JOB TEXT    change a job's note or label
     madbench report PACKAGE TITLE JOB[:LABEL]...        make a report of runs, the first one first
     madbench open JOB                                   the address of a job's report
+    madbench config [KEY=VALUE...]                      show or set defaults of `up`: depot, src, work (where the
+                                                        compiled packages, the set-up commits and the nodes' work
+                                                        go; on a cluster, a shared file system), hsl (a licensed
+                                                        HSL_jll), sbatch (the default ARGS of --slurm)
 
 A job is created with a GitHub token of a member of madsuite-org: BENCHMARK_TOKEN, or `gh auth
 token`. Its job file (in ~/.config/madbench) is all a node needs. A node clones the package's
@@ -43,6 +50,22 @@ CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~
 CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "madbench")
 # the flag of runner/publish.sh run that names the checkout of a job of local code, per package
 CHECKOUT_FLAG = {"madnlp": "--madnlp", "examodels": "--exa", "madipm": "--madipm"}
+
+
+def settings():
+    """The defaults of `up`, from ~/.config/madbench/config (KEY=VALUE lines)."""
+    out = {}
+    try:
+        for line in open(os.path.join(CONFIG, "config")):
+            k, sep, v = line.strip().partition("=")
+            if sep and k in SETTINGS:
+                out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+SETTINGS = ("depot", "src", "work", "hsl", "sbatch")
 
 
 def die(msg, code=2):
@@ -204,8 +227,27 @@ def slurmfile(job):
     return os.path.join(CONFIG, f"job-{int(job)}.slurm")
 
 
+def cmd_config(args):
+    s = settings()
+    for a in args:
+        k, sep, v = a.partition("=")
+        if not sep or k not in SETTINGS:
+            die(f"config takes KEY=VALUE, KEY one of {', '.join(SETTINGS)}")
+        if v:
+            s[k] = os.path.abspath(os.path.expanduser(v)) if k in ("depot", "src", "work", "hsl") else v
+        else:
+            s.pop(k, None)
+    if args:
+        os.makedirs(CONFIG, mode=0o700, exist_ok=True)
+        with open(os.path.join(CONFIG, "config"), "w") as f:
+            f.write("".join(f"{k}={v}\n" for k, v in s.items()))
+    for k in SETTINGS:
+        print(f"{k}={s.get(k, '')}")
+
+
 def cmd_up(args):
     o, pos = opts(args, {"checkout", "work", "depot", "src", "hsl", "every", "slurm", "sbatch", "here"})
+    o = {**{k: v for k, v in settings().items() if k != "sbatch"}, **o}
     if not pos:
         die("madbench up JOB")
     job = int(pos[0])
@@ -213,10 +255,11 @@ def cmd_up(args):
     spec = call("GET", f"/jobs/{job}/spec", auth=tok)
     package = spec.get("project") or "madnlp"
     if o.get("slurm"):
-        return submit(job, int(o["slurm"]), o.get("sbatch", ""), [a for a in args[1:] if not a.startswith(("--slurm", "--sbatch"))])
+        return submit(job, int(o["slurm"]), o.get("sbatch") or settings().get("sbatch", ""), [a for a in args[1:] if not a.startswith(("--slurm", "--sbatch"))])
     d = harness(package)
-    cmd = [os.path.join(d, "runner", "publish.sh"), "run", f"--job-file={job_file(job)}",
-           f"--work={o.get('work') or os.path.join(CACHE, 'work', f'job{job}-{socket.gethostname().split(chr(46))[0]}')}",
+    host = socket.gethostname().split(".")[0]
+    work = os.environ.get("MADBENCH_WORK") or os.path.join(o.get("work") or os.path.join(CACHE, "work"), f"job{job}-{host}")
+    cmd = [os.path.join(d, "runner", "publish.sh"), "run", f"--job-file={job_file(job)}", f"--work={work}",
            f"--depot={o.get('depot') or os.path.join(CACHE, 'depot')}", f"--src={o.get('src') or os.path.join(CACHE, 'src')}"]
     if o.get("checkout"):
         cmd.append(f"{CHECKOUT_FLAG.get(package, '--madnlp')}={os.path.abspath(o['checkout'])}")
@@ -230,7 +273,15 @@ def cmd_up(args):
             f.write(f"{p.pid}\n")
         print(f"node of job {job} started in the background (pid {p.pid}); its log: {log}")
         return
-    os.execvpe(cmd[0], cmd, env)
+    if not os.environ.get("SLURM_JOB_ID"):
+        os.execvpe(cmd[0], cmd, env)
+    # in a batch job of --slurm: run the node, then replace it if it ended without the job being done
+    child = subprocess.Popen(cmd, env=env, start_new_session=False)
+    signal.signal(signal.SIGTERM, lambda *_: child.send_signal(signal.SIGTERM))
+    rc = child.wait()
+    while rc is None:
+        rc = child.wait()
+    sys.exit(replace(job, rc, work))
 
 
 SBATCH = """#!/bin/bash
@@ -239,7 +290,9 @@ SBATCH = """#!/bin/bash
 #SBATCH --signal=B:TERM@120
 #SBATCH --open-mode=append
 #SBATCH --output={out}/madbench-{job}-%j.out
-# A node of job {job} of {site}, submitted by madbench: a requeued batch job carries on where it stopped.
+# A node of job {job} of {site}, submitted by madbench: a requeued batch job carries on where it stopped,
+# and one that ends without the job being done is replaced (madbench's `replace`).
+export MADBENCH_SBATCH={sbatch}
 exec {exe} up {job} --here {extra}
 """
 
@@ -251,7 +304,7 @@ def submit(job, n, sbatch_args, extra):
     os.makedirs(out, exist_ok=True)
     script = os.path.join(out, f"job{job}.sbatch")
     with open(script, "w") as f:
-        f.write(SBATCH.format(job=job, site=SITE, out=out, exe=shlex.quote(os.path.abspath(sys.argv[0])),
+        f.write(SBATCH.format(job=job, site=SITE, out=out, exe=shlex.quote(os.path.abspath(sys.argv[0])), sbatch=shlex.quote(sbatch_args),
                               extra=" ".join(shlex.quote(a) for a in extra if a != "-d")))
     ids = []
     for _ in range(n):
@@ -263,6 +316,58 @@ def submit(job, n, sbatch_args, extra):
     with open(slurmfile(job), "a") as f:
         f.write("".join(i + "\n" for i in ids))
     print(f"submitted {n} node(s) of job {job}: {' '.join(ids)} (madbench down {job} cancels exactly these)")
+
+
+GENERATIONS = 5
+
+
+def time_left():
+    """Seconds this batch job has left, or 0."""
+    out = subprocess.run(["squeue", "-h", "-j", os.environ["SLURM_JOB_ID"], "-o", "%L"], capture_output=True, text=True).stdout.strip()
+    days, _, hms = out.rpartition("-")
+    try:
+        parts = [int(x) for x in hms.split(":")]
+    except ValueError:
+        return 0
+    secs = 0
+    for x in parts:
+        secs = secs * 60 + x
+    return secs + (int(days) * 86400 if days else 0)
+
+
+def replace(job, rc, work):
+    """After a node in a batch job ends: nothing when the job is done or cancelled for it (0); Slurm
+    requeues one stopped with time to spare (preempted); one unfit for the job (75: a GPU taken, CUDA
+    not working, put aside by the website) is replaced on another host as a new node; one stopped at
+    its time limit or failing is replaced as the same node, after this one, at most GENERATIONS times."""
+    generation = int(os.environ.get("MADBENCH_GENERATION", "0"))
+    script = os.path.join(CACHE, "slurm", f"job{job}.sbatch")
+    args = shlex.split(os.environ.get("MADBENCH_SBATCH", ""))
+    if rc == 0:
+        return 0
+    if rc == 143 and time_left() > 300:
+        print("madbench: stopped with time to spare (preempted): Slurm requeues this node")
+        return rc
+    if generation >= GENERATIONS:
+        print(f"madbench: node ended ({rc}), not replaced after {generation} replacements")
+        return rc
+    env = dict(os.environ, MADBENCH_GENERATION=str(generation + 1))
+    if rc == 75:
+        exclude = ",".join(x for x in (os.environ.get("MADBENCH_EXCLUDE", ""), socket.gethostname().split(".")[0]) if x)
+        env["MADBENCH_EXCLUDE"] = exclude
+        cmd = ["sbatch", "--parsable", f"--comment=madbench-job-{job}", *args, f"--exclude={exclude}", "--export=ALL", script]
+        print(f"madbench: this host is not fit for the job; a node elsewhere (excluding {exclude})")
+    else:
+        env["MADBENCH_WORK"] = work         # the same node: it carries on with what this one has
+        cmd = ["sbatch", "--parsable", f"--comment=madbench-job-{job}", *args, f"--dependency=afterany:{os.environ['SLURM_JOB_ID']}", "--export=ALL", script]
+        print(f"madbench: node ended ({rc}); replaced as the same node (replacement {generation + 1} of {GENERATIONS})")
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    if r.returncode == 0:
+        with open(slurmfile(job), "a") as f:
+            f.write(r.stdout.strip().split(";")[0] + "\n")
+    else:
+        print(f"madbench: the replacement could not be submitted: {r.stderr.strip()}")
+    return rc
 
 
 def cmd_down(args):
@@ -330,7 +435,7 @@ def cmd_open(args):
 
 COMMANDS = {"packages": cmd_packages, "new": cmd_new, "jobs": cmd_jobs, "status": cmd_status, "up": cmd_up, "down": cmd_down,
             "cancel": cmd_cancel, "rerun": cmd_rerun, "note": cmd_note, "label": lambda a: cmd_note(a, "label"),
-            "report": cmd_report, "open": cmd_open}
+            "report": cmd_report, "open": cmd_open, "config": cmd_config}
 
 
 def main(argv):

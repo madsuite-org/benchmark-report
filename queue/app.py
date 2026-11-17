@@ -175,8 +175,8 @@ def repo_of(cfg, j):
 
 
 def side_base(cfg, side):
-    u = urllib.parse.urlsplit(cfg.reports)
-    return f"{u.scheme}://{u.netloc}/{side.key if isinstance(side, Side) else side}"
+    u, key = urllib.parse.urlsplit(cfg.reports), (side.key if isinstance(side, Side) else side)
+    return f"{u.scheme}://{u.netloc}/{key}" if u.netloc else f"/{key}"
 
 
 def reports_of(cfg, j):
@@ -1832,7 +1832,8 @@ def help_page(cfg, login):
     api = [("GET me", "who you are and whether you can run jobs"),
            ("GET jobs, GET jobs/&lt;id&gt;", "jobs, with each node's state (setup, running, ...) and the seconds since it was heard from (quiet)"),
            ('POST jobs {"external": true, "branch"|"pr"|"commit"|"master": ..., "devices", "options", "sets", "subset", "instances", "note", "label"}',
-            "create a job (what runner/publish.sh new does); answers its number and its token"),
+            "create a job (what madbench new does; \"project\" names a package other than MadNLP); answers its number and its token"),
+           ("GET packages", "the packages benchmarked: repository, harness, sets, configurations, address"),
            ("POST jobs/&lt;id&gt;/cancel, …/note, …/label, …/reopen", "cancel a job; change its note or label; run a failed job again, keeping its results"),
            ('GET reports, POST reports {"title", "runs": [JOB, {"job": JOB, "label": "..."}]}', "list or make reports: the first run is the first column; up to 12"),
            ("GET, PATCH, DELETE reports/&lt;id&gt;", "read, change (title, runs) or delete a report"),
@@ -1842,32 +1843,32 @@ def help_page(cfg, login):
 <p>This site coordinates benchmark jobs of <a href="https://github.com/{e(cfg.repo)}">{e(cfg.repo)}</a>, collects their results and
 shows them as runs and reports. It runs no benchmark itself: <b>a job runs on the machines its creator starts nodes on</b>; the site
 hands out the instances, merges the results and builds the pages.</p>
-{"".join(f'<p><b>{e(s.name)}</b> ({e(s.about)}): jobs of <a href="https://github.com/{e(s.repo)}">{e(s.repo)}</a>, run with <a href="{e(s.harness)}#readme">{e(s.harness.rsplit("/", 1)[1])}</a> (its <code>runner/publish.sh</code>, as below); their runs and reports are at <a href="{e(side_base(cfg, s))}/">{e(side_base(cfg, s))}/</a>.</p>' for s in SIDES.values())}
+<ul>{"".join(f'<li><b>{e(n)}</b> ({e(a)}): <a href="https://github.com/{e(r)}">{e(r)}</a>, its harness <a href="{e(h)}#readme">{e(h.rsplit("/", 1)[1])}</a>, its runs and reports at <a href="{e(u)}/">{e(u)}/</a>.</li>'
+           for n, a, u, r, h in [("MadNLP", "nonlinear programming solver: solve times, iterations and failures, with Ipopt as the reference", cfg.reports, cfg.repo, "https://github.com/madsuite-org/MadNLPBenchmark.jl")]
+                               + [(x.name, x.about, side_base(cfg, x), x.repo, x.harness) for x in SIDES.values()])}</ul>
 {install_card(cfg)}
 <h2>Who can use it</h2>
 <p>Any member of {org}, and anyone with write access to {e(cfg.repo)}, signs in with GitHub to see the runs and reports and to make
 jobs and reports. A run or a report is open to anyone given its link (<i>Copy link</i> on its page); nothing else is public, and the
 site is not indexed.</p>
 <h2>Running a benchmark</h2>
+<p>Everything goes through <code>madbench</code> (above). A GitHub token is needed to create a job (<code>gh auth login</code>, or
+<code>BENCHMARK_TOKEN</code>); a node needs only the job's file, which <code>madbench new</code> writes to <code>~/.config/madbench</code>.</p>
 <ol>
-<li><b>Choose the code</b>: master (main for ExaModels), a branch, a commit, a pull request (a fork's too, marked as such), or a
-checkout of your own with <code>--local=PATH</code> (marked as local code, and never a reference).</li>
-<li><b>Create a job</b> with <code>runner/publish.sh new</code> of <a href="{harness}">MadNLPBenchmark.jl</a> (or of
-<a href="{exa.HARNESS}">ExaModelsBenchmark.jl</a> for ExaModels), with a GitHub token (<code>gh auth login</code>, or
-<code>BENCHMARK_TOKEN</code>): it fixes the commit, the device (CPU or GPU, one per job), the options and the instances, and writes
-a job file.</li>
-<li><b>Start nodes</b> with <code>runner/publish.sh run --job-file=…</code> on as many machines as you like, at once or later. Each asks
-the site for instances, sends results as it goes, and leaves when nothing is left. A stopped node (a preempted batch job)
-carries on when started again.</li>
+<li><b>Create a job</b>: <code>madbench new PACKAGE REF --note="what it is for"</code>. <code>REF</code> is main (or master), a
+branch, a commit or a pull request (a fork's too, marked as such); <code>--local=PATH</code> takes a checkout of your own (marked as
+local code, and never a reference). <code>--devices=cpu</code> or <code>cuda</code> (one per job), <code>--sets</code>,
+<code>--instances</code>, <code>--config</code> and <code>--label</code> fix the rest. <code>madbench packages</code> lists the
+packages, their sets and configurations.</li>
+<li><b>Start nodes</b>, as many as you like, at once or later: <code>madbench up JOB</code> on a machine (<code>-d</code> in the
+background), or <code>madbench up JOB --slurm=N --sbatch="--partition=… --gres=gpu:1 --time=06:00:00"</code> on a cluster. Each node
+asks the site for instances, sends results as it goes, and leaves when nothing is left. A preempted batch job carries on where it
+stopped; one stopped at its time limit or failing is replaced, and one unfit for the job (a GPU taken) is replaced on another
+host. <code>madbench config depot=… src=… hsl=…</code> sets where nodes keep the compiled packages and the set-up commits (on a
+cluster, its shared file system) and a licensed HSL_jll.</li>
+<li><b>Follow and compare</b>: <code>madbench status JOB</code>, <code>madbench report PACKAGE "title" JOB JOB…</code>, and
+<code>madbench down JOB</code> to stop the nodes and batch jobs <code>madbench</code> started for it.</li>
 </ol>
-<p>For MadNLP, without a clone of the harness:</p>
-<pre class="log">curl -fsSL {e(cfg.base)}/run.sh | bash -s -- new master --devices=cuda --note="what it is for"
-curl -fsSL {e(cfg.base)}/run.sh | bash -s -- run --job-file=benchmark-job-N</pre>
-<p>For ExaModels, from a clone of ExaModelsBenchmark.jl:</p>
-<pre class="log">runner/publish.sh new main --devices=cpu --note="what it is for"
-runner/publish.sh run --job-file=benchmark-job-N</pre>
-<p>Everything about the nodes (options, subsets of instances, clusters and preemption, the HSL library) is in
-<a href="{harness}">MadNLPBenchmark.jl's README</a>.</p>
 <p>A job's page shows its progress and, under <i>Workers</i>, each node and what it solves: click a node for its log, an instance for
 its solver log, as it is written.</p>
 <h2>Runs and reports</h2>
@@ -2655,14 +2656,10 @@ exec env BENCHMARK_SITE={shlex.quote(site)} runner/publish.sh "$@"
 def run_card(cfg):
     e = html.escape
     return ('<details class="card mt-3 mb-3"><summary class="card-body py-2">Starting a job</summary><div class="card-body pt-0">'
-            '<p class="m">On machines you can use, cluster nodes included. Create a job once, with a GitHub token with write '
-            'access (<code>gh auth login</code>, or <code>BENCHMARK_TOKEN</code>); it fixes what is run and writes a job file. Then run '
-            'the job on as many machines as you like, at once or later: this server hands each instance to one of them, merges '
-            'their results into the job\'s report and shows it on this dashboard. A stopped node (a preempted batch job) carries on '
-            'when started again. Run CPU and GPU as two jobs.</p>'
-            f'<pre class="log">curl -fsSL {e(cfg.base)}/run.sh | bash -s -- new master --devices=cuda --options=tol=1e-6\n'
-            f'curl -fsSL {e(cfg.base)}/run.sh | bash -s -- run --job-file=benchmark-job-N</pre>'
-            f'<p class="m"><a href="{e(cfg.base)}/run.sh">The script</a>; its <code>runner/publish.sh</code> describes every option.</p></div></details>')
+            f'<p class="m">With <code>madbench</code> (<a href="{e(cfg.base)}/help">How it works</a>):</p>'
+            f'<pre class="log">curl -fsSL {e(cfg.base)}/install.sh | sh\n'
+            'madbench new madnlp master --devices=cuda --note="what it is for"\n'
+            'madbench up JOB          # or --slurm=N on a cluster</pre></div></details>')
 
 
 def new_page(cfg, q, login, message=""):
