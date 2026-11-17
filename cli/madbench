@@ -1,0 +1,344 @@
+#!/usr/bin/env python3
+"""madbench: the MadSuite benchmarks (https://benchmark.madsuite.org) from the command line.
+
+    madbench packages                                   the packages benchmarked, their sets and configurations
+    madbench new PACKAGE [REF] --note=TEXT [options]    create a job: REF is main/master (default), a PR
+                                                        number, a branch or a commit; --local=PATH for a checkout
+                                                        of your own. Options: --devices=cpu|cuda, --sets=a,b,
+                                                        --instances=a,b|@FILE, --config=NAME, --label=TEXT
+    madbench jobs [PACKAGE] [--all]                     the jobs (running and waiting; --all for every one)
+    madbench status JOB                                 a job and its nodes
+    madbench up JOB [-d] [--checkout=PATH]              run a node of the job on this machine (-d: in the background)
+    madbench up JOB --slurm=N [--sbatch="ARGS"]         submit N nodes as Slurm batch jobs (ARGS: --partition,
+                                                        --gres, --time, ...); they carry on when requeued
+    madbench down JOB                                   stop this machine's nodes of the job, and cancel the
+                                                        batch jobs madbench submitted for it (by their ids only)
+    madbench cancel JOB                                 cancel a job
+    madbench rerun JOB INSTANCE... | --node=NODE        hand instances out again (their results thrown away)
+    madbench note JOB TEXT / madbench label JOB TEXT    change a job's note or label
+    madbench report PACKAGE TITLE JOB[:LABEL]...        make a report of runs, the first one first
+    madbench open JOB                                   the address of a job's report
+
+A job is created with a GitHub token of a member of madsuite-org: BENCHMARK_TOKEN, or `gh auth
+token`. Its job file (in ~/.config/madbench) is all a node needs. A node clones the package's
+harness into ~/.cache/madbench and runs its runner/publish.sh; it needs julia, git, curl and tar.
+BENCHMARK_SITE overrides the site.
+"""
+
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+SITE = os.environ.get("BENCHMARK_SITE", "https://benchmark.madsuite.org").rstrip("/")
+API = SITE + "/queue/api"
+CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "madbench")
+CACHE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"), "madbench")
+# the flag of runner/publish.sh run that names the checkout of a job of local code, per package
+CHECKOUT_FLAG = {"madnlp": "--madnlp", "examodels": "--exa", "madipm": "--madipm"}
+
+
+def die(msg, code=2):
+    print(f"madbench: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def token():
+    t = os.environ.get("BENCHMARK_TOKEN", "")
+    if not t and shutil.which("gh"):
+        t = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True).stdout.strip()
+    return t or die("no GitHub token: set BENCHMARK_TOKEN, or sign in with `gh auth login`")
+
+
+def call(method, path, data=None, auth=None):
+    req = urllib.request.Request(API + path, method=method, data=None if data is None else json.dumps(data).encode(),
+                                 headers={"Content-Type": "application/json", "Authorization": "Bearer " + (auth or token())})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as err:
+        try:
+            die(json.load(err).get("error") or f"{err.code}")
+        except ValueError:
+            die(f"{SITE} answered {err.code}")
+    except urllib.error.URLError as err:
+        die(f"{SITE} cannot be reached: {err.reason}")
+
+
+def job_file(job):
+    return os.path.join(CONFIG, f"job-{int(job)}")
+
+
+def read_job(job):
+    try:
+        site, jid, tok = open(job_file(job)).read().split()
+    except (OSError, ValueError):
+        die(f"no job file for job {job} in {CONFIG}: only the machine that created a job has it (copy it over)")
+    return site, jid, tok
+
+
+def packages():
+    return {p["key"]: p for p in call("GET", "/packages")["packages"]}
+
+
+def opts(args, known):
+    """--name=value options and the positional arguments."""
+    out, pos = {}, []
+    for a in args:
+        m = re.fullmatch(r"--([a-z-]+)(?:=(.*))?", a)
+        if m:
+            if m[1] not in known:
+                die(f"unknown option --{m[1]}")
+            out[m[1]] = True if m[2] is None else m[2]
+        elif a == "-d":
+            out["detach"] = True
+        else:
+            pos.append(a)
+    return out, pos
+
+
+def local_changes(path):
+    """The hash of a checkout's uncommitted changes, as runner/publish.sh computes it ("" without any)."""
+    script = ('d=$(cd "$1" && { git diff HEAD --binary; git ls-files --others --exclude-standard -z | xargs -0 -r sha1sum; } 2>/dev/null); '
+              '[ -z "$d" ] || sha1sum <<< "$d" | cut -c1-40')
+    return subprocess.run(["bash", "-c", script, "_", path], capture_output=True, text=True).stdout.strip()
+
+
+def cmd_packages(args):
+    for p in packages().values():
+        print(f"{p['key']:10} {p['name']}: {p['repo']}, sets {p['sets']}, configurations {', '.join(p['configs'])}")
+        print(f"{'':10} {p['url']}  harness {p['harness']}")
+
+
+def cmd_new(args):
+    o, pos = opts(args, {"note", "devices", "sets", "instances", "config", "label", "local"})
+    if not pos:
+        die("give the package: madbench new PACKAGE [REF] --note=TEXT (madbench packages lists them)")
+    package, ref = pos[0], (pos[1] if len(pos) > 1 else "main")
+    if package not in packages():
+        die(f"no package {package}; madbench packages lists them")
+    if not o.get("note"):
+        die("give --note: what the job is for")
+    body = {"external": True, "note": o["note"], "devices": o.get("devices", "cpu")}
+    if package != "madnlp":
+        body["project"] = package
+    if o.get("local"):
+        path = os.path.abspath(o["local"])
+        sha = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            die(f"{path} is not a git checkout")
+        name = subprocess.run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout.strip()
+        body["local"] = {"commit": sha, "changes": local_changes(path), "name": re.sub(r"[^A-Za-z0-9._/+-]", "-", name)[:60]}
+    elif ref in ("main", "master"):
+        body["master"] = True
+    elif re.fullmatch(r"#?\d+", ref):
+        body["pr"] = int(ref.lstrip("#"))
+    elif re.fullmatch(r"[0-9a-f]{40}", ref):
+        body["commit"] = ref
+    else:
+        body["branch"] = ref
+    for k in ("sets", "config", "label"):
+        if o.get(k):
+            body[k] = o[k]
+    if o.get("instances"):
+        given = o["instances"]
+        names = open(given[1:]).read().split() if given.startswith("@") else given.split(",")
+        body["instances"] = [n for n in names if n]
+    out = call("POST", "/jobs", body)
+    os.makedirs(CONFIG, mode=0o700, exist_ok=True)
+    with os.fdopen(os.open(job_file(out["id"]), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        f.write(f"{SITE} {out['id']} {out['token']}\n")
+    print(f"job {out['id']}: {package} {out.get('sha', '')[:8]}, {out.get('devices')}, {out.get('config')}")
+    print(f"report: {out.get('report')}")
+    print(f"start nodes with: madbench up {out['id']}   (or --slurm=N on a cluster)")
+
+
+def cmd_jobs(args):
+    o, pos = opts(args, {"all"})
+    want = pos[0] if pos else None
+    for j in call("GET", "/jobs" + (f"?project={want}" if want else ""))["jobs"]:
+        if not o.get("all") and j["state"] not in ("running", "waiting"):
+            continue
+        nodes = j.get("nodes") or {}
+        working = sum(v.get("state") in ("setup", "running") for v in nodes.values())
+        print(f"{j['id']:5} {j.get('project', 'madnlp'):9} {j['state']:9} {j.get('devices', ''):8} "
+              f"{working}/{len(nodes)} nodes  {(j.get('label') or j.get('title') or '')[:40]}  ({j.get('by', '')})")
+
+
+def cmd_status(args):
+    if not args:
+        die("madbench status JOB")
+    j = call("GET", f"/jobs/{int(args[0])}")
+    print(f"job {j['id']} ({j.get('project', 'madnlp')}): {j['state']}, {j.get('title', '')}, {j.get('devices')}, {j.get('config')}")
+    if j.get("purpose"):
+        print(f"  note: {j['purpose']}")
+    print(f"  report: {j.get('report')}")
+    for k, v in (j.get("nodes") or {}).items():
+        print(f"  node {k} on {v.get('host', '?')}: {v.get('state', '')}, last heard {v.get('quiet', '?')} s ago")
+
+
+def harness(package):
+    """The package's harness in the cache, cloned or brought up to date."""
+    p = packages()[package]
+    d = os.path.join(CACHE, p["harness"].rstrip("/").rsplit("/", 1)[1])
+    if os.path.isdir(os.path.join(d, ".git")):
+        subprocess.run(["git", "-C", d, "pull", "-q", "--ff-only"], check=True)
+    else:
+        os.makedirs(CACHE, exist_ok=True)
+        subprocess.run(["git", "clone", "-q", p["harness"], d], check=True)
+    return d
+
+
+def pidfile(job):
+    return os.path.join(CONFIG, f"job-{int(job)}.{socket.gethostname()}.pids")
+
+
+def slurmfile(job):
+    return os.path.join(CONFIG, f"job-{int(job)}.slurm")
+
+
+def cmd_up(args):
+    o, pos = opts(args, {"checkout", "work", "depot", "src", "hsl", "every", "slurm", "sbatch", "here"})
+    if not pos:
+        die("madbench up JOB")
+    job = int(pos[0])
+    site, _, tok = read_job(job)
+    spec = call("GET", f"/jobs/{job}/spec", auth=tok)
+    package = spec.get("project") or "madnlp"
+    if o.get("slurm"):
+        return submit(job, int(o["slurm"]), o.get("sbatch", ""), [a for a in args[1:] if not a.startswith(("--slurm", "--sbatch"))])
+    d = harness(package)
+    cmd = [os.path.join(d, "runner", "publish.sh"), "run", f"--job-file={job_file(job)}",
+           f"--work={o.get('work') or os.path.join(CACHE, 'work', f'job{job}-{socket.gethostname().split(chr(46))[0]}')}",
+           f"--depot={o.get('depot') or os.path.join(CACHE, 'depot')}", f"--src={o.get('src') or os.path.join(CACHE, 'src')}"]
+    if o.get("checkout"):
+        cmd.append(f"{CHECKOUT_FLAG.get(package, '--madnlp')}={os.path.abspath(o['checkout'])}")
+    cmd += [f"--{k}={o[k]}" for k in ("hsl", "every") if o.get(k)]
+    env = dict(os.environ, BENCHMARK_SITE=site)
+    if o.get("detach"):
+        log = os.path.join(CACHE, f"job{job}.log")
+        p = subprocess.Popen(cmd, env=env, stdout=open(log, "a"), stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        os.makedirs(CONFIG, mode=0o700, exist_ok=True)
+        with open(pidfile(job), "a") as f:
+            f.write(f"{p.pid}\n")
+        print(f"node of job {job} started in the background (pid {p.pid}); its log: {log}")
+        return
+    os.execvpe(cmd[0], cmd, env)
+
+
+SBATCH = """#!/bin/bash
+#SBATCH --job-name=madbench-{job}
+#SBATCH --requeue
+#SBATCH --signal=B:TERM@120
+#SBATCH --open-mode=append
+#SBATCH --output={out}/madbench-{job}-%j.out
+# A node of job {job} of {site}, submitted by madbench: a requeued batch job carries on where it stopped.
+exec {exe} up {job} --here {extra}
+"""
+
+
+def submit(job, n, sbatch_args, extra):
+    if not shutil.which("sbatch"):
+        die("sbatch is not here: --slurm runs on a Slurm cluster's login node")
+    out = os.path.join(CACHE, "slurm")
+    os.makedirs(out, exist_ok=True)
+    script = os.path.join(out, f"job{job}.sbatch")
+    with open(script, "w") as f:
+        f.write(SBATCH.format(job=job, site=SITE, out=out, exe=shlex.quote(os.path.abspath(sys.argv[0])),
+                              extra=" ".join(shlex.quote(a) for a in extra if a != "-d")))
+    ids = []
+    for _ in range(n):
+        r = subprocess.run(["sbatch", "--parsable", f"--comment=madbench-job-{job}", *shlex.split(sbatch_args), script], capture_output=True, text=True)
+        if r.returncode:
+            die(f"sbatch failed: {r.stderr.strip()}")
+        ids.append(r.stdout.strip().split(";")[0])
+    os.makedirs(CONFIG, mode=0o700, exist_ok=True)
+    with open(slurmfile(job), "a") as f:
+        f.write("".join(i + "\n" for i in ids))
+    print(f"submitted {n} node(s) of job {job}: {' '.join(ids)} (madbench down {job} cancels exactly these)")
+
+
+def cmd_down(args):
+    if not args:
+        die("madbench down JOB")
+    job = int(args[0])
+    try:
+        pids = [int(x) for x in open(pidfile(job)).read().split()]
+    except OSError:
+        pids = []
+    for pid in pids:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+            print(f"stopped the node of pid {pid}")
+        except ProcessLookupError:
+            pass
+    if pids:
+        os.remove(pidfile(job))
+    try:
+        ids = open(slurmfile(job)).read().split()
+    except OSError:
+        ids = []
+    if ids and shutil.which("scancel"):
+        subprocess.run(["scancel", *ids])
+        print(f"cancelled the batch jobs madbench submitted for job {job}: {' '.join(ids)}")
+        os.remove(slurmfile(job))
+    if not pids and not ids:
+        print(f"no node of job {job} was started by madbench here")
+
+
+def cmd_cancel(args):
+    j = call("POST", f"/jobs/{int(args[0])}/cancel", {})
+    print(f"job {j['id']}: {j['state']}")
+
+
+def cmd_rerun(args):
+    o, pos = opts(args, {"node"})
+    body = {"node": o["node"]} if o.get("node") else {"instances": pos[1:]}
+    out = call("POST", f"/jobs/{int(pos[0])}/rerun", body)
+    print(f"job {out['id']}: {out.get('rerun')} result(s) handed out again; {out.get('note', '')}")
+
+
+def cmd_note(args, field="note"):
+    out = call("POST", f"/jobs/{int(args[0])}/{field}", {field: " ".join(args[1:])})
+    print(f"job {out['id']}: {field} set")
+
+
+def cmd_report(args):
+    if len(args) < 3:
+        die("madbench report PACKAGE TITLE JOB[:LABEL]...")
+    runs = []
+    for a in args[2:]:
+        jid, _, label = a.partition(":")
+        runs.append({"job": int(jid), "label": label} if label else int(jid))
+    body = {"title": args[1], "runs": runs}
+    if args[0] != "madnlp":
+        body["project"] = args[0]
+    out = call("POST", "/reports", body)
+    print(f"report {out['id']}: {out['url']}")
+
+
+def cmd_open(args):
+    print(call("GET", f"/jobs/{int(args[0])}").get("report") or "the job has no report yet")
+
+
+COMMANDS = {"packages": cmd_packages, "new": cmd_new, "jobs": cmd_jobs, "status": cmd_status, "up": cmd_up, "down": cmd_down,
+            "cancel": cmd_cancel, "rerun": cmd_rerun, "note": cmd_note, "label": lambda a: cmd_note(a, "label"),
+            "report": cmd_report, "open": cmd_open}
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help") or argv[0] not in COMMANDS:
+        print(__doc__.strip())
+        sys.exit(0 if argv and argv[0] in ("-h", "--help", "help") else 2)
+    COMMANDS[argv[0]](argv[1:])
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

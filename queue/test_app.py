@@ -7,6 +7,7 @@ import hashlib, hmac, http.client, http.server, json, os, re, subprocess, sys, t
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
+import sys
 import app
 
 REPO = "o/r"
@@ -1087,6 +1088,40 @@ class TestServer(Base):
             self.assertNotEqual(j["nodes"][n].get("state"), "quarantined")
         self.assertEqual(j["streak"].get("b", 0) + j["streak"].get("c", 0), 0)               # nor held against b and c
         self.assertNotIn("case", ask({"node": "d", "device": "cpu"}))                          # nothing left to try
+
+    def test_madbench(self):
+        """The command line tool: served with its one-line install (Sungho), and working against the API."""
+        self.cfg.uploads = os.path.join(self.dir, "up"); os.makedirs(self.cfg.uploads)
+        code, headers, body = self.request("GET", "/queue/install.sh")
+        self.assertEqual(code, 200)
+        self.assertIn(b"/queue/madbench", body)
+        path = os.path.join(self.dir, "install.sh"); open(path, "wb").write(body)
+        self.assertEqual(subprocess.run(["sh", "-n", path]).returncode, 0)
+        code, _, tool = self.request("GET", "/queue/madbench")
+        self.assertEqual(code, 200); self.assertTrue(tool.startswith(b"#!/usr/bin/env python3"))
+        page = self.request("GET", "/queue/help", headers={"Cookie": f"s={app.new_session(self.cfg, 'alice')}"})[2].decode()
+        self.assertIn("/queue/install.sh | sh", page); self.assertIn(">Copy</button>", page)
+        listed = self.call_api("GET", "/queue/api/packages", token="tok-alice")[1]["packages"]
+        self.assertEqual([p["key"] for p in listed], ["madnlp", "examodels", "madipm"])
+        # the tool itself, against this server
+        exe = os.path.join(self.dir, "madbench"); open(exe, "wb").write(tool); os.chmod(exe, 0o755)
+        env = dict(os.environ, BENCHMARK_SITE=f"http://127.0.0.1:{self.port}", BENCHMARK_TOKEN="tok-alice",
+                   XDG_CONFIG_HOME=os.path.join(self.dir, "cfg"), XDG_CACHE_HOME=os.path.join(self.dir, "cache"))
+        run = lambda *a: subprocess.run([sys.executable, exe, *a], env=env, capture_output=True, text=True, timeout=60)
+        out = run("packages"); self.assertEqual(out.returncode, 0, out.stderr); self.assertIn("madipm", out.stdout)
+        self.assertNotEqual(run("new", "madipm", "main").returncode, 0)                  # a note is required
+        out = run("new", "madipm", "main", "--note=a test", "--devices=cpu")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        jid = int(re.search(r"job (\d+)", out.stdout)[1])
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "cfg", "madbench", f"job-{jid}")))      # the job file
+        j = next(x for x in self.q.data["jobs"] if x["id"] == jid)
+        self.assertEqual((j["project"], j["config"], j["purpose"]), ("madipm", "default,highs", "a test"))
+        out = run("status", str(jid)); self.assertIn(f"job {jid} (madipm): running", out.stdout)
+        out = run("jobs", "madipm"); self.assertIn(f"{jid:5} madipm", out.stdout)
+        out = run("report", "madipm", "first", f"{jid}:main"); self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("/madipm/report-", out.stdout)
+        out = run("cancel", str(jid)); self.assertIn("cancelled", out.stdout)
+        self.assertNotEqual(run("frobnicate").returncode, 0)
 
     def test_madipm_jobs_and_pages(self):
         """MadIPM's benchmark, a package the app renders itself: its jobs run MadIPM and HiGHS on the host,

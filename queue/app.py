@@ -183,6 +183,16 @@ def reports_of(cfg, j):
     return side_base(cfg, side_of(j)) if is_side(j) else cfg.reports
 
 
+def known_configs(cfg):
+    """MadNLP's configurations, from the harness's configs.toml where the server has it."""
+    try:
+        import tomllib
+        known = tomllib.load(open(cfg.harness_configs, "rb"))
+        return set().union(*(set(c.get("names", [])) for c in known.get("configurations", {}).values()))
+    except (OSError, ValueError, TypeError):
+        return {"default"}
+
+
 def settings_problem(cfg, settings):
     """Why the settings of a job cannot run, or None. Checked as the machine's wrapper and run.jl
     check them; with a harness branch, its own run.jl checks option names it may add."""
@@ -1833,6 +1843,7 @@ def help_page(cfg, login):
 shows them as runs and reports. It runs no benchmark itself: <b>a job runs on the machines its creator starts nodes on</b>; the site
 hands out the instances, merges the results and builds the pages.</p>
 {"".join(f'<p><b>{e(s.name)}</b> ({e(s.about)}): jobs of <a href="https://github.com/{e(s.repo)}">{e(s.repo)}</a>, run with <a href="{e(s.harness)}#readme">{e(s.harness.rsplit("/", 1)[1])}</a> (its <code>runner/publish.sh</code>, as below); their runs and reports are at <a href="{e(side_base(cfg, s))}/">{e(side_base(cfg, s))}/</a>.</p>' for s in SIDES.values())}
+{install_card(cfg)}
 <h2>Who can use it</h2>
 <p>Any member of {org}, and anyone with write access to {e(cfg.repo)}, signs in with GitHub to see the runs and reports and to make
 jobs and reports. A run or a report is open to anyone given its link (<i>Copy link</i> on its page); nothing else is public, and the
@@ -2583,6 +2594,38 @@ def node_select(cfg):
     return f'<label class="form-label" for="node">Machine</label><select class="form-select mb-3" id="node" name="node">{options}</select>'
 
 
+MADBENCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cli", "madbench")
+
+
+def install_script(cfg):
+    """`curl -fsSL <site>/queue/install.sh | sh`: madbench into ~/.local/bin (MADBENCH_BIN)."""
+    return f"""#!/bin/sh
+# Install madbench, the command line tool of {cfg.base.rsplit("/queue", 1)[0]}: madbench help for what it does.
+set -eu
+d=${{MADBENCH_BIN:-$HOME/.local/bin}}
+mkdir -p "$d"
+curl -fsSL {shlex.quote(cfg.base)}/madbench -o "$d/madbench.tmp" && chmod +x "$d/madbench.tmp" && mv "$d/madbench.tmp" "$d/madbench"
+echo "madbench installed: $d/madbench"
+case ":$PATH:" in *":$d:"*) ;; *) echo "add $d to your PATH" ;; esac
+"""
+
+
+def install_card(cfg):
+    """The one-line install of madbench, with a button that copies it (Sungho)."""
+    line = f"curl -fsSL {cfg.base}/install.sh | sh"
+    e = html.escape
+    return (f'<h2>The command line tool</h2><p><code>madbench</code> creates jobs, runs nodes (on this machine, or as Slurm batch jobs), '
+            f'and makes reports, without curl or the harness by hand. Install it with one line:</p>'
+            f'<div class="d-flex gap-2 align-items-center mb-2"><pre class="log mb-0 flex-grow-1" id="installline">{e(line)}</pre>'
+            f'<button type="button" class="btn btn-sm btn-primary" onclick="navigator.clipboard.writeText(document.getElementById(\'installline\').textContent).then(()=>{{this.textContent=\'Copied\';setTimeout(()=>this.textContent=\'Copy\',1500)}})">Copy</button></div>'
+            f'<pre class="log">madbench packages                                  # what is benchmarked\n'
+            f'madbench new madipm main --note="baseline"          # a job, of main\n'
+            f'madbench up 264                                     # a node of it here (-d: in the background)\n'
+            f'madbench up 264 --slurm=4 --sbatch="--partition=... --gres=gpu:1 --time=06:00:00"\n'
+            f'madbench status 264 / madbench down 264 / madbench report madipm "title" 264 265</pre>'
+            f'<p class="m">It needs Python 3; a node also needs julia, git, curl and tar. <code>madbench help</code> lists every command.</p>')
+
+
 def run_script(cfg):
     """The script behind the one-line command that runs a benchmark on one's own machine: it gets
     the harness and runs its runner/publish.sh, which uploads the results here as they come."""
@@ -2760,7 +2803,7 @@ def handler(cfg, q):
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             if what == "spec":
                 # what a node runs: everything about the job is the server's, set when it was created
-                return reply(200, {"id": j["id"], "sha": j["sha"], "repository": repo_of(cfg, j), "state": j["state"],
+                return reply(200, {"id": j["id"], "sha": j["sha"], "repository": repo_of(cfg, j), "state": j["state"], "project": j.get("project", "madnlp"),
                                    **({"local": "true", "changes": j.get("changes", "")} if j.get("local") else {}),
                                    **({"pull": str(j["pr"])} if j.get("pr") else {}),
                                    "sets": j.get("sets", side_of(j).sets if is_side(j) else "acopf,cops,mittelmann,cutest"), "only": ",".join(j.get("only", [])), **settings_of(j),
@@ -2867,6 +2910,12 @@ def handler(cfg, q):
                 return reply(400, {"error": "The body is not JSON."})
             parts = path[len("/queue/api/"):].strip("/").split("/")
             find = lambda i: next((j for j in q.data["jobs"] if i.isdigit() and j["id"] == int(i)), None)
+            if parts == ["packages"] and method == "GET":
+                # what is benchmarked here, for madbench and anyone else: one source for every client
+                madnlp = {"key": "madnlp", "name": "MadNLP", "repo": cfg.repo, "harness": "https://github.com/madsuite-org/MadNLPBenchmark.jl",
+                          "default_branch": "master", "sets": "acopf,cops,mittelmann,cutest", "configs": sorted(known_configs(cfg)), "url": cfg.reports + "/"}
+                return reply(200, {"packages": [madnlp] + [{"key": x.key, "name": x.name, "repo": x.repo, "harness": x.harness, "default_branch": x.default,
+                                                             "sets": x.sets, "configs": sorted(x.configs), "url": side_base(cfg, x) + "/"} for x in SIDES.values()]})
             if parts == ["jobs"] and method == "GET":
                 q.settle_all(cfg)
                 jobs = q.jobs("running") + sorted(q.jobs("waiting"), key=order) + list(reversed(q.jobs("finished", "failed", "cancelled", "skipped")))
@@ -3223,6 +3272,12 @@ def handler(cfg, q):
                 return self.send(200, "User-agent: *\nDisallow: /\n", kind="text/plain; charset=utf-8")
             if path == "/queue/run.sh":
                 return self.send(200, run_script(cfg), kind="text/x-shellscript; charset=utf-8")
+            if path == "/queue/madbench":
+                # the command line tool (cli/madbench), and its one-line install (Sungho)
+                with open(MADBENCH) as f:
+                    return self.send(200, f.read(), kind="text/x-python; charset=utf-8")
+            if path == "/queue/install.sh":
+                return self.send(200, install_script(cfg), kind="text/x-shellscript; charset=utf-8")
             if path == "/queue/help":
                 # for those who may use the site (Sungho), as every page of the app
                 if not login:
